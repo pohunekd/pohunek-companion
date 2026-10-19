@@ -11,7 +11,6 @@ use tracing::Level;
 
 const LOG_FILE: &str = "companion.json";
 const DEBUG_DIR: &str = "logs";
-const APP_DIR: &str = "pohunek-companion";
 const DIR_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
 const MAX_LEVEL: Level = Level::INFO;
@@ -40,20 +39,13 @@ fn log_dir() -> Result<PathBuf, LogError> {
 #[cfg(target_os = "macos")]
 fn state_dir() -> Result<PathBuf, LogError> {
     let home = std::env::home_dir().ok_or(LogError::NoDirectory("HOME is not set"))?;
-    Ok(home.join("Library/Logs").join(APP_DIR))
+    Ok(home.join("Library/Logs").join("pohunek-companion"))
 }
 
 #[cfg(not(target_os = "macos"))]
 fn state_dir() -> Result<PathBuf, LogError> {
-    let base = match std::env::var_os("XDG_STATE_HOME").map(PathBuf::from) {
-        Some(dir) if dir.is_absolute() => dir,
-        _ => std::env::home_dir()
-            .ok_or(LogError::NoDirectory(
-                "neither XDG_STATE_HOME nor HOME is set",
-            ))?
-            .join(".local/state"),
-    };
-    Ok(base.join(APP_DIR))
+    pohunek_companion_core::state_dir()
+        .map_err(|_| LogError::NoDirectory("neither XDG_STATE_HOME nor HOME is set"))
 }
 
 fn open_log_file() -> Result<(File, PathBuf), LogError> {

@@ -14,6 +14,7 @@
 #   scripts/ui-agent find ELEMENT_ID                 e.g. SessionRow::row-touch
 #   scripts/ui-agent click ELEMENT_ID [N]            click the Nth match (0-based)
 #   scripts/ui-agent log                             print the app's JSON log path
+#   scripts/ui-agent layout                          print the run's own layout.toml path
 #
 # The server binds 127.0.0.1 without authentication: any local process can
 # drive the app while it runs. Use only for agent-run debug builds.
@@ -97,9 +98,10 @@ start() {
             --features slint/mcp,slint/renderer-software
     ) >&2
 
-    # A temporary config whose attach command is harmless: a click on a
+    # A temporary config whose attach command is harmless (a click on a
     # session row runs `true` instead of opening a terminal on the owner's
-    # desktop.
+    # desktop) and a temporary state directory, so the run reads and writes its
+    # own layout.toml and never the owner's.
     mkdir -p "$state/config/pohunek"
     echo 'attach_command = ["true"]' >"$state/config/pohunek/companion.toml"
 
@@ -107,6 +109,7 @@ start() {
         SLINT_EMIT_DEBUG_INFO=1
         "SLINT_MCP_PORT=$port"
         "XDG_CONFIG_HOME=$state/config"
+        "XDG_STATE_HOME=$state/state"
     )
     if [ "$windowed" -eq 0 ]; then
         # No display variables: the headless backend renders in process.
@@ -218,5 +221,6 @@ case $cmd in
         call_json click_element "$(jq -cn --argjson h "$eh" '{elementHandle:$h,action:"SingleClick",button:"Left"}')"
         ;;
     log) echo "$state/logs/companion.json" ;;
-    *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    layout) echo "$state/state/pohunek-companion/layout.toml" ;;
+    *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

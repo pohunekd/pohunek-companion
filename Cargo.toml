@@ -30,9 +30,9 @@ pohunek-client = { git = "https://github.com/zajca/pohunek", tag = "v0.35.2" }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 time = { version = "0.3", default-features = false, features = ["parsing"] }
-rustix = { version = "1", default-features = false, features = ["std", "process"] }
+rustix = { version = "1", default-features = false, features = ["std", "process", "fs"] }
 thiserror = "2"
-toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
+toml = { version = "1", default-features = false, features = ["std", "parse", "display", "serde"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "json"] }
 tokio = { version = "1", default-features = false, features = ["rt", "sync", "time"] }
