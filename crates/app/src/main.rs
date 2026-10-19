@@ -172,7 +172,7 @@ struct Refusal {
 }
 
 fn group_refusal(operation: &str, id: &str, err: &GroupError) -> Option<String> {
-    warn!(group = %id, operation, error = %err, "group operation refused");
+    warn!(group = %id, operation, reason = err.kind(), "group operation refused");
     Some(format!("Cannot {operation}: {err}"))
 }
 

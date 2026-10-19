@@ -215,7 +215,10 @@ component GroupHeader inherits Rectangle {
     // The header is a group drop target on its upper or lower half.
     callback group-dropped(data-transfer, bool);
     pure callback is-group(data-transfer) -> bool;
-    out property <bool> editing: false;
+    // Owned by the window so a rebuilt group list keeps an open editor.
+    in property <bool> editing;
+    in-out property <string> edit-text;
+    callback set-editing(bool);
     in-out property <bool> drop-after;
 
     height: Theme.group-header-height;
@@ -276,19 +279,19 @@ component GroupHeader inherits Rectangle {
         if root.editing: edit-scope := FocusScope {
             capture-key-pressed(event) => {
                 if event.text == Key.Escape {
-                    root.editing = false;
+                    root.set-editing(false);
                     return accept;
                 }
                 reject
             }
             name-edit := LineEdit {
                 height: Theme.group-edit-height;
-                text: root.name;
+                text <=> root.edit-text;
                 font-size: Theme.group-font-size;
                 accessible-label: "Group name";
                 init => { self.focus(); self.select-all(); }
                 accepted(value) => {
-                    root.editing = false;
+                    root.set-editing(false);
                     root.rename(value);
                 }
             }
@@ -298,7 +301,7 @@ component GroupHeader inherits Rectangle {
             mouse-cursor: pointer;
             accessible-role: button;
             accessible-label: "Rename " + root.name;
-            clicked => { root.editing = !root.editing; }
+            clicked => { root.set-editing(!root.editing); }
             Text {
                 text: "✎";
                 color: parent.has-hover ? Theme.group-button-hover : Theme.group-button;
@@ -383,6 +386,10 @@ export component AppWindow inherits Window {
     // Dropped group payload, the group it landed on, and whether after it.
     callback drop-group(data-transfer, string, bool);
     in-out property <bool> creating-group;
+    // Id of the group whose name is being edited; empty when none is.
+    in-out property <string> editing-group;
+    // The text typed into that group's name editor.
+    in-out property <string> edit-text;
 
     VerticalLayout {
         padding: Theme.window-padding;
@@ -481,6 +488,12 @@ export component AppWindow inherits Window {
                         count: group.count;
                         collapsed: group.collapsed;
                         owner-group: root.editable;
+                        editing: root.editing-group == group.id;
+                        edit-text <=> root.edit-text;
+                        set-editing(on) => {
+                            root.editing-group = on ? group.id : "";
+                            if on { root.edit-text = group.name; }
+                        }
                         editable: !group.fixed;
                         payload() => { root.group-payload(group.id) }
                         is-group(data) => { root.is-group(data) }

@@ -178,6 +178,19 @@ pub enum GroupError {
     AmbiguousOrder,
 }
 
+impl GroupError {
+    /// A label for logs: names the refusal without the group name it carries.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::EmptyName => "empty name",
+            Self::DuplicateName(_) => "duplicate name",
+            Self::UnknownGroup(_) => "unknown group",
+            Self::InboxFixed => "inbox is fixed",
+            Self::AmbiguousOrder => "ambiguous order",
+        }
+    }
+}
+
 /// What a reconcile changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reconciled {
