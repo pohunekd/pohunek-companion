@@ -5,30 +5,122 @@
 //! subsequence.
 
 use crate::layout::GroupSection;
-use crate::session::SessionRow;
+use crate::session::{ProjectRef, SessionRow};
+
+/// Which project the sidebar is narrowed to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ProjectSelection {
+    #[default]
+    All,
+    /// Sessions of this project; the label is the last one seen, kept so the
+    /// chip stays readable after the project has no sessions.
+    Project(ProjectRef),
+    /// Sessions that belong to no project.
+    NoProject,
+}
+
+impl ProjectSelection {
+    fn admits(&self, row: &SessionRow) -> bool {
+        match self {
+            Self::All => true,
+            Self::Project(wanted) => row.project.as_ref().is_some_and(|p| p.id == wanted.id),
+            Self::NoProject => row.project.is_none(),
+        }
+    }
+}
+
+/// One chip of the project row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectChip {
+    pub label: String,
+    pub selection: ProjectSelection,
+}
+
+/// The project chips for the current sessions: "All", one chip per project
+/// ordered by label ignoring case (then id), then "No project" when some
+/// session has none. The selected project keeps its chip, with its last
+/// label, even when no session belongs to it any more. Returns the chips and
+/// the index of the selected one.
+pub fn project_chips(
+    rows: &[SessionRow],
+    selected: &ProjectSelection,
+) -> (Vec<ProjectChip>, usize) {
+    let mut projects: Vec<ProjectRef> = Vec::new();
+    for project in rows.iter().filter_map(|row| row.project.as_ref()) {
+        if !projects.iter().any(|p| p.id == project.id) {
+            projects.push(project.clone());
+        }
+    }
+    if let ProjectSelection::Project(wanted) = selected
+        && !projects.iter().any(|p| p.id == wanted.id)
+    {
+        projects.push(wanted.clone());
+    }
+    projects.sort_by_cached_key(|p| (lowercase_chars(&p.label), p.id.clone()));
+    let mut chips = vec![ProjectChip {
+        label: "All".to_owned(),
+        selection: ProjectSelection::All,
+    }];
+    chips.extend(projects.into_iter().map(|p| ProjectChip {
+        label: p.label.clone(),
+        selection: ProjectSelection::Project(p),
+    }));
+    if rows.iter().any(|row| row.project.is_none()) || *selected == ProjectSelection::NoProject {
+        chips.push(ProjectChip {
+            label: "No project".to_owned(),
+            selection: ProjectSelection::NoProject,
+        });
+    }
+    let index = chips
+        .iter()
+        .position(|chip| match (&chip.selection, selected) {
+            (ProjectSelection::Project(a), ProjectSelection::Project(b)) => a.id == b.id,
+            (a, b) => a == b,
+        })
+        .unwrap_or(0);
+    (chips, index)
+}
 
 /// A parsed filter query. The query is split on whitespace; a session matches
 /// when every token matches at least one of its fields, case-insensitively:
 /// as a subsequence of a text field, as a substring of an identifier field. An
-/// empty query matches everything.
+/// empty query matches everything. A selected project narrows further: a
+/// session must pass both.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionFilter {
     tokens: Vec<Vec<char>>,
+    project: ProjectSelection,
 }
 
 impl SessionFilter {
     pub fn new(query: &str) -> Self {
         Self {
             tokens: query.split_whitespace().map(lowercase_chars).collect(),
+            project: ProjectSelection::All,
         }
     }
 
+    pub fn set_query(&mut self, query: &str) {
+        self.tokens = Self::new(query).tokens;
+    }
+
+    pub fn set_project(&mut self, project: ProjectSelection) {
+        self.project = project;
+    }
+
+    pub fn project(&self) -> &ProjectSelection {
+        &self.project
+    }
+
     pub fn is_active(&self) -> bool {
-        !self.tokens.is_empty()
+        !self.tokens.is_empty() || self.project != ProjectSelection::All
     }
 
     pub fn matches(&self, row: &SessionRow) -> bool {
-        if !self.is_active() {
+        if !self.project.admits(row) {
+            return false;
+        }
+        if self.tokens.is_empty() {
             return true;
         }
         let texts: Vec<Vec<char>> = [
@@ -199,6 +291,97 @@ mod tests {
             filter_sections(sections.clone(), &SessionFilter::new(" ")),
             sections
         );
+    }
+
+    fn project_row(id: &str, name: &str, project: Option<(&str, &str)>) -> SessionRow {
+        let mut r = row(id, name);
+        r.project = project.map(|(id, label)| ProjectRef {
+            id: id.into(),
+            label: label.into(),
+        });
+        r
+    }
+
+    fn project_sel(id: &str, label: &str) -> ProjectSelection {
+        ProjectSelection::Project(ProjectRef {
+            id: id.into(),
+            label: label.into(),
+        })
+    }
+
+    fn sample() -> Vec<SessionRow> {
+        vec![
+            project_row("1", "build", Some(("p-b", "beta"))),
+            project_row("2", "docs", Some(("p-a", "Alpha"))),
+            project_row("3", "build-two", None),
+            project_row("4", "docs-two", Some(("p-b", "beta"))),
+        ]
+    }
+
+    fn matching(filter: &SessionFilter) -> Vec<String> {
+        sample()
+            .iter()
+            .filter(|r| filter.matches(r))
+            .map(|r| r.key.session_id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_project_and_the_query_both_have_to_match() {
+        let mut filter = SessionFilter::default();
+        filter.set_project(project_sel("p-b", "beta"));
+        assert!(filter.is_active());
+        assert_eq!(matching(&filter), ["1", "4"]);
+        filter.set_query("docs");
+        assert_eq!(matching(&filter), ["4"]);
+        filter.set_project(ProjectSelection::All);
+        assert_eq!(matching(&filter), ["2", "4"]);
+        filter.set_project(ProjectSelection::NoProject);
+        filter.set_query("");
+        assert_eq!(matching(&filter), ["3"]);
+        filter.set_query("docs");
+        assert!(matching(&filter).is_empty());
+    }
+
+    #[test]
+    fn a_selected_project_without_sessions_filters_everything_out() {
+        let mut filter = SessionFilter::default();
+        filter.set_project(project_sel("p-gone", "gone"));
+        assert!(matching(&filter).is_empty());
+        let sections = vec![section("a", sample())];
+        assert!(filter_sections(sections, &filter).is_empty());
+    }
+
+    #[test]
+    fn chips_are_ordered_by_label_with_no_project_last() {
+        let (chips, index) = project_chips(&sample(), &ProjectSelection::All);
+        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["All", "Alpha", "beta", "No project"]);
+        assert_eq!(index, 0);
+        let (_, index) = project_chips(&sample(), &project_sel("p-b", "beta"));
+        assert_eq!(index, 2);
+        let with_project: Vec<_> = sample()
+            .into_iter()
+            .filter(|r| r.project.is_some())
+            .collect();
+        let (chips, _) = project_chips(&with_project, &ProjectSelection::All);
+        assert_eq!(chips.last().map(|c| c.label.as_str()), Some("beta"));
+    }
+
+    #[test]
+    fn the_selected_project_keeps_its_chip_after_its_sessions_are_gone() {
+        let rows: Vec<_> = sample()
+            .into_iter()
+            .filter(|r| r.key.session_id != "2")
+            .collect();
+        let (chips, index) = project_chips(&rows, &project_sel("p-a", "Alpha"));
+        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["All", "Alpha", "beta", "No project"]);
+        assert_eq!(index, 1);
+        let only_projects: Vec<_> = rows.into_iter().filter(|r| r.project.is_some()).collect();
+        let (chips, index) = project_chips(&only_projects, &ProjectSelection::NoProject);
+        assert_eq!(chips.last().map(|c| c.label.as_str()), Some("No project"));
+        assert_eq!(index, chips.len() - 1);
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub use config::{
     ViewConfig,
 };
 pub use error::CoreError;
-pub use filter::{SessionFilter, filter_sections};
+pub use filter::{ProjectChip, ProjectSelection, SessionFilter, filter_sections, project_chips};
 pub use layout::{
     CreateAndMoveError, GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError,
     LayoutStore, MoveError, Placement, Reconciled, RulePlacement, layout_path, state_dir,
