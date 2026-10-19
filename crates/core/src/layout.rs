@@ -372,6 +372,27 @@ impl Layout {
         moved
     }
 
+    /// Clears the manual flag of `row`'s item and places it by `rules` like
+    /// any session the owner never dragged (see [`apply_rules`](Self::apply_rules)).
+    /// Returns whether the item changed; a session that is not manual is left
+    /// alone.
+    pub fn return_to_rule(
+        &mut self,
+        row: &SessionRow,
+        rules: &[PlacementRule],
+    ) -> Result<bool, MoveError> {
+        let item = self
+            .items
+            .iter_mut()
+            .find(|item| item.key() == row.key)
+            .ok_or_else(|| MoveError::UnknownSession(row.key.session_id.clone()))?;
+        if !std::mem::take(&mut item.manual) {
+            return Ok(false);
+        }
+        self.apply_rules(std::slice::from_ref(row), rules);
+        Ok(true)
+    }
+
     /// Id of the group named `name` (ignoring case); appended after the last
     /// group when no group has that name.
     fn group_for_name(&mut self, name: &str) -> String {
@@ -854,6 +875,28 @@ impl LayoutStore {
         let changed = self.layout.move_session(key, group, placement)?;
         if changed {
             info!(session = %key.session_id, group, placement = ?placement_log(placement), "session moved");
+        }
+        Ok(changed)
+    }
+
+    /// Hands a manually placed session back to the placement rules (see
+    /// [`Layout::return_to_rule`]) and logs the user action with keys and the
+    /// resulting group id only.
+    pub fn return_to_rule(
+        &mut self,
+        row: &SessionRow,
+        rules: &[PlacementRule],
+    ) -> Result<bool, MoveError> {
+        let changed = self.layout.return_to_rule(row, rules)?;
+        if changed {
+            let group = self
+                .layout
+                .items()
+                .iter()
+                .find(|item| item.key() == row.key)
+                .map(|item| item.group.as_str())
+                .unwrap_or_default();
+            info!(host = %row.key.host, session = %row.key.session_id, group, "session returned to rule placement");
         }
         Ok(changed)
     }
@@ -1466,6 +1509,53 @@ order = "g"
             .expect("group")
             .name
             .clone()
+    }
+
+    #[test]
+    fn returning_to_rule_clears_manual_and_places_at_the_end_or_in_inbox() {
+        let rules = [rule("Pohunek", |r| r.project = Some("pohunek".into()))];
+        let ruled = session("a", Some("pohunek"), None);
+        let other = session("b", Some("pohunek"), None);
+        let plain = session("c", None, None);
+        let rows = [ruled.clone(), other.clone(), plain.clone()];
+        let mut layout = Layout::default();
+        placed(&mut layout, &rows, &rules);
+        layout.create_group("Mine").expect("group");
+        let mine = layout
+            .groups()
+            .iter()
+            .find(|g| g.name == "Mine")
+            .expect("mine")
+            .id
+            .clone();
+        for row in [&ruled, &plain] {
+            layout
+                .move_session(&row.key, &mine, Placement::End)
+                .expect("move");
+        }
+
+        assert_eq!(layout.return_to_rule(&ruled, &rules), Ok(true));
+        assert_eq!(group_of(&layout, "a"), "Pohunek");
+        let section = layout
+            .arrange(&rows)
+            .into_iter()
+            .find(|s| s.name == "Pohunek")
+            .expect("section");
+        let ids: Vec<&str> = section
+            .rows
+            .iter()
+            .map(|r| r.key.session_id.as_str())
+            .collect();
+        assert_eq!(ids, ["b", "a"], "appended at the end");
+
+        assert_eq!(layout.return_to_rule(&plain, &rules), Ok(true));
+        assert_eq!(group_of(&layout, "c"), "Inbox");
+        assert!(layout.items().iter().all(|i| !i.manual));
+        assert_eq!(layout.return_to_rule(&plain, &rules), Ok(false));
+        assert!(matches!(
+            layout.return_to_rule(&session("zz", None, None), &rules),
+            Err(MoveError::UnknownSession(_))
+        ));
     }
 
     #[test]

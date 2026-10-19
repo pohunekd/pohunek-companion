@@ -366,6 +366,8 @@ export component AppWindow inherits Window {
     // views are read-only.
     in property <bool> editable;
     callback attach(string, string, string);
+    // Hands a manually placed session (host, id) back to the placement rules.
+    callback return-to-rule(string, string);
     callback view-selected(int);
     // Payload of a dragged row: its session.
     pure callback payload(SessionRowData) -> data-transfer;
