@@ -43,6 +43,7 @@ pub use new_session::{
     load_choices, load_recipe, load_templates, recipe_from_action, submit_blocker, template_names,
 };
 pub use owner_state::{OwnerState, derive};
+pub use pohunek_client::LOCAL_HOST;
 pub use pohunek_client::protocol::SessionNewParams;
 pub use session::{ProjectRef, SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
