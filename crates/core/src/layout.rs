@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -100,7 +100,9 @@ impl Item {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layout {
     version: u32,
+    #[serde(default)]
     groups: Vec<Group>,
+    #[serde(default)]
     items: Vec<Item>,
 }
 
@@ -214,9 +216,8 @@ impl Layout {
             .collect()
     }
 
-    /// Checks a parsed layout and repairs what a hand edit can leave
-    /// inconsistent without losing the owner's data; returns whether it
-    /// repaired anything.
+    /// Rejects an inconsistent hand-edited layout and re-adds a deleted Inbox;
+    /// returns whether it changed anything.
     fn validate(&mut self) -> Result<bool, String> {
         if self.version != FORMAT_VERSION {
             return Err(format!(
@@ -238,6 +239,12 @@ impl Layout {
         }
         let mut sessions = HashSet::new();
         for item in &self.items {
+            if !ids.contains(item.group.as_str()) {
+                return Err(format!(
+                    "session {:?} is in unknown group {:?}",
+                    item.session_id, item.group
+                ));
+            }
             if !sort_key::is_valid(&item.order) {
                 return Err(format!(
                     "session {:?} has an invalid order key {:?}",
@@ -253,23 +260,8 @@ impl Layout {
             let first = self.groups.iter().map(|group| group.order.as_str()).min();
             let order = sort_key::between(None, first);
             self.groups.insert(0, inbox_group(order));
+            warn!("the layout file has no Inbox group; adding it");
             repaired = true;
-        }
-        let group_ids: HashSet<String> = self.groups.iter().map(|g| g.id.clone()).collect();
-        let mut last = self
-            .items
-            .iter()
-            .filter(|item| item.group == INBOX_ID)
-            .map(|item| item.order.clone())
-            .max();
-        for item in &mut self.items {
-            if !group_ids.contains(&item.group) {
-                let order = sort_key::between(last.as_deref(), None);
-                last = Some(order.clone());
-                item.group = INBOX_ID.to_owned();
-                item.order = order;
-                repaired = true;
-            }
         }
         Ok(repaired)
     }
@@ -417,17 +409,21 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         .recursive(true)
         .mode(DIR_MODE)
         .create(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))?;
     let tmp = dir.join(format!("{LAYOUT_FILE}.tmp-{}", std::process::id()));
+    // A stale temporary file from a crashed run is replaced first.
+    let _ = fs::remove_file(&tmp);
     let written = (|| {
         let mut file = OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .mode(FILE_MODE)
             .open(&tmp)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
-        fs::rename(&tmp, path)
+        fs::rename(&tmp, path)?;
+        fs::File::open(dir)?.sync_all()
     })();
     if written.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -552,6 +548,22 @@ order = "g"
         edited.reconcile(&keys(&["s1", "s2"]));
         assert!(!edited.save_if_changed().expect("no rewrite"));
         assert_eq!(fs::read_to_string(&path).expect("read"), annotated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_in_an_unknown_group_is_reported_and_the_file_kept() {
+        let dir = scratch("unknown-group");
+        fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join(LAYOUT_FILE);
+        let typo = "version = 1\n[[groups]]\nid = \"inbox\"\nname = \"Inbox\"\norder = \"n\"\n\
+            [[items]]\nhost = \"local\"\nsession_id = \"s1\"\ngroup = \"wrok\"\norder = \"n\"\n";
+        fs::write(&path, typo).expect("write");
+        let (mut store, error) = LayoutStore::open(path.clone());
+        assert!(matches!(error, Some(LayoutError::Invalid { .. })));
+        store.reconcile(&keys(&["s1"]));
+        assert!(!store.save_if_changed().expect("skips"));
+        assert_eq!(fs::read_to_string(&path).expect("read"), typo);
         let _ = fs::remove_dir_all(&dir);
     }
 
