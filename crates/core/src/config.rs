@@ -30,10 +30,19 @@ pub enum ConfigError {
     },
     #[error("invalid {path}: {message}")]
     Parse { path: PathBuf, message: String },
-    #[error("invalid {path}: `{key}` must be greater than zero (milliseconds)")]
+    #[error("invalid {path}: `{key}` must be greater than zero")]
     ZeroValue { path: PathBuf, key: &'static str },
     #[error("invalid {path}: `pohunek_bin` must not be empty")]
     EmptyPohunekBin { path: PathBuf },
+    #[error(
+        "invalid {path}: `daemon.reconnect_initial_ms` ({initial}) must not exceed \
+         `daemon.reconnect_max_ms` ({max})"
+    )]
+    BackoffOrder {
+        path: PathBuf,
+        initial: u64,
+        max: u64,
+    },
 }
 
 /// Settings from `companion.toml`. Unknown keys are rejected. A missing file
@@ -86,6 +95,20 @@ pub struct DaemonConfig {
     /// answered, in milliseconds, greater than zero. Optional; default 5000
     /// (the `pohunek-client` default).
     pub request_timeout_ms: u64,
+    /// `daemon.reconnect_initial_ms`: wait before the first reconnect attempt
+    /// after the daemon connection is lost or fails, in milliseconds, greater
+    /// than zero and not above `reconnect_max_ms`. The wait doubles on every
+    /// consecutive failure. Optional; default 500.
+    pub reconnect_initial_ms: u64,
+    /// `daemon.reconnect_max_ms`: upper bound of the reconnect wait, in
+    /// milliseconds, greater than zero. A connection must stay up this long
+    /// before the wait starts over at `reconnect_initial_ms`. Optional; default 30000.
+    pub reconnect_max_ms: u64,
+    /// `daemon.notification_page_size`: records requested per
+    /// `notification.list` page while seeding, greater than zero. The page
+    /// size is halved when the daemon reports the page as too large.
+    /// Optional; default 200.
+    pub notification_page_size: u32,
 }
 
 impl Default for DaemonConfig {
@@ -93,6 +116,9 @@ impl Default for DaemonConfig {
         Self {
             connect_timeout_ms: 5000,
             request_timeout_ms: 5000,
+            reconnect_initial_ms: 500,
+            reconnect_max_ms: 30_000,
+            notification_page_size: 200,
         }
     }
 }
@@ -104,6 +130,14 @@ impl DaemonConfig {
 
     pub fn request_timeout(&self) -> Duration {
         Duration::from_millis(self.request_timeout_ms)
+    }
+
+    pub fn reconnect_initial(&self) -> Duration {
+        Duration::from_millis(self.reconnect_initial_ms)
+    }
+
+    pub fn reconnect_max(&self) -> Duration {
+        Duration::from_millis(self.reconnect_max_ms)
     }
 }
 
@@ -158,6 +192,15 @@ impl Config {
             ("daemon.connect_timeout_ms", self.daemon.connect_timeout_ms),
             ("daemon.request_timeout_ms", self.daemon.request_timeout_ms),
             ("attach_observe_ms", self.attach_observe_ms),
+            (
+                "daemon.reconnect_initial_ms",
+                self.daemon.reconnect_initial_ms,
+            ),
+            ("daemon.reconnect_max_ms", self.daemon.reconnect_max_ms),
+            (
+                "daemon.notification_page_size",
+                u64::from(self.daemon.notification_page_size),
+            ),
         ]
         .into_iter()
         .find_map(|(key, value)| (value == 0).then_some(key));
@@ -170,6 +213,13 @@ impl Config {
         if self.pohunek_bin.is_empty() {
             return Err(ConfigError::EmptyPohunekBin {
                 path: path.to_owned(),
+            });
+        }
+        if self.daemon.reconnect_initial_ms > self.daemon.reconnect_max_ms {
+            return Err(ConfigError::BackoffOrder {
+                path: path.to_owned(),
+                initial: self.daemon.reconnect_initial_ms,
+                max: self.daemon.reconnect_max_ms,
             });
         }
         Ok(())
@@ -254,6 +304,25 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(msg.contains("daemon.request_timeout_ms"), "{msg}");
+    }
+
+    #[test]
+    fn invalid_backoff_is_rejected() {
+        for key in [
+            "reconnect_initial_ms",
+            "reconnect_max_ms",
+            "notification_page_size",
+        ] {
+            let msg = parse(&format!("[daemon]\n{key} = 0\n"))
+                .unwrap_err()
+                .to_string();
+            assert!(msg.contains(&format!("daemon.{key}")), "{msg}");
+        }
+        let msg = parse("[daemon]\nreconnect_initial_ms = 9000\nreconnect_max_ms = 1000\n")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("must not exceed"), "{msg}");
+        assert!(parse("[daemon]\nreconnect_initial_ms = 1000\nreconnect_max_ms = 1000\n").is_ok());
     }
 
     #[test]

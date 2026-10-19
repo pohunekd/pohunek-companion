@@ -6,10 +6,10 @@ use std::time::Duration;
 mod logging;
 
 use pohunek_companion_core::{
-    AttachConfig, AttachError, Config, DaemonConfig, SessionKey, SessionRow, attach, clip_display,
-    fetch_sessions,
+    AttachConfig, AttachError, Config, DaemonConfig, LiveUpdate, SessionKey, SessionRow, attach,
+    clip_display, run_live,
 };
-use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 use tracing::{error, info};
 
 slint::include_modules!();
@@ -77,35 +77,79 @@ fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
         .collect()
 }
 
-/// Fetches the session list on a background thread and hands the outcome to
-/// the UI thread; the UI thread never waits on the daemon.
-fn load_sessions(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
+/// Brings `model` to `rows` touching only what differs: unchanged rows are not
+/// rewritten, removed ones are dropped, new ones inserted in place.
+fn sync_rows(model: &VecModel<SessionRowData>, rows: Vec<SessionRowData>) {
+    let mut i = model.row_count();
+    while i > 0 {
+        i -= 1;
+        if let Some(row) = model.row_data(i)
+            && !rows.iter().any(|new| new.id == row.id)
+        {
+            model.remove(i);
+        }
+    }
+    for (i, new) in rows.iter().enumerate() {
+        match model.row_data(i) {
+            Some(current) if current.id == new.id => {
+                if current != *new {
+                    model.set_row_data(i, new.clone());
+                }
+            }
+            _ => {
+                let later = (i + 1..model.row_count())
+                    .find(|&j| model.row_data(j).is_some_and(|row| row.id == new.id));
+                if let Some(j) = later {
+                    model.remove(j);
+                }
+                model.insert(i, new.clone());
+            }
+        }
+    }
+}
+
+/// Follows the daemon on a background thread and hands every update to the UI
+/// thread; the UI thread never waits on the daemon.
+fn follow_daemon(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
     std::thread::spawn(move || {
-        let outcome = tokio::runtime::Builder::new_current_thread()
+        let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|err| {
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
                 error!(error = %err, "cannot start the background runtime");
-                format!("cannot start the background runtime: {err}")
-            })
-            .and_then(|runtime| {
-                runtime
-                    .block_on(fetch_sessions(&daemon))
-                    .map_err(|err| err.to_string())
+                let message = format!("cannot start the background runtime: {err}");
+                if let Err(err) = window.upgrade_in_event_loop(move |window| {
+                    window.set_error(message.into());
+                }) {
+                    error!(error = %err, "deliver the runtime error to the UI");
+                }
+                return;
+            }
+        };
+        runtime.block_on(run_live(&daemon, |update| {
+            let applied = window.upgrade_in_event_loop(move |window| match update {
+                LiveUpdate::Connected => {
+                    window.set_error("".into());
+                    window.set_status("".into());
+                }
+                LiveUpdate::Sessions(sessions) => {
+                    let rows = session_rows(sessions);
+                    let model = window.get_sessions();
+                    match model.as_any().downcast_ref::<VecModel<SessionRowData>>() {
+                        Some(model) => sync_rows(model, rows),
+                        None => window.set_sessions(ModelRc::new(VecModel::from(rows))),
+                    }
+                }
+                LiveUpdate::Reconnecting { attempt, reason } => {
+                    window.set_status(format!("Reconnecting (attempt {attempt}): {reason}").into());
+                }
             });
-        let applied = window.upgrade_in_event_loop(move |window| match outcome {
-            Ok(sessions) => {
-                window.set_error("".into());
-                window.set_sessions(ModelRc::new(VecModel::from(session_rows(sessions))));
+            if let Err(err) = applied {
+                error!(error = %err, "deliver a daemon update to the UI");
             }
-            Err(message) => {
-                window.set_sessions(ModelRc::default());
-                window.set_error(message.into());
-            }
-        });
-        if let Err(err) = applied {
-            error!(error = %err, "deliver session list to the UI");
-        }
+        }));
     });
 }
 
@@ -173,7 +217,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 config_path,
                 settings: Ok(config.attach()),
             };
-            load_sessions(window.as_weak(), config.daemon);
+            follow_daemon(window.as_weak(), config.daemon);
             context
         }
         Err(err) => {
