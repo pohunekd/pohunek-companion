@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { AboutSlint, ScrollView } from "std-widgets.slint";
 
 export enum OwnerStateKind { needs-owner, working, idle, ended, no-agent-state }
 
@@ -17,7 +17,7 @@ export struct SessionRowData {
     attach-refusal: string,
 }
 
-global Theme {
+export global Theme {
     out property <length> row-height: 36px;
     out property <length> row-radius: 4px;
     out property <length> row-padding: 8px;
@@ -38,6 +38,12 @@ global Theme {
     out property <color> error: #e04040;
     out property <color> badge-background: #3a3d44;
     out property <color> badge-text: #c9d1d9;
+    out property <length> about-width: 360px;
+    out property <length> about-height: 320px;
+    out property <color> about-background: #ffffff;
+    out property <int> tray-icon-size: 32;
+    out property <int> tray-label-max-chars: 40;
+    out property <color> tray-digit: #ffffff;
     out property <length> owner-dot-size: 8px;
     out property <length> owner-spacing: 5px;
     out property <color> owner-needs-owner: #e0a030;
@@ -195,26 +201,52 @@ export component AppWindow inherits Window {
     }
 }
 
+export struct TrayEntryData {
+    label: string,
+    host: string,
+    id: string,
+    // Why the session cannot be attached; empty when it can.
+    attach-refusal: string,
+}
+
+export component AboutWindow inherits Window {
+    title: "About Slint";
+    preferred-width: Theme.about-width;
+    preferred-height: Theme.about-height;
+    background: Theme.about-background;
+    AboutSlint {}
+}
+
 export component Tray inherits SystemTrayIcon {
     in property <image> tray-icon;
     in property <string> tray-tooltip;
-    in property <string> needs-label;
-    in property <string> ticks-label;
+    in property <[TrayEntryData]> entries;
+    in property <string> empty-label;
+    callback attach-entry(string, string, string);
     callback show-window();
-    callback bump();
+    callback show-about();
     callback quit();
 
     icon: root.tray-icon;
     tooltip: root.tray-tooltip;
 
     Menu {
+        if root.entries.length == 0: MenuItem {
+            title: root.empty-label;
+            enabled: false;
+        }
+        for entry in root.entries: MenuItem {
+            title: entry.label;
+            activated => { root.attach-entry(entry.host, entry.id, entry.attach-refusal); }
+        }
+        MenuSeparator {}
         MenuItem {
-            title: root.needs-label;
+            title: "Show window";
             activated => { root.show-window(); }
         }
         MenuItem {
-            title: root.ticks-label;
-            activated => { root.bump(); }
+            title: "About Slint";
+            activated => { root.show-about(); }
         }
         MenuSeparator {}
         MenuItem {

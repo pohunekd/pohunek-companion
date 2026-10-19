@@ -1,52 +1,22 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::Duration;
 
 mod logging;
+mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, LiveUpdate, OwnerState, SessionKey,
-    SessionRow, attach, clip_display, run_live,
+    SessionRow, TraySummary, attach, clip_display, run_live,
 };
-use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tracing::{error, info};
 
 slint::include_modules!();
 
-// Spike-only tunables; the real app reads them from companion.toml.
 const APP_ID: &str = "pohunek-companion";
-const TRAY_TICK: Duration = Duration::from_secs(2);
-const TRAY_ICON_SIZE: u32 = 32;
-const TRAY_STATES: i32 = 4;
 /// Longest badge link or role text shown in a row.
 const BADGE_MAX_CHARS: usize = 32;
-
-fn tray_icon(count: i32) -> Image {
-    let color = match count {
-        0 => [0x6c, 0x75, 0x7d],
-        1 => [0xf0, 0xa0, 0x30],
-        _ => [0xe0, 0x40, 0x40],
-    };
-    let size = TRAY_ICON_SIZE;
-    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(size, size);
-    let center = (size as f32 - 1.0) / 2.0;
-    let radius = size as f32 / 2.0 - 2.0;
-    for (i, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
-        let (x, y) = ((i as u32 % size) as f32, (i as u32 / size) as f32);
-        let inside = (x - center).powi(2) + (y - center).powi(2) <= radius.powi(2);
-        // Extra white bars encode the count, so the icon changes shape as well as colour.
-        let bar = count > 0
-            && (size / 4..size * 3 / 4).contains(&(y as u32))
-            && (x as u32 * (2 * count as u32 + 1) / size) % 2 == 1;
-        *pixel = match (inside, bar) {
-            (true, true) => Rgba8Pixel::new(255, 255, 255, 255),
-            (true, false) => Rgba8Pixel::new(color[0], color[1], color[2], 255),
-            _ => Rgba8Pixel::new(0, 0, 0, 0),
-        };
-    }
-    Image::from_rgba8(buffer)
-}
 
 fn owner_state_kind(state: OwnerState) -> OwnerStateKind {
     match state {
@@ -122,7 +92,12 @@ fn sync_rows(model: &VecModel<SessionRowData>, rows: Vec<SessionRowData>) {
 
 /// Follows the daemon on a background thread and hands every update to the UI
 /// thread; the UI thread never waits on the daemon.
-fn follow_daemon(window: slint::Weak<AppWindow>, daemon: DaemonConfig, idle_threshold: Duration) {
+fn follow_daemon(
+    window: slint::Weak<AppWindow>,
+    tray: slint::Weak<Tray>,
+    daemon: DaemonConfig,
+    idle_threshold: Duration,
+) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -141,12 +116,20 @@ fn follow_daemon(window: slint::Weak<AppWindow>, daemon: DaemonConfig, idle_thre
             }
         };
         runtime.block_on(run_live(&daemon, idle_threshold, |update| {
+            let summary = match &update {
+                LiveUpdate::Sessions(sessions) => Some(TraySummary::from_rows(sessions)),
+                _ => None,
+            };
+            let tray = tray.clone();
             let applied = window.upgrade_in_event_loop(move |window| match update {
                 LiveUpdate::Connected => {
                     window.set_error("".into());
                     window.set_status("".into());
                 }
                 LiveUpdate::Sessions(sessions) => {
+                    if let (Some(tray), Some(summary)) = (tray.upgrade(), summary) {
+                        tray::apply(&tray, &summary);
+                    }
                     let rows = session_rows(sessions);
                     let model = window.get_sessions();
                     match model.as_any().downcast_ref::<VecModel<SessionRowData>>() {
@@ -231,6 +214,7 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             follow_daemon(
                 window.as_weak(),
+                tray.as_weak(),
                 config.daemon,
                 config.tray.idle_threshold(),
             );
@@ -247,6 +231,18 @@ fn main() -> Result<(), slint::PlatformError> {
     };
     {
         let weak = window.as_weak();
+        let context = attach_context.clone();
+        tray.on_attach_entry(move |host, id, refusal| {
+            let key = SessionKey {
+                host: host.into(),
+                session_id: id.into(),
+            };
+            info!(host = %key.host, session = %key.session_id, source = "tray", "attach requested");
+            start_attach(weak.clone(), context.clone(), key, refusal.into());
+        });
+    }
+    {
+        let weak = window.as_weak();
         window.on_attach(move |host, id, refusal| {
             let key = SessionKey {
                 host: host.into(),
@@ -256,20 +252,8 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    let count = Rc::new(RefCell::new(0i32));
-    let refresh_tray = {
-        let tray = tray.as_weak();
-        move |count: i32| {
-            let Some(tray) = tray.upgrade() else {
-                return;
-            };
-            tray.set_tray_icon(tray_icon(count));
-            tray.set_tray_tooltip(format!("{count} sessions need you").into());
-            tray.set_needs_label(format!("Needs you: {count}").into());
-            tray.set_ticks_label("Bump counter".into());
-        }
-    };
-    refresh_tray(0);
+    tray::apply(&tray, &TraySummary::from_rows(&[]));
+    tray.set_empty_label("No sessions need you".into());
 
     {
         let window = window.as_weak();
@@ -282,12 +266,16 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
-        let count = count.clone();
-        let refresh = refresh_tray.clone();
-        tray.on_bump(move || {
-            let mut count = count.borrow_mut();
-            *count = (*count + 1) % TRAY_STATES;
-            refresh(*count);
+        let about: RefCell<Option<AboutWindow>> = RefCell::new(None);
+        tray.on_show_about(move || {
+            let mut about = about.borrow_mut();
+            let shown = match about.as_ref() {
+                Some(window) => Ok(window),
+                None => AboutWindow::new().map(|window| about.insert(window) as &AboutWindow),
+            };
+            if let Err(err) = shown.and_then(|window| window.show()) {
+                error!(error = %err, "show the about window");
+            }
         });
     }
     tray.on_quit(|| {
@@ -295,16 +283,6 @@ fn main() -> Result<(), slint::PlatformError> {
             error!(error = %err, "quit the event loop");
         }
     });
-
-    let timer = slint::Timer::default();
-    {
-        let count = count.clone();
-        timer.start(slint::TimerMode::Repeated, TRAY_TICK, move || {
-            let mut count = count.borrow_mut();
-            *count = (*count + 1) % TRAY_STATES;
-            refresh_tray(*count);
-        });
-    }
 
     window.show()?;
     slint::run_event_loop_until_quit()?;
