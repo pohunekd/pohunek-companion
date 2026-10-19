@@ -88,6 +88,8 @@ export global Theme {
 
 component SessionRow inherits Rectangle {
     in property <SessionRowData> data;
+    // False in the Needs-you section, which is not a drag source.
+    in property <bool> draggable: true;
     in property <bool> indicator-above;
     in property <bool> indicator-below;
     pure callback payload(SessionRowData) -> data-transfer;
@@ -99,6 +101,7 @@ component SessionRow inherits Rectangle {
 
     row-drag := DragArea {
         data: root.payload(root.data);
+        enabled: root.draggable;
         allow-move: true;
         // A DragArea without a mouse-handling child stops starting drags
         // (docs/architecture.md, findings); the click attaches.
@@ -292,6 +295,7 @@ export component AppWindow inherits Window {
                         count: group.count;
                     }
                     for session in group.rows: row-drop := DropArea {
+                        enabled: !group.needs-you;
                         can-drop(event) => {
                             root.indicator-after = event.position.y > self.height / 2;
                             DragAction.move
@@ -302,6 +306,7 @@ export component AppWindow inherits Window {
                         }
                         SessionRow {
                             data: session;
+                            draggable: !group.needs-you;
                             indicator-above: row-drop.has-drag && !root.indicator-after;
                             indicator-below: row-drop.has-drag && root.indicator-after;
                             payload(row) => { root.payload(row) }
@@ -311,7 +316,9 @@ export component AppWindow inherits Window {
                     // Below the last row (the only target of an empty group):
                     // dropping here appends to the group.
                     group-end := DropArea {
-                        height: Theme.group-end-drop-height + (group.rows.length == 0 ? Theme.row-height : 0px);
+                        enabled: !group.needs-you;
+                        visible: !group.needs-you;
+                        height: group.needs-you ? 0px : Theme.group-end-drop-height + (group.rows.length == 0 ? Theme.row-height : 0px);
                         can-drop(event) => {
                             DragAction.move
                         }

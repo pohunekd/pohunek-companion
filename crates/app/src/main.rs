@@ -9,8 +9,8 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupSection, LayoutStore, LiveUpdate,
-    NEEDS_YOU_ID, OwnerState, Placement, SessionKey, SessionRow, TraySummary, attach,
-    clip_display, layout_path, run_live, with_needs_you,
+    NEEDS_YOU_ID, OwnerState, Placement, SessionKey, SessionRow, TraySummary, attach, clip_display,
+    layout_path, run_live, with_needs_you,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{error, info, warn};
@@ -142,7 +142,7 @@ fn spawn_drop_worker(
                 (Some(moved), Some(saved)) => Some(format!("{moved}\n{saved}")),
                 (moved, saved) => moved.or(saved),
             };
-            let sections = state.store.layout().arrange(&state.rows);
+            let sections = with_needs_you(state.store.layout().arrange(&state.rows));
             if let Err(err) = window.upgrade_in_event_loop(move |window| {
                 window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
                 window.set_layout_error(layout_error.unwrap_or_default().into());
