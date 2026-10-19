@@ -126,6 +126,7 @@ component SessionRow inherits Rectangle {
     pure callback payload(SessionRowData) -> data-transfer;
     callback clicked();
     callback move-to-group(string);
+    callback new-group();
     callback return-to-rule();
 
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
@@ -163,6 +164,11 @@ component SessionRow inherits Rectangle {
                     checked: owner-group.id == root.data.owner-group;
                     enabled: owner-group.id != root.data.owner-group;
                     activated => { root.move-to-group(owner-group.id); }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    title: "New group...";
+                    activated => { root.new-group(); }
                 }
             }
             if root.arrangeable && root.data.manual: MenuItem {
@@ -433,6 +439,8 @@ export component AppWindow inherits Window {
     // Why the last group operation was refused; empty when it succeeded.
     in property <string> group-error;
     callback create-group(string);
+    // Creates a group and moves the session (host, id) to its end.
+    callback create-group-and-move(string, string, string);
     callback rename-group(string, string);
     callback toggle-group(string, bool);
     callback delete-group(string);
@@ -442,6 +450,19 @@ export component AppWindow inherits Window {
     // Dropped group payload, the group it landed on, and whether after it.
     callback drop-group(data-transfer, string, bool);
     in-out property <bool> creating-group;
+    // The session (host, id) a "New group..." menu entry is creating the group
+    // for; empty when the editor was opened by "+ New group".
+    in-out property <string> pending-host;
+    in-out property <string> pending-id;
+    // The name editor is only shown in an editable view; leaving one ends the
+    // edit so it cannot resume later for the old session.
+    changed editable => {
+        if !self.editable {
+            self.creating-group = false;
+            self.pending-host = "";
+            self.pending-id = "";
+        }
+    }
     // Id of the group whose name is being edited; empty when none is.
     in-out property <string> editing-group;
     // The text typed into that group's name editor.
@@ -520,6 +541,8 @@ export component AppWindow inherits Window {
             capture-key-pressed(event) => {
                 if event.text == Key.Escape {
                     root.creating-group = false;
+                    root.pending-host = "";
+                    root.pending-id = "";
                     return accept;
                 }
                 reject
@@ -531,7 +554,13 @@ export component AppWindow inherits Window {
                 init => { self.focus(); }
                 accepted(value) => {
                     root.creating-group = false;
-                    root.create-group(value);
+                    if root.pending-id != "" {
+                        root.create-group-and-move(value, root.pending-host, root.pending-id);
+                    } else {
+                        root.create-group(value);
+                    }
+                    root.pending-host = "";
+                    root.pending-id = "";
                 }
             }
         }
@@ -591,6 +620,11 @@ export component AppWindow inherits Window {
                                 arrangeable: root.editable;
                                 clicked => { root.attach(session.host, session.id, session.attach-refusal); }
                                 move-to-group(target) => { root.move-to-group(session.host, session.id, target); }
+                                new-group => {
+                                    root.pending-host = session.host;
+                                    root.pending-id = session.id;
+                                    root.creating-group = true;
+                                }
                                 return-to-rule => { root.return-to-rule(session.host, session.id); }
                             }
                         }

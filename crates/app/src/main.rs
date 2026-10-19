@@ -183,6 +183,11 @@ enum LayoutRequest {
         anchor: Option<(SessionKey, bool)>,
     },
     CreateGroup(String),
+    /// Creates a group and moves the session to its end in one change.
+    CreateGroupAndMove {
+        name: String,
+        key: SessionKey,
+    },
     RenameGroup {
         id: String,
         name: String,
@@ -265,6 +270,13 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
                 .err()
                 .and_then(|err| group_refusal("create the group", "new", &err)),
         ),
+        LayoutRequest::CreateGroupAndMove { name, key } => {
+            let outcome = state.store.create_group_and_move(&name, &key);
+            group(outcome.err().map(|err| {
+                warn!(session = %key.session_id, reason = err.kind(), "group operation refused");
+                format!("Cannot create the group: {err}")
+            }))
+        }
         LayoutRequest::RenameGroup { id, name } => group(
             state
                 .store
@@ -680,6 +692,18 @@ fn main() -> Result<(), slint::PlatformError> {
         window.on_create_group({
             let send = send.clone();
             move |name| send(LayoutRequest::CreateGroup(name.into()))
+        });
+        window.on_create_group_and_move({
+            let send = send.clone();
+            move |name, host, id| {
+                send(LayoutRequest::CreateGroupAndMove {
+                    name: name.into(),
+                    key: SessionKey {
+                        host: host.into(),
+                        session_id: id.into(),
+                    },
+                })
+            }
         });
         window.on_rename_group({
             let send = send.clone();
