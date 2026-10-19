@@ -1,0 +1,215 @@
+import { LineEdit, TextEdit } from "std-widgets.slint";
+import { ChoiceChips } from "choice_chips.slint";
+import { Theme } from "app.slint";
+
+global DialogTheme {
+    out property <length> padding: 16px;
+    out property <length> spacing: 10px;
+    out property <length> label-font-size: 12px;
+    out property <length> field-spacing: 4px;
+    out property <length> prompt-height: 90px;
+    out property <length> button-height: 30px;
+    out property <length> button-width: 96px;
+    out property <length> button-radius: 4px;
+    out property <length> focus-border-width: 1px;
+    out property <length> focus-radius: 14px;
+    out property <color> focus-border: #4a6fa5;
+    out property <color> button-disabled: #3a3d44;
+}
+
+// A single-choice chip row that takes keyboard focus: Left and Right move the
+// selection.
+component ChipField inherits FocusScope {
+    in property <[string]> model;
+    in-out property <int> selected-index: -1;
+    callback selected(int);
+
+    key-pressed(event) => {
+        if event.text == Key.RightArrow && root.selected-index < root.model.length - 1 {
+            root.selected-index += 1;
+            root.selected(root.selected-index);
+            return accept;
+        }
+        if event.text == Key.LeftArrow && root.selected-index > 0 {
+            root.selected-index -= 1;
+            root.selected(root.selected-index);
+            return accept;
+        }
+        return reject;
+    }
+
+    Rectangle {
+        border-width: root.has-focus ? DialogTheme.focus-border-width : 0px;
+        border-color: DialogTheme.focus-border;
+        border-radius: DialogTheme.focus-radius;
+        ChoiceChips {
+            model: root.model;
+            selected-index <=> root.selected-index;
+            chip-height: Theme.chip-height;
+            chip-padding: Theme.chip-padding;
+            chip-radius: Theme.chip-radius;
+            chip-spacing: Theme.chip-spacing;
+            font-size: Theme.chip-font-size;
+            chip-background: Theme.chip-background;
+            chip-hover-background: Theme.chip-hover-background;
+            chip-selected-background: Theme.chip-selected-background;
+            text-color: Theme.detail;
+            selected-text-color: Theme.text;
+            selected(index) => {
+                root.focus();
+                root.selected(index);
+            }
+        }
+    }
+}
+
+component FieldLabel inherits Text {
+    font-size: DialogTheme.label-font-size;
+    color: Theme.detail;
+}
+
+export component NewSessionWindow inherits Window {
+    title: "New session";
+    preferred-width: 480px;
+    preferred-height: 420px;
+    background: Theme.background;
+    forward-focus: project-field;
+
+    // Project labels and launchable agent names, in the order offered.
+    in property <[string]> project-names;
+    in property <[string]> agent-names;
+    in-out property <int> project-index: -1;
+    in-out property <int> agent-index: -1;
+    in-out property <string> session-name;
+    in-out property <string> prompt;
+    // The choices are still being read from the daemon.
+    in property <bool> loading: true;
+    // A create request is in flight, or its outcome is unknown and it must
+    // not be repeated.
+    in property <bool> busy;
+    // Why the choices or the create failed; empty when there is nothing to show.
+    in property <string> error;
+    callback submit();
+    callback cancel();
+
+    pure function can-submit() -> bool {
+        !root.loading && !root.busy && root.project-index >= 0 && root.agent-index >= 0
+    }
+
+    function try-submit() {
+        if root.can-submit() {
+            root.submit();
+        }
+    }
+
+    FocusScope {
+        // Captured before the focused field sees the key: `TextEdit` consumes
+        // Enter itself.
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            if event.text == Key.Return && event.modifiers.control {
+                root.try-submit();
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            padding: DialogTheme.padding;
+            spacing: DialogTheme.spacing;
+
+            VerticalLayout {
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Project"; }
+                project-field := ChipField {
+                    model: root.project-names;
+                    selected-index <=> root.project-index;
+                }
+            }
+            VerticalLayout {
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Agent"; }
+                agent-field := ChipField {
+                    model: root.agent-names;
+                    selected-index <=> root.agent-index;
+                }
+            }
+            VerticalLayout {
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Name (optional)"; }
+                name-edit := LineEdit {
+                    text <=> root.session-name;
+                    accepted => { root.try-submit(); }
+                }
+            }
+            VerticalLayout {
+                vertical-stretch: 1;
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Prompt (optional, Ctrl+Enter creates)"; }
+                prompt-edit := TextEdit {
+                    text <=> root.prompt;
+                    min-height: DialogTheme.prompt-height;
+                    wrap: word-wrap;
+                }
+            }
+            if root.loading: loading-text := Text {
+                text: "Reading projects and agents from the daemon...";
+                color: Theme.detail;
+                font-size: Theme.error-font-size;
+            }
+            if root.error != "": error-text := Text {
+                text: root.error;
+                color: Theme.error;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: DialogTheme.spacing;
+                cancel-button := Rectangle {
+                    width: DialogTheme.button-width;
+                    height: DialogTheme.button-height;
+                    border-radius: DialogTheme.button-radius;
+                    background: cancel-touch.has-hover ? Theme.chip-hover-background : Theme.chip-background;
+                    Text {
+                        text: "Cancel";
+                        color: Theme.text;
+                    }
+                    cancel-touch := TouchArea {
+                        clicked => { root.cancel(); }
+                    }
+                }
+                create-button := FocusScope {
+                    width: DialogTheme.button-width;
+                    height: DialogTheme.button-height;
+                    key-pressed(event) => {
+                        if event.text == Key.Return || event.text == " " {
+                            root.try-submit();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                    Rectangle {
+                        border-radius: DialogTheme.button-radius;
+                        border-width: create-button.has-focus ? DialogTheme.focus-border-width : 0px;
+                        border-color: DialogTheme.focus-border;
+                        background: !root.can-submit() ? DialogTheme.button-disabled
+                            : create-touch.has-hover ? Theme.chip-selected-background.brighter(0.2)
+                            : Theme.chip-selected-background;
+                        Text {
+                            text: root.busy ? "Creating..." : "Create";
+                            color: root.can-submit() ? Theme.text : Theme.detail;
+                        }
+                        create-touch := TouchArea {
+                            enabled: root.can-submit();
+                            clicked => { root.try-submit(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

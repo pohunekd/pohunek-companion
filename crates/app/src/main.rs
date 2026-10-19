@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
 mod logging;
+mod new_session;
 mod tray;
 
 use pohunek_companion_core::{
@@ -496,7 +497,34 @@ fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> R
     })
 }
 
+const NEW_SESSION_COMMAND: &str = "new-session";
+
 fn main() -> Result<(), slint::PlatformError> {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        None => run_sidebar(),
+        Some(NEW_SESSION_COMMAND) => {
+            let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
+                eprintln!(
+                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID]]"
+                );
+                std::process::exit(2);
+            });
+            if let Err(err) = logging::init() {
+                eprintln!("logging disabled: {err}");
+            }
+            new_session::run(parsed)
+        }
+        Some(other) => {
+            eprintln!(
+                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID]]"
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
+fn run_sidebar() -> Result<(), slint::PlatformError> {
     let log_error = match logging::init() {
         Ok(path) => {
             info!(log = %path.display(), "companion started");

@@ -69,6 +69,8 @@ pub struct Config {
     pub layout: LayoutConfig,
     /// `[view]` table: how the sidebar sections are titled.
     pub view: ViewConfig,
+    /// `[new_session]` table: how the new-session dialog creates sessions.
+    pub new_session: NewSessionConfig,
     /// `attach_command`: argv template that opens a session in a terminal,
     /// as an array of words (no shell is involved). Optional; when absent,
     /// clicking a session reports that attach is not configured. `{bin}`
@@ -111,6 +113,7 @@ impl Default for Config {
             tray: TrayConfig::default(),
             layout: LayoutConfig::default(),
             view: ViewConfig::default(),
+            new_session: NewSessionConfig::default(),
             attach_command: None,
             attach_terminal: None,
             pohunek_bin: "pohunek".to_owned(),
@@ -184,6 +187,40 @@ impl PlacementRule {
             );
         }
         None
+    }
+}
+
+/// `[new_session]` table.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct NewSessionConfig {
+    /// `new_session.cols`: initial terminal width of a created session, in
+    /// columns, greater than zero. Optional; default 80.
+    pub cols: u16,
+    /// `new_session.rows`: initial terminal height of a created session, in
+    /// rows, greater than zero. Optional; default 24.
+    pub rows: u16,
+    /// `new_session.create_timeout_ms`: time allowed for the daemon to answer
+    /// `session.new`, in milliseconds, greater than zero. Creation runs
+    /// project hooks and waits for the agent to accept the initial prompt, so
+    /// it is far longer than an ordinary request. A create that exceeds it has
+    /// an unknown outcome and is never resent. Optional; default 120000.
+    pub create_timeout_ms: u64,
+}
+
+impl Default for NewSessionConfig {
+    fn default() -> Self {
+        Self {
+            cols: 80,
+            rows: 24,
+            create_timeout_ms: 120_000,
+        }
+    }
+}
+
+impl NewSessionConfig {
+    pub fn create_timeout(&self) -> Duration {
+        Duration::from_millis(self.create_timeout_ms)
     }
 }
 
@@ -352,6 +389,12 @@ impl Config {
             ("daemon.connect_timeout_ms", self.daemon.connect_timeout_ms),
             ("daemon.request_timeout_ms", self.daemon.request_timeout_ms),
             ("attach_observe_ms", self.attach_observe_ms),
+            ("new_session.cols", u64::from(self.new_session.cols)),
+            ("new_session.rows", u64::from(self.new_session.rows)),
+            (
+                "new_session.create_timeout_ms",
+                self.new_session.create_timeout_ms,
+            ),
             ("tray.idle_threshold_secs", self.tray.idle_threshold_secs),
             (
                 "view.section_title_max_chars",
