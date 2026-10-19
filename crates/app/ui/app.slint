@@ -295,10 +295,8 @@ export component AppWindow inherits Window {
         session-list := ScrollView {
             VerticalLayout {
                 spacing: Theme.group-spacing;
-                alignment: start;
                 for group in root.groups: VerticalLayout {
                     spacing: Theme.row-spacing;
-                    alignment: start;
                     if group.needs-you: needs-you-header := GroupHeader {
                         name: group.name;
                         count: group.count;
