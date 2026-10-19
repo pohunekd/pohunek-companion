@@ -7,7 +7,8 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupSection, LayoutStore, LiveUpdate,
-    OwnerState, SessionKey, SessionRow, TraySummary, attach, clip_display, layout_path, run_live,
+    NEEDS_YOU_ID, OwnerState, SessionKey, SessionRow, TraySummary, attach, clip_display,
+    layout_path, run_live, with_needs_you,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{error, info, warn};
@@ -63,6 +64,7 @@ fn group_data(sections: Vec<GroupSection>) -> Vec<GroupData> {
     sections
         .into_iter()
         .map(|section| GroupData {
+            needs_you: section.id == NEEDS_YOU_ID,
             id: section.id.into(),
             name: section.name.into(),
             count: i32::try_from(section.rows.len()).unwrap_or(i32::MAX),
@@ -116,7 +118,10 @@ fn follow_daemon(
                             err.to_string()
                         })
                         .or_else(|| load_error.clone());
-                    Some((layout.layout().arrange(sessions), layout_error))
+                    Some((
+                        with_needs_you(layout.layout().arrange(sessions)),
+                        layout_error,
+                    ))
                 }
                 _ => None,
             };

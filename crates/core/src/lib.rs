@@ -11,6 +11,7 @@ mod error;
 mod layout;
 mod live;
 mod model;
+mod needs_you;
 mod owner_state;
 mod session;
 mod socket;
@@ -27,6 +28,7 @@ pub use layout::{
 };
 pub use live::{LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
+pub use needs_you::{NEEDS_YOU_ID, with_needs_you};
 pub use owner_state::{OwnerState, derive};
 pub use session::{ProjectRef, SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
