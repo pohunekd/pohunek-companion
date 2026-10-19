@@ -54,8 +54,13 @@ links to them. Edit only `.agents/skills/`.
 ```bash
 scripts/gates                 # fmt, clippy, tests: the same set CI runs
 cargo run -p pohunek-companion
-scripts/ui-agent start        # headless app + Slint MCP: screenshots, element tree, clicks
+scripts/ui-agent start        # headless app + isolated daemon + Slint MCP: screenshots, element tree, clicks
 ```
+
+The repository is public: published screenshots, logs, and PR or issue text
+come only from the isolated mode of `scripts/ui-agent` (synthetic sessions on
+its own daemon). Checks against the owner's daemon are described in words only;
+see "Published evidence" in verification.md.
 
 Never read `.env*`, key, or credential files, and never print a secret value.
 Never call `env` or `printenv` (the owner's agent settings stop on them):

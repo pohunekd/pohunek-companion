@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Runs the companion with Slint's embedded MCP server so an agent can take
 # screenshots, read the element tree, and click, without touching the owner's
-# desktop. The MCP feature is a command-line feature of this script only; it
+# desktop. By default it also starts an isolated Pohunek daemon with a few
+# synthetic sessions, so nothing about the owner's real sessions can reach a
+# screenshot, log, or PR. The MCP feature is a command-line feature of this script only; it
 # is never part of Cargo.toml features, so normal and release builds do not
 # contain the server.
 #
-#   scripts/ui-agent start [--port N] [--windowed]   build, run, print endpoint
+#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon]
+#                                                    build, run, print endpoint
 #   scripts/ui-agent stop                            stop the instance
 #   scripts/ui-agent status                          print the endpoint if running
 #   scripts/ui-agent call TOOL [JSON_ARGS]           one MCP tools/call, JSON out
@@ -16,9 +19,30 @@
 #   scripts/ui-agent log                             print the app's JSON log path
 #   scripts/ui-agent layout                          print the run's own layout.toml path
 #
+# Isolated mode (the default) runs `pohunekd --dev-subprocess` with its own
+# XDG_RUNTIME_DIR, state, config, data, and cache directories under one
+# temporary directory, creates the synthetic sessions, and `stop` stops the
+# daemon and deletes that directory. `--owner-daemon` connects to the owner's
+# real daemon instead; its output must never be published (see
+# .agents/instructions/verification.md).
+#
+# Overrides: POHUNEK_CLI (the pohunek CLI, default `pohunek` on PATH) and
+# POHUNEKD (the daemon binary, default: next to the CLI, then
+# ~/.local/libexec/pohunek/<cli version>/pohunekd, then PATH).
+#
 # The server binds 127.0.0.1 without authentication: any local process can
 # drive the app while it runs. Use only for agent-run debug builds.
 set -euo pipefail
+shopt -s inherit_errexit
+
+# A session's inherited POHUNEK_* variables (socket path, session id) must not
+# steer the CLI or the app to another daemon; only the two overrides survive.
+for name in $(compgen -e | grep '^POHUNEK_' || true); do
+    case $name in
+        POHUNEK_CLI | POHUNEKD) ;;
+        *) unset "$name" ;;
+    esac
+done
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 state=${UI_AGENT_DIR:-$root/target/ui-agent}
@@ -27,6 +51,10 @@ state=$(cd "$state" && pwd)
 bin=$state/cargo-target/debug/pohunek-companion
 pidfile=$state/pid
 endpoint_file=$state/endpoint
+iso_file=$state/isolated-dir
+daemon_pidfile=$state/daemon-pid
+iso_prefix=ph-ui-agent
+cli=${POHUNEK_CLI:-pohunek}
 app_log=$state/stdout.log
 
 die() {
@@ -64,8 +92,148 @@ endpoint() {
     cat "$endpoint_file"
 }
 
+# Synthetic sessions of the isolated daemon: name, then optional Work metadata.
+synthetic_sessions=(
+    "alpha-agent|work.link.provider=github work.link.kind=pr work.link.id=12 work.role=implementer"
+    "beta-review|work.link.provider=github work.link.kind=issue work.link.id=34 work.role=reviewer"
+    "gamma-docs|"
+    "delta-build|"
+)
+
+find_daemon_bin() {
+    if [ -n "${POHUNEKD:-}" ]; then
+        echo "$POHUNEKD"
+        return 0
+    fi
+    local cli_path version candidate
+    cli_path=$(command -v "$cli") || die "cannot find the pohunek CLI ($cli); set POHUNEK_CLI"
+    candidate=$(dirname "$cli_path")/pohunekd
+    if [ ! -x "$candidate" ]; then
+        version=$("$cli" --version | awk '{print $2}')
+        candidate=$HOME/.local/libexec/pohunek/$version/pohunekd
+    fi
+    if [ ! -x "$candidate" ]; then
+        candidate=$(command -v pohunekd) || die "cannot find pohunekd; set POHUNEKD"
+    fi
+    echo "$candidate"
+}
+
+# The isolated XDG environment, one `KEY=value` per line.
+isolated_env() {
+    local iso=$1
+    echo "XDG_RUNTIME_DIR=$iso/run"
+    echo "XDG_STATE_HOME=$iso/state"
+    echo "XDG_CONFIG_HOME=$iso/config"
+    echo "XDG_DATA_HOME=$iso/data"
+    echo "XDG_CACHE_HOME=$iso/cache"
+}
+
+# Removes the isolated directory, but only a directory this script created.
+remove_iso_dir() {
+    local iso
+    [ -f "$iso_file" ] || return 0
+    iso=$(cat "$iso_file")
+    case $iso in
+        /tmp/"$iso_prefix".*) rm -rf "$iso" ;;
+        *) echo "ui-agent: refusing to remove unexpected directory: $iso" >&2 ;;
+    esac
+    rm -f "$iso_file"
+}
+
+# Starts the isolated daemon and its synthetic sessions; prints the directory.
+start_isolated_daemon() {
+    need "$cli"
+    local iso bin_dir daemon_bin i line name meta
+    daemon_bin=$(find_daemon_bin) || exit 1
+    iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
+    echo "$iso" >"$iso_file"
+    mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/work" &&
+        chmod 700 "$iso" "$iso/run" &&
+        ln -s "$daemon_bin" "$iso/bin/pohunekd" ||
+        { stop >/dev/null 2>&1 || true; die "cannot prepare the isolated directory"; }
+    local -a envs
+    mapfile -t envs < <(isolated_env "$iso")
+    (
+        cd "$iso/work"
+        exec env "${envs[@]}" "PATH=$iso/bin:$PATH" setsid "$cli" daemon start --dev-subprocess \
+            >"$iso/daemon.log" 2>&1 </dev/null
+    ) &
+    echo $! >"$daemon_pidfile"
+    for i in $(seq 1 100); do
+        [ -S "$iso/run/pohunek/daemon.sock" ] && env "${envs[@]}" "$cli" health >/dev/null 2>&1 && break
+        sleep 0.2
+    done
+    env "${envs[@]}" "$cli" health >/dev/null 2>&1 ||
+        { stop >/dev/null 2>&1 || true; die "the isolated daemon did not start; see $iso/daemon.log"; }
+    for line in "${synthetic_sessions[@]}"; do
+        name=${line%%|*}
+        meta=${line#*|}
+        local -a args=(session new --agent shell --name "$name" --cwd "$iso/work" --json)
+        for kv in $meta; do args+=(--meta "$kv"); done
+        env "${envs[@]}" "$cli" "${args[@]}" >/dev/null || { stop >/dev/null 2>&1 || true; die "cannot create session $name"; }
+    done
+    echo "$iso"
+}
+
+# Calls `fn` with the pid of every process whose environment carries the
+# isolated XDG_RUNTIME_DIR: the daemon and its workers, nothing else.
+each_isolated_pid() {
+    local iso=$1 pid_dir
+    for pid_dir in /proc/[0-9]*; do
+        if { tr '\0' '\n' <"$pid_dir/environ"; } 2>/dev/null | grep -qxF "XDG_RUNTIME_DIR=$iso/run"; then
+            echo "${pid_dir#/proc/}"
+        fi
+    done
+}
+
+kill_isolated() {
+    local pid
+    for pid in $(each_isolated_pid "$1"); do
+        kill "-$2" "$pid" 2>/dev/null || true
+    done
+}
+
+daemon_alive() {
+    [ -n "$(each_isolated_pid "$1")" ]
+}
+
+# Stops the isolated daemon: its sessions first, then the daemon itself.
+stop_isolated_daemon() {
+    [ -f "$iso_file" ] || return 0
+    local iso id i
+    iso=$(cat "$iso_file")
+    case $iso in
+        */../* | */..) iso="" ;;
+        /tmp/"$iso_prefix".*) ;;
+        *) iso="" ;;
+    esac
+    if [ -z "$iso" ] || [ ! -d "$iso" ]; then
+        echo "ui-agent: ignoring an invalid isolated directory record" >&2
+        rm -f "$iso_file" "$daemon_pidfile"
+        return 0
+    fi
+    local -a envs
+    mapfile -t envs < <(isolated_env "$iso")
+    if [ -S "$iso/run/pohunek/daemon.sock" ]; then
+        for id in $(env "${envs[@]}" "$cli" session list --json 2>/dev/null | jq -r '.. | objects | select(has("id")) | .id' 2>/dev/null); do
+            env "${envs[@]}" "$cli" session rm "$id" >/dev/null 2>&1 || true
+        done
+    fi
+    kill_isolated "$iso" TERM
+    for i in $(seq 1 50); do
+        daemon_alive "$iso" || break
+        sleep 0.1
+    done
+    if daemon_alive "$iso"; then
+        kill_isolated "$iso" KILL
+        sleep 0.5
+    fi
+    rm -f "$daemon_pidfile"
+    remove_iso_dir
+}
+
 start() {
-    local port="" windowed=0
+    local port="" windowed=0 isolated=1
     while [ $# -gt 0 ]; do
         case $1 in
             --port)
@@ -77,6 +245,7 @@ start() {
                 shift 2
                 ;;
             --windowed) windowed=1; shift ;;
+            --owner-daemon) isolated=0; shift ;;
             *) die "unknown start option: $1" ;;
         esac
     done
@@ -89,6 +258,7 @@ start() {
     [ -n "$port" ] || port=$(free_port)
 
     mkdir -p "$state"
+    stop_isolated_daemon
     # Debug info is what gives elements their ids; the separate target dir
     # keeps the MCP build from invalidating the normal one.
     (
@@ -97,6 +267,11 @@ start() {
             cargo build --locked -p pohunek-companion \
             --features slint/mcp,slint/renderer-software
     ) >&2
+
+    local iso=""
+    if [ "$isolated" -eq 1 ]; then
+        iso=$(start_isolated_daemon)
+    fi
 
     # A temporary config whose attach command is harmless (a click on a
     # session row runs `true` instead of opening a terminal on the owner's
@@ -115,6 +290,13 @@ start() {
         "XDG_CONFIG_HOME=$state/config"
         "XDG_STATE_HOME=$state/state"
     )
+    if [ -n "$iso" ]; then
+        # The companion's config and layout live in the isolated directory too.
+        mkdir -p "$iso/config/pohunek"
+        echo 'attach_command = ["true"]' >"$iso/config/pohunek/companion.toml"
+        mapfile -t envs < <(isolated_env "$iso")
+        envs+=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port")
+    fi
     if [ "$windowed" -eq 0 ]; then
         # No display variables: the headless backend renders in process.
         envs+=(SLINT_BACKEND=headless-software)
@@ -143,22 +325,22 @@ start() {
 
 stop() {
     local pid
-    if ! pid=$(running_pid); then
-        rm -f "$pidfile" "$endpoint_file"
+    if pid=$(running_pid); then
+        kill "$pid"
+        local i
+        for i in $(seq 1 50); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            die "process $pid did not exit after SIGTERM"
+        fi
+        echo "stopped"
+    else
         echo "not running"
-        return 0
-    fi
-    kill "$pid"
-    local i
-    for i in $(seq 1 50); do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.1
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-        die "process $pid did not exit after SIGTERM"
     fi
     rm -f "$pidfile" "$endpoint_file"
-    echo "stopped"
+    stop_isolated_daemon
 }
 
 rpc() {
@@ -225,6 +407,12 @@ case $cmd in
         call_json click_element "$(jq -cn --argjson h "$eh" '{elementHandle:$h,action:"SingleClick",button:"Left"}')"
         ;;
     log) echo "$state/logs/companion.json" ;;
-    layout) echo "$state/state/pohunek-companion/layout.toml" ;;
+    layout)
+        if [ -f "$iso_file" ]; then
+            echo "$(cat "$iso_file")/state/pohunek-companion/layout.toml"
+        else
+            echo "$state/state/pohunek-companion/layout.toml"
+        fi
+        ;;
     *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
