@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use pohunek_client::protocol::method::{HostInspect, ProjectAction, ProjectActions, ProjectList};
 use pohunek_client::protocol::{
-    ActionSummary, AgentRuntime, HostCapabilities, ProjectActionParams, ProjectActionResult,
-    ProjectActionsParams, ProjectInfo, ProjectListParams, ProviderKind, SessionNewParams,
+    ActionSummary, AgentRuntime, ProjectActionParams, ProjectActionResult, ProjectActionsParams,
+    ProjectInfo, ProjectListParams, ProviderKind, SessionNewParams,
 };
 use pohunek_client::{Client, ClientError};
 use tracing::{error, info};
@@ -29,12 +29,44 @@ pub struct ProjectChoice {
     pub label: String,
 }
 
+/// An agent the host reports, with the reason it cannot be launched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentChoice {
+    pub name: String,
+    /// `None` when the agent can be launched now.
+    pub unlaunchable: Option<String>,
+}
+
+impl AgentChoice {
+    pub fn is_launchable(&self) -> bool {
+        self.unlaunchable.is_none()
+    }
+}
+
 /// What the dialog offers, as the daemon reported it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Choices {
     pub projects: Vec<ProjectChoice>,
-    /// Agent names that can be launched now, in the daemon's order.
-    pub agents: Vec<String>,
+    /// Every agent the host reports: launchable ones first in the daemon's
+    /// order, then the unlaunchable ones.
+    pub agents: Vec<AgentChoice>,
+    /// `git` is present on the daemon's host.
+    pub git_available: bool,
+    /// The daemon's host supports a worktree per session.
+    pub worktree_supported: bool,
+}
+
+impl Choices {
+    pub fn has_launchable_agent(&self) -> bool {
+        self.agents.iter().any(AgentChoice::is_launchable)
+    }
+
+    /// Index of the launchable agent called `name`.
+    pub fn launchable_position(&self, name: &str) -> Option<usize> {
+        self.agents
+            .iter()
+            .position(|agent| agent.name == name && agent.is_launchable())
+    }
 }
 
 /// The launch recipe of a chosen project template. Its prompt is static text.
@@ -63,17 +95,40 @@ pub struct NewSessionForm {
     pub base_branch: String,
 }
 
+/// What the dialog is doing besides showing the form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Activity {
+    /// The choices are still being read from the daemon.
+    pub loading: bool,
+    /// A create request is in flight, or its outcome is unknown.
+    pub in_flight: bool,
+}
+
 /// Why a form cannot be submitted; the message is shown as is.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FormError {
+    #[error("Reading projects and agents from the daemon...")]
+    Loading,
+    #[error("A create request is in progress.")]
+    InFlight,
+    #[error("Project not found on this daemon: `{0}`.")]
+    RequestedProjectMissing(String),
+    #[error("The daemon has no projects.")]
+    NoProjectsOnDaemon,
     #[error("Choose a project.")]
     NoProject,
+    #[error("The daemon reports no launchable agent.")]
+    NoLaunchableAgent,
     #[error("Choose an agent.")]
     NoAgent,
     #[error("The agent `{0}` is not launchable on this host.")]
     AgentNotLaunchable(String),
     #[error("The template is still loading.")]
     TemplateLoading,
+    #[error("A branch or base branch is set, but `git` is not available on the daemon's host.")]
+    GitUnavailable,
+    #[error("A branch or base branch is set, but the daemon's host does not support worktrees.")]
+    WorktreeUnsupported,
 }
 
 /// Why a template could not be offered or applied.
@@ -133,20 +188,32 @@ impl CreateError {
     }
 }
 
-/// Whether a runtime can be launched by the public rule: present on the host
-/// and not reported as an unsupported version.
-fn launchable(runtime: &AgentRuntime) -> bool {
-    runtime.available && runtime.supported != Some(false)
+/// Why `runtime` cannot be launched, or `None` when it can: it must be present
+/// on the host and not reported as an unsupported version.
+fn unlaunchable_reason(runtime: &AgentRuntime) -> Option<String> {
+    if !runtime.available {
+        return Some("not available: binary not found on the daemon's PATH".to_owned());
+    }
+    if runtime.supported == Some(false) {
+        return Some(match runtime.version.as_deref().filter(|v| !v.is_empty()) {
+            Some(version) => format!("unsupported version ({version})"),
+            None => "unsupported version".to_owned(),
+        });
+    }
+    None
 }
 
-/// Launchable agent names, in the daemon's order.
-pub fn launchable_agents(capabilities: &HostCapabilities) -> Vec<String> {
-    capabilities
-        .runtimes
+/// Every reported agent, launchable ones first; each group keeps the
+/// daemon's order.
+fn agent_choices(runtimes: &[AgentRuntime]) -> Vec<AgentChoice> {
+    let (launchable, blocked): (Vec<_>, Vec<_>) = runtimes
         .iter()
-        .filter(|runtime| launchable(runtime))
-        .map(|runtime| runtime.agent.clone())
-        .collect()
+        .map(|runtime| AgentChoice {
+            name: runtime.agent.clone(),
+            unlaunchable: unlaunchable_reason(runtime),
+        })
+        .partition(AgentChoice::is_launchable);
+    launchable.into_iter().chain(blocked).collect()
 }
 
 fn trimmed_or_none(text: &str) -> Option<String> {
@@ -154,35 +221,86 @@ fn trimmed_or_none(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// Validates `form` against the offered `agents` and builds the request.
-pub fn build_params(
-    form: &NewSessionForm,
-    agents: &[String],
-    config: &NewSessionConfig,
-) -> Result<SessionNewParams, FormError> {
-    let project = form
-        .project
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .ok_or(FormError::NoProject)?;
-    let agent = form
-        .agent
-        .as_deref()
-        .filter(|agent| !agent.is_empty())
-        .ok_or(FormError::NoAgent)?;
-    if !agents.iter().any(|offered| offered == agent) {
-        return Err(FormError::AgentNotLaunchable(agent.to_owned()));
-    }
-    if form.template_loading {
-        return Err(FormError::TemplateLoading);
-    }
-    let (branch, base_branch) = match &form.recipe {
+/// The branch and base branch the request will carry: the template's, or the
+/// Blank overrides.
+fn branch_overrides(form: &NewSessionForm) -> (Option<String>, Option<String>) {
+    match &form.recipe {
         Some(recipe) => (recipe.branch.clone(), recipe.base_branch.clone()),
         None => (
             trimmed_or_none(&form.branch),
             trimmed_or_none(&form.base_branch),
         ),
+    }
+}
+
+/// The first reason `form` cannot be submitted, in the order the owner should
+/// fix them; `None` when Create is allowed. `requested_project` is the id
+/// given on the command line.
+pub fn submit_blocker(
+    form: &NewSessionForm,
+    choices: &Choices,
+    requested_project: Option<&str>,
+    activity: Activity,
+) -> Option<FormError> {
+    if activity.loading {
+        return Some(FormError::Loading);
+    }
+    if activity.in_flight {
+        return Some(FormError::InFlight);
+    }
+    // Picking a project by hand supersedes a missing command-line one.
+    if let Some(id) = requested_project
+        && form.project.as_deref().is_none_or(str::is_empty)
+        && !choices.projects.iter().any(|project| project.id == id)
+    {
+        return Some(FormError::RequestedProjectMissing(id.to_owned()));
+    }
+    if choices.projects.is_empty() {
+        return Some(FormError::NoProjectsOnDaemon);
+    }
+    if form.project.as_deref().is_none_or(str::is_empty) {
+        return Some(FormError::NoProject);
+    }
+    if !choices.has_launchable_agent() {
+        return Some(FormError::NoLaunchableAgent);
+    }
+    let Some(agent) = form.agent.as_deref().filter(|agent| !agent.is_empty()) else {
+        return Some(FormError::NoAgent);
     };
+    if choices.launchable_position(agent).is_none() {
+        return Some(FormError::AgentNotLaunchable(agent.to_owned()));
+    }
+    if form.template_loading {
+        return Some(FormError::TemplateLoading);
+    }
+    let (branch, base_branch) = branch_overrides(form);
+    if branch.is_some() || base_branch.is_some() {
+        if !choices.git_available {
+            return Some(FormError::GitUnavailable);
+        }
+        if !choices.worktree_supported {
+            return Some(FormError::WorktreeUnsupported);
+        }
+    }
+    None
+}
+
+/// Validates `form` against the offered `choices` and builds the request.
+pub fn build_params(
+    form: &NewSessionForm,
+    choices: &Choices,
+    requested_project: Option<&str>,
+    activity: Activity,
+    config: &NewSessionConfig,
+) -> Result<SessionNewParams, FormError> {
+    if let Some(blocker) = submit_blocker(form, choices, requested_project, activity) {
+        return Err(blocker);
+    }
+    // `submit_blocker` returned `None`, so project and agent are set.
+    let (Some(project), Some(agent)) = (form.project.as_deref(), form.agent.as_deref()) else {
+        return Err(FormError::NoProject);
+    };
+    let (branch, base_branch) = branch_overrides(form);
     Ok(SessionNewParams {
         agent: agent.to_owned(),
         name: trimmed_or_none(&form.name),
@@ -216,7 +334,9 @@ async fn read_choices(client: &mut Client) -> Result<Choices, CoreError> {
     let capabilities = client.call::<HostInspect>(()).await?;
     Ok(Choices {
         projects: project_choices(projects),
-        agents: launchable_agents(&capabilities),
+        agents: agent_choices(&capabilities.runtimes),
+        git_available: capabilities.git_available,
+        worktree_supported: capabilities.worktree_supported,
     })
 }
 
@@ -228,6 +348,7 @@ pub async fn load_choices(daemon: &DaemonConfig) -> Result<Choices, CoreError> {
     info!(
         projects = choices.projects.len(),
         agents = choices.agents.len(),
+        launchable = choices.agents.iter().filter(|a| a.is_launchable()).count(),
         "new-session choices loaded"
     );
     Ok(choices)
@@ -354,8 +475,36 @@ mod tests {
         }
     }
 
-    fn agents() -> Vec<String> {
-        vec!["shell".to_owned(), "claude".to_owned()]
+    fn choice(name: &str, unlaunchable: Option<&str>) -> AgentChoice {
+        AgentChoice {
+            name: name.to_owned(),
+            unlaunchable: unlaunchable.map(str::to_owned),
+        }
+    }
+
+    fn choices() -> Choices {
+        Choices {
+            projects: vec![ProjectChoice {
+                id: "p-1".to_owned(),
+                label: "proj".to_owned(),
+            }],
+            agents: vec![
+                choice("shell", None),
+                choice("claude", None),
+                choice("codex", Some("x")),
+            ],
+            git_available: true,
+            worktree_supported: true,
+        }
+    }
+
+    fn blocker(
+        form: &NewSessionForm,
+        choices: &Choices,
+        requested: Option<&str>,
+        activity: Activity,
+    ) -> Option<FormError> {
+        submit_blocker(form, choices, requested, activity)
     }
 
     fn form() -> NewSessionForm {
@@ -380,20 +529,28 @@ mod tests {
     }
 
     #[test]
-    fn launchable_rule_covers_available_and_supported() {
-        for (available, supported, expected) in [
-            (true, None, true),
-            (true, Some(true), true),
-            (true, Some(false), false),
-            (false, None, false),
-            (false, Some(true), false),
-        ] {
-            assert_eq!(
-                launchable(&runtime("a", available, supported)),
-                expected,
-                "available={available} supported={supported:?}"
-            );
-        }
+    fn agent_reasons_name_the_cause_and_launchable_agents_come_first() {
+        let mut old = runtime("old", true, Some(false));
+        old.version = Some("0.1.2".to_owned());
+        let runtimes = vec![
+            runtime("missing", false, None),
+            old,
+            runtime("odd", true, Some(false)),
+            runtime("ok", true, Some(true)),
+        ];
+        let agents = agent_choices(&runtimes);
+        let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["ok", "missing", "old", "odd"]);
+        let reasons: Vec<_> = agents.iter().map(|a| a.unlaunchable.as_deref()).collect();
+        assert_eq!(
+            reasons,
+            [
+                None,
+                Some("not available: binary not found on the daemon's PATH"),
+                Some("unsupported version (0.1.2)"),
+                Some("unsupported version"),
+            ]
+        );
     }
 
     #[test]
@@ -403,7 +560,7 @@ mod tests {
             rows: 50,
             ..NewSessionConfig::default()
         };
-        let params = build_params(&form(), &agents(), &config).unwrap();
+        let params = build_params(&form(), &choices(), None, Activity::default(), &config).unwrap();
         assert_eq!(params.name.as_deref(), Some("epsilon-new"));
         assert_eq!(params.input.as_deref(), Some("echo hi"));
         assert_eq!(params.project.as_deref(), Some("p-1"));
@@ -420,37 +577,200 @@ mod tests {
             prompt: "\n\n".to_owned(),
             ..form()
         };
-        let params = build_params(&form, &agents(), &NewSessionConfig::default()).unwrap();
+        let params = build_params(
+            &form,
+            &choices(),
+            None,
+            Activity::default(),
+            &NewSessionConfig::default(),
+        )
+        .unwrap();
         assert_eq!((params.name, params.input), (None, None));
         assert_eq!((params.cols, params.rows), (80, 24));
     }
 
     #[test]
-    fn project_and_launchable_agent_are_required() {
-        let config = NewSessionConfig::default();
+    fn each_blocker_is_reported() {
+        let idle = Activity::default();
+        let with = |f: NewSessionForm| blocker(&f, &choices(), None, idle);
+        assert_eq!(with(form()), None);
+        assert_eq!(
+            with(NewSessionForm {
+                project: None,
+                ..form()
+            }),
+            Some(FormError::NoProject)
+        );
+        assert_eq!(
+            with(NewSessionForm {
+                agent: None,
+                ..form()
+            }),
+            Some(FormError::NoAgent)
+        );
+        for ghost in ["ghost", "codex"] {
+            assert_eq!(
+                with(NewSessionForm {
+                    agent: Some(ghost.to_owned()),
+                    ..form()
+                }),
+                Some(FormError::AgentNotLaunchable(ghost.to_owned()))
+            );
+        }
         let no_project = NewSessionForm {
             project: None,
             ..form()
         };
         assert_eq!(
-            build_params(&no_project, &agents(), &config).unwrap_err(),
-            FormError::NoProject
+            blocker(&no_project, &choices(), Some("gone"), idle),
+            Some(FormError::RequestedProjectMissing("gone".to_owned()))
         );
-        let no_agent = NewSessionForm {
+        // A project picked by hand supersedes a missing command-line one.
+        assert_eq!(blocker(&form(), &choices(), Some("gone"), idle), None);
+        let busy = Activity {
+            in_flight: true,
+            ..idle
+        };
+        assert_eq!(
+            blocker(&form(), &choices(), None, busy),
+            Some(FormError::InFlight)
+        );
+        let loading = Activity {
+            loading: true,
+            ..idle
+        };
+        assert_eq!(
+            blocker(&form(), &choices(), None, loading),
+            Some(FormError::Loading)
+        );
+        let none = Choices {
+            projects: vec![],
+            ..choices()
+        };
+        assert_eq!(
+            blocker(&form(), &none, None, idle),
+            Some(FormError::NoProjectsOnDaemon)
+        );
+        let none = Choices {
+            agents: vec![choice("codex", Some("x"))],
+            ..choices()
+        };
+        assert_eq!(
+            blocker(&form(), &none, None, idle),
+            Some(FormError::NoLaunchableAgent)
+        );
+    }
+
+    #[test]
+    fn git_reasons_apply_only_when_a_branch_is_set() {
+        let idle = Activity::default();
+        let no_git = Choices {
+            git_available: false,
+            ..choices()
+        };
+        let no_worktree = Choices {
+            worktree_supported: false,
+            ..choices()
+        };
+        let branched = NewSessionForm {
+            branch: " topic ".to_owned(),
+            ..form()
+        };
+        let based = NewSessionForm {
+            base_branch: "main".to_owned(),
+            ..form()
+        };
+        assert_eq!(blocker(&form(), &no_git, None, idle), None);
+        assert_eq!(blocker(&form(), &no_worktree, None, idle), None);
+        for f in [&branched, &based] {
+            assert_eq!(
+                blocker(f, &no_git, None, idle),
+                Some(FormError::GitUnavailable)
+            );
+            assert_eq!(
+                blocker(f, &no_worktree, None, idle),
+                Some(FormError::WorktreeUnsupported)
+            );
+            assert_eq!(blocker(f, &choices(), None, idle), None);
+        }
+        let both = Choices {
+            git_available: false,
+            worktree_supported: false,
+            ..choices()
+        };
+        assert_eq!(
+            blocker(&branched, &both, None, idle),
+            Some(FormError::GitUnavailable)
+        );
+        let blank = NewSessionForm {
+            branch: "  ".to_owned(),
+            ..form()
+        };
+        assert_eq!(blocker(&blank, &no_git, None, idle), None);
+        let recipe = recipe_from_action("t", action(ProviderKind::None, "x")).unwrap();
+        let templated = NewSessionForm {
+            recipe: Some(recipe),
+            ..form()
+        };
+        assert_eq!(
+            blocker(&templated, &no_git, None, idle),
+            Some(FormError::GitUnavailable)
+        );
+    }
+
+    #[test]
+    fn blockers_have_a_fixed_precedence() {
+        let all_wrong = NewSessionForm {
+            project: None,
             agent: None,
             ..form()
         };
+        let empty = Choices::default();
+        let activity = |loading, in_flight| Activity { loading, in_flight };
+        let check = |activity| blocker(&all_wrong, &empty, Some("gone"), activity);
+        assert_eq!(check(activity(true, true)), Some(FormError::Loading));
+        assert_eq!(check(activity(false, true)), Some(FormError::InFlight));
         assert_eq!(
-            build_params(&no_agent, &agents(), &config).unwrap_err(),
-            FormError::NoAgent
+            check(activity(false, false)),
+            Some(FormError::RequestedProjectMissing("gone".to_owned()))
         );
-        let unknown = NewSessionForm {
-            agent: Some("ghost".to_owned()),
-            ..form()
+        let idle = Activity::default();
+        assert_eq!(
+            blocker(&all_wrong, &empty, None, idle),
+            Some(FormError::NoProjectsOnDaemon)
+        );
+        let projects_only = Choices {
+            projects: choices().projects,
+            ..Choices::default()
         };
         assert_eq!(
-            build_params(&unknown, &agents(), &config).unwrap_err(),
-            FormError::AgentNotLaunchable("ghost".to_owned())
+            blocker(&all_wrong, &projects_only, None, idle),
+            Some(FormError::NoProject)
+        );
+        let picked = NewSessionForm {
+            project: Some("p-1".to_owned()),
+            ..all_wrong.clone()
+        };
+        assert_eq!(
+            blocker(&picked, &projects_only, None, idle),
+            Some(FormError::NoLaunchableAgent)
+        );
+        assert_eq!(
+            blocker(&picked, &choices(), None, idle),
+            Some(FormError::NoAgent)
+        );
+        let loading_branched = NewSessionForm {
+            template_loading: true,
+            branch: "b".to_owned(),
+            ..form()
+        };
+        let no_git = Choices {
+            git_available: false,
+            ..choices()
+        };
+        assert_eq!(
+            blocker(&loading_branched, &no_git, None, idle),
+            Some(FormError::TemplateLoading)
         );
     }
 
@@ -484,7 +804,8 @@ mod tests {
             base_branch: "ignored".to_owned(),
             ..form()
         };
-        let params = build_params(&from_recipe, &agents(), &config).unwrap();
+        let params =
+            build_params(&from_recipe, &choices(), None, Activity::default(), &config).unwrap();
         assert_eq!(params.branch.as_deref(), Some("feat/x"));
         assert_eq!(params.base_branch.as_deref(), Some("main"));
 
@@ -493,7 +814,8 @@ mod tests {
             base_branch: "release".to_owned(),
             ..form()
         };
-        let params = build_params(&overridden, &agents(), &config).unwrap();
+        let params =
+            build_params(&overridden, &choices(), None, Activity::default(), &config).unwrap();
         assert_eq!(params.branch.as_deref(), Some("topic"));
         assert_eq!(params.base_branch.as_deref(), Some("release"));
 
@@ -501,7 +823,7 @@ mod tests {
             branch: " ".to_owned(),
             ..form()
         };
-        let params = build_params(&empty, &agents(), &config).unwrap();
+        let params = build_params(&empty, &choices(), None, Activity::default(), &config).unwrap();
         assert_eq!((params.branch, params.base_branch), (None, None));
     }
 
@@ -512,7 +834,14 @@ mod tests {
             ..form()
         };
         assert_eq!(
-            build_params(&loading, &agents(), &NewSessionConfig::default()).unwrap_err(),
+            build_params(
+                &loading,
+                &choices(),
+                None,
+                Activity::default(),
+                &NewSessionConfig::default()
+            )
+            .unwrap_err(),
             FormError::TemplateLoading
         );
     }

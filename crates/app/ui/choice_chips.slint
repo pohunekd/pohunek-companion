@@ -3,6 +3,8 @@
 export component ChoiceChips inherits FlexboxLayout {
     in property <[string]> model;
     in-out property <int> selected-index;
+    // Entries that are shown but cannot be selected; missing entries are enabled.
+    in property <[bool]> disabled;
     in property <length> chip-height;
     in property <length> chip-padding;
     in property <length> chip-radius;
@@ -11,6 +13,7 @@ export component ChoiceChips inherits FlexboxLayout {
     in property <color> chip-selected-background;
     in property <color> chip-hover-background;
     in property <color> text-color;
+    in property <color> disabled-text-color: text-color;
     in property <color> selected-text-color;
     callback selected(int);
 
@@ -20,7 +23,7 @@ export component ChoiceChips inherits FlexboxLayout {
         height: root.chip-height;
         border-radius: root.chip-radius;
         background: index == root.selected-index ? root.chip-selected-background
-            : chip-touch.has-hover ? root.chip-hover-background
+            : chip-touch.has-hover && !root.disabled[index] ? root.chip-hover-background
             : root.chip-background;
 
         HorizontalLayout {
@@ -29,7 +32,8 @@ export component ChoiceChips inherits FlexboxLayout {
             Text {
                 text: name;
                 font-size: root.font-size;
-                color: index == root.selected-index ? root.selected-text-color : root.text-color;
+                color: root.disabled[index] ? root.disabled-text-color
+                    : index == root.selected-index ? root.selected-text-color : root.text-color;
                 vertical-alignment: center;
                 horizontal-alignment: center;
                 overflow: clip;
@@ -37,6 +41,7 @@ export component ChoiceChips inherits FlexboxLayout {
         }
 
         chip-touch := TouchArea {
+            enabled: !root.disabled[index];
             clicked => {
                 root.selected-index = index;
                 root.selected(index);
