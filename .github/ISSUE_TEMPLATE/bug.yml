@@ -6,7 +6,7 @@ body:
     id: summary
     attributes:
       label: Summary
-      description: One or two sentences: what is wrong and where.
+      description: "One or two sentences: what is wrong and where."
     validations:
       required: true
   - type: textarea
