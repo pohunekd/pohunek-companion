@@ -51,12 +51,7 @@ impl TraySummary {
             .iter()
             .filter(|row| row.owner_state == OwnerState::NeedsOwner)
             .collect();
-        needing.sort_by(|a, b| {
-            wait_order(a.waiting_since, b.waiting_since)
-                .then_with(|| a.display_name.cmp(&b.display_name))
-                .then_with(|| a.key.host.cmp(&b.key.host))
-                .then_with(|| a.key.session_id.cmp(&b.key.session_id))
-        });
+        needing.sort_by(|a, b| needs_owner_order(a, b));
         let entries = needing
             .into_iter()
             .map(|row| TrayEntry {
@@ -74,6 +69,15 @@ impl TraySummary {
             entries,
         }
     }
+}
+
+/// Order of sessions that need the owner: longest waiting first, then by
+/// display name, then by key. Shared by the tray menu and the Needs-you section.
+pub(crate) fn needs_owner_order(a: &SessionRow, b: &SessionRow) -> std::cmp::Ordering {
+    wait_order(a.waiting_since, b.waiting_since)
+        .then_with(|| a.display_name.cmp(&b.display_name))
+        .then_with(|| a.key.host.cmp(&b.key.host))
+        .then_with(|| a.key.session_id.cmp(&b.key.session_id))
 }
 
 /// Known waiting times first, oldest first; unknown ones after them.

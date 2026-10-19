@@ -21,6 +21,8 @@ export struct GroupData {
     id: string,
     name: string,
     count: int,
+    // The leading section of sessions that need the owner.
+    needs-you: bool,
     rows: [SessionRowData],
 }
 
@@ -161,6 +163,7 @@ component SessionRow inherits Rectangle {
 component GroupHeader inherits Rectangle {
     in property <string> name;
     in property <int> count;
+    in property <color> name-color: Theme.group-text;
 
     height: Theme.group-header-height;
 
@@ -171,7 +174,7 @@ component GroupHeader inherits Rectangle {
         alignment: start;
         name-text := Text {
             text: root.name;
-            color: Theme.group-text;
+            color: root.name-color;
             font-size: Theme.group-font-size;
             font-weight: 700;
             overflow: elide;
@@ -245,7 +248,12 @@ export component AppWindow inherits Window {
                 spacing: Theme.group-spacing;
                 for group in root.groups: VerticalLayout {
                     spacing: Theme.row-spacing;
-                    GroupHeader {
+                    if group.needs-you: needs-you-header := GroupHeader {
+                        name: group.name;
+                        count: group.count;
+                        name-color: Theme.owner-needs-owner;
+                    }
+                    if !group.needs-you: GroupHeader {
                         name: group.name;
                         count: group.count;
                     }
