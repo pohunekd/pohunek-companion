@@ -94,12 +94,20 @@ export component AppWindow inherits Window {
     in property <[SessionRowData]> sessions;
     // Typed connection or protocol error; empty when the list is valid.
     in property <string> error;
+    // Why logging is unavailable; empty when log output is working.
+    in property <string> log-error;
 
     VerticalLayout {
         padding: Theme.window-padding;
         spacing: Theme.row-spacing;
         if root.error != "": Text {
             text: root.error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.log-error != "": Text {
+            text: root.log-error;
             color: Theme.error;
             font-size: Theme.error-font-size;
             wrap: word-wrap;

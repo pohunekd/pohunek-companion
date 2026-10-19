@@ -10,7 +10,10 @@ description = "Native desktop companion for Pohunek sessions."
 [dependencies]
 slint = { workspace = true }
 pohunek-companion-core = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }
