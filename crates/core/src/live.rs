@@ -244,7 +244,11 @@ fn rows(store: &SessionStore, idle_threshold: Duration) -> Vec<SessionRow> {
         .sessions_with_state(now, idle_threshold)
         .map(|(_, info, owner_state)| {
             let waiting_since = store.waiting_since(&info.id);
-            SessionRow::from_local(info.clone(), owner_state, waiting_since)
+            let known_label = info
+                .project_id
+                .as_deref()
+                .and_then(|id| store.project_label(id));
+            SessionRow::from_local(info.clone(), owner_state, waiting_since, known_label)
         })
         .collect();
     rows.sort_by(|a, b| a.key.session_id.cmp(&b.key.session_id));
