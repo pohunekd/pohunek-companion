@@ -9,7 +9,7 @@ places the sidebar. The app sets its Wayland `app_id` to `pohunek-companion`
 Add to `~/.config/sway/config` (or an included file):
 
 ```
-for_window [app_id="pohunek-companion"] floating enable, sticky enable, border none, resize set width 320 px height 100 ppt, move position 0 px 0 px
+for_window [app_id="^pohunek-companion$"] floating enable, sticky enable, border none, resize set width 320 px height 100 ppt, move position 0 px 0 px
 ```
 
 - `floating enable` and `resize set width 320 px height 100 ppt` make the
@@ -28,11 +28,36 @@ The same rule works as a one-off command on an already running window, which
 is how it was verified on sway 1.12 with a waybar top bar:
 
 ```
-swaymsg '[app_id="pohunek-companion"] floating enable, sticky enable, border none, resize set width 320 px height 100 ppt, move position 0 px 0 px'
+swaymsg '[app_id="^pohunek-companion$"] floating enable, sticky enable, border none, resize set width 320 px height 100 ppt, move position 0 px 0 px'
 ```
 
 Measured result on a 3440x1440 output with a 20 px bar: window rectangle
 `x=0 y=20 width=320 height=1420` in output coordinates.
+
+## New-session dialog
+
+The dialog (`pohunek-companion new-session`) is its own window with the
+Wayland `app_id` `pohunek-companion-new-session`. Sway criteria are regular
+expressions, so an unanchored `app_id="pohunek-companion"` also matches the
+dialog; the sidebar rule above is anchored with `^...$` for that reason. Float
+and centre the dialog with:
+
+```
+for_window [app_id="^pohunek-companion-new-session$"] floating enable, resize set width 480 px height 520 px, move position center
+```
+
+To open it from a key, run the binary directly (no sidebar needed):
+
+```
+bindsym $mod+Shift+n exec pohunek-companion new-session
+```
+
+The sidebar's "+ New session" control and the tray's "New session..." entry
+start the same command as a separate process, so the dialog stays open if the
+sidebar is closed.
+
+On macOS the dialog is a regular (not accessory) app process; winit activates
+it on launch, which brings it to the front with keyboard focus.
 
 ## Status tray
 

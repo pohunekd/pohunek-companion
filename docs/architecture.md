@@ -183,6 +183,10 @@ window itself and runs as an accessory app without a Dock icon. A Linux tray
 needs a StatusNotifierItem host (a bar with a tray module; on GNOME the
 AppIndicator extension).
 
+The new-session dialog is a separate process (`pohunek-companion new-session`)
+with its own `app_id`, started by the sidebar's "+ New session" control, the
+tray's "New session..." entry, or a desktop keybinding; it outlives the sidebar.
+
 ## Attach
 
 Opening a session launches the owner's terminal through a configured command
