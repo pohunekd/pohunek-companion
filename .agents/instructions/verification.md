@@ -85,6 +85,11 @@ Rules for the MCP route:
   `attach_command` is `["true"]`, so clicking a session row logs an `attach`
   line (`target/ui-agent/logs/companion.json`) instead of opening a terminal.
   Never click a row with the owner's real `attach_command`.
+- It also sets a temporary `XDG_STATE_HOME`, so the run reads and writes its
+  own layout file (`scripts/ui-agent layout` prints the path), never the
+  owner's `layout.toml`. Edit that file between runs to check restore and
+  corrupted-file behaviour. The path override works on macOS too: an absolute
+  `XDG_STATE_HOME` wins over the platform default.
 - Not covered, left to the owner as a manual check with exact steps on the
   issue: the tray icon and menu (native, not Slint-rendered) and anything that
   needs the real compositor. For compositor-level checks a nested headless

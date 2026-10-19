@@ -77,20 +77,52 @@ All facts come from the public protocol (Pohunek `docs/public-api.md`):
 
 ## Layout model
 
-- Client-side state in `$XDG_STATE_HOME/pohunek-companion/layout.toml` (or the
-  macOS equivalent), keyed by `(host, session_id)`. Fractional sort keys, so a
-  drag writes one entry. Never stored in session metadata: that would broadcast
-  every drag to all clients, fails for read-only external sessions, and puts one
-  client's view into shared state.
-- Owner groups contain items. An item is a session or a whole herd block; a
-  herd block moves as a unit and keeps its own tree order (manager, then
-  members by role, nested herds inside).
-- New sessions land in an Inbox group, or right under their `spawned_by`
-  parent when it is known. `session_removed` prunes the entry. Resume keeps
-  the session id and therefore the position; a fork is a new session.
+Owner decisions of 2026-10-19 (epic #3):
+
+- **Client-side.** Groups and manual order live in
+  `$XDG_STATE_HOME/pohunek-companion/layout.toml` (`~/.local/state/...` when
+  unset; `~/Library/Application Support/pohunek-companion/` on macOS unless an
+  absolute `XDG_STATE_HOME` is set), keyed by `(host, session_id)`. Nothing is
+  written to the daemon and a drag never changes session metadata: that would
+  broadcast every drag to all clients, fails for read-only external sessions,
+  and puts one client's view into shared state.
+- **Metadata drives placement, not storage.** Owner-defined rules map session
+  metadata (project, `work.link.*`, `work.role`, agent, later herd) to a group
+  so a new session lands there without a drag. A rule only decides the first
+  placement; the result is stored like a manual one, and a manual drag
+  overrides the rule for that session. Sessions that match no rule land in
+  Inbox, or under their `spawned_by` parent when it is known.
+- **Four views** over the same sessions: My groups (default, the only view
+  that accepts drag and drop), By state, By project, and By Work item / herd.
+  The derived views are read-only; the selected view survives a restart.
+- **Needs you** is a separate section above all groups in every view. A session
+  that needs the owner is lifted out temporarily and returns to its place when
+  it no longer does.
+
+Storage and reconciliation:
+
+- The file has a format version. Groups carry a stable id, a name, and a
+  fractional sort key; items carry the session key, a group id, and a sort
+  key, so a move rewrites exactly one item. Sort keys are short lowercase
+  strings that order lexicographically, so repeated inserts between the same
+  two neighbours never run out of precision.
+- Inbox always exists (created on first start) and is first by default.
+  Sessions the layout does not know are appended to the end of Inbox in list
+  order. Every seeded `LiveUpdate::Sessions` list is the daemon's full current
+  set, so a session missing from it is pruned, which also covers sessions
+  removed while the companion was disconnected. Nothing is pruned while
+  disconnected. Resume keeps the session id and therefore the position; a fork
+  is a new session.
+- Writes are atomic (temporary file in the same directory, then rename), the
+  directory is `0700` and the file `0600`, and a write happens only when the
+  content changed.
+- An unreadable or invalid file is shown as an error in the window and is
+  never overwritten; the app runs with an unsaved Inbox-only layout until the
+  next start.
+- An item is a session now; a whole herd block that moves as a unit and keeps
+  its own tree order (manager, then members by role, nested herds inside)
+  comes with herds (M3).
 - Drag never changes daemon state: no herd add/remove, no work relinking.
-- Optional read-only views group by work item, project, or herd next to the
-  manual layout.
 
 ## Tray states
 
