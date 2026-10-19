@@ -185,6 +185,7 @@ fn by_key(
     let all = GroupSection {
         id: String::new(),
         name: String::new(),
+        collapsed: false,
         rows: arranged.into_iter().flat_map(|s| s.rows).collect(),
     };
     let mut lifted = with_needs_you(vec![all]);
@@ -211,6 +212,7 @@ fn by_key(
             .map(|(id, (title, rows))| GroupSection {
                 id,
                 name: clip_display(&title, title_max_chars),
+                collapsed: false,
                 rows,
             }),
     );
@@ -218,6 +220,7 @@ fn by_key(
         out.push(GroupSection {
             id: none.0.to_owned(),
             name: none.1.to_owned(),
+            collapsed: false,
             rows: unkeyed,
         });
     }
