@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Runs the repository gate set (the same commands CI runs), records each gate's
+# exit code separately, and exits non-zero when any gate failed.
+set -u
+
+cd "$(dirname "$0")/.."
+
+names=()
+codes=()
+
+run_gate() {
+    local name=$1
+    shift
+    echo "==> $name: $*"
+    "$@"
+    local rc=$?
+    names+=("$name")
+    codes+=("$rc")
+}
+
+run_gate fmt cargo fmt --all --check
+run_gate clippy cargo clippy --workspace --all-targets --locked -- -D warnings
+run_gate test cargo test --workspace --locked
+
+failed=0
+echo
+echo "Gate results:"
+for i in "${!names[@]}"; do
+    if [ "${codes[$i]}" -eq 0 ]; then
+        echo "  ${names[$i]}: passed"
+    else
+        echo "  ${names[$i]}: failed (exit ${codes[$i]})"
+        failed=1
+    fi
+done
+exit "$failed"
