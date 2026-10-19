@@ -7,6 +7,42 @@ const ROLE_KEY: &str = "work.role";
 /// Marker appended to a clipped value.
 const ELLIPSIS: char = '…';
 
+/// The Pohunek Work link fields of a session as sanitized plain text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkFacts {
+    pub provider: Option<String>,
+    pub kind: Option<String>,
+    pub id: Option<String>,
+    /// The session's `work.role`.
+    pub role: Option<String>,
+}
+
+impl WorkFacts {
+    /// Reads the fields from session metadata. The `work.link.*` keys win
+    /// when any of them is present; the legacy `link.*` keys are the
+    /// fallback. `None` when the metadata carries none of the fields.
+    pub(crate) fn from_metadata(metadata: &BTreeMap<String, String>) -> Option<Self> {
+        let prefix = if metadata.keys().any(|k| k.starts_with(WORK_PREFIX)) {
+            WORK_PREFIX
+        } else {
+            LEGACY_PREFIX
+        };
+        let field = |key: &str| {
+            metadata
+                .get(key)
+                .map(|v| sanitize(v))
+                .filter(|v| !v.is_empty())
+        };
+        let facts = Self {
+            provider: field(&format!("{prefix}provider")),
+            kind: field(&format!("{prefix}kind")),
+            id: field(&format!("{prefix}id")),
+            role: field(ROLE_KEY),
+        };
+        (facts != Self::default()).then_some(facts)
+    }
+}
+
 /// The Pohunek Work link of a session, ready to render as plain text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkBadge {
@@ -17,39 +53,31 @@ pub struct WorkBadge {
 }
 
 impl WorkBadge {
-    /// Reads the badge from session metadata. The `work.link.*` keys win when
-    /// any of them is present; the legacy `link.*` keys are the fallback. A
-    /// session without a link id has no badge.
-    pub(crate) fn from_metadata(metadata: &BTreeMap<String, String>) -> Option<Self> {
-        let prefix = if metadata.keys().any(|k| k.starts_with(WORK_PREFIX)) {
-            WORK_PREFIX
-        } else {
-            LEGACY_PREFIX
-        };
-        let field = |name: &str| {
-            metadata
-                .get(&format!("{prefix}{name}"))
-                .map(|v| sanitize(v))
-                .filter(|v| !v.is_empty())
-        };
-        let id = field("id")?;
-        let provider = field("provider").map(|p| abbreviate_provider(&p));
-        let kind = field("kind").and_then(|k| abbreviate_kind(&k));
+    /// Builds the badge from the Work facts. A session without a link id has
+    /// no badge.
+    pub(crate) fn from_facts(facts: &WorkFacts) -> Option<Self> {
+        let id = facts.id.as_deref()?;
+        let provider = facts.provider.as_deref().map(abbreviate_provider);
+        let kind = facts.kind.as_deref().and_then(abbreviate_kind);
         let id = if id.chars().all(|c| c.is_ascii_digit()) {
             format!("#{id}")
         } else {
-            id
+            id.to_owned()
         };
         let link = [provider, kind, Some(id)]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
             .join(" ");
-        let role = metadata
-            .get(ROLE_KEY)
-            .map(|v| sanitize(v))
-            .filter(|v| !v.is_empty());
-        Some(Self { link, role })
+        Some(Self {
+            link,
+            role: facts.role.clone(),
+        })
+    }
+
+    #[cfg(test)]
+    fn from_metadata(metadata: &BTreeMap<String, String>) -> Option<Self> {
+        Self::from_facts(&WorkFacts::from_metadata(metadata)?)
     }
 }
 
@@ -75,7 +103,7 @@ fn abbreviate_kind(kind: &str) -> Option<String> {
 
 /// Drops control and bidirectional-format characters from untrusted metadata,
 /// turns whitespace into single spaces, and trims the ends.
-fn sanitize(value: &str) -> String {
+pub(crate) fn sanitize(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
         if c.is_whitespace() {
@@ -146,6 +174,24 @@ mod tests {
     #[test]
     fn no_link_id_means_no_badge() {
         assert_eq!(WorkBadge::from_metadata(&meta(&[("work.role", "x")])), None);
+    }
+
+    #[test]
+    fn facts_follow_the_same_precedence_and_keep_a_role_without_a_link() {
+        let facts = WorkFacts::from_metadata(&meta(&[
+            ("work.link.provider", "github"),
+            ("work.link.id", "12"),
+            ("link.kind", "issue"),
+            ("work.role", "reviewer"),
+        ]))
+        .unwrap();
+        assert_eq!(facts.provider.as_deref(), Some("github"));
+        assert_eq!(facts.kind, None);
+        assert_eq!(facts.id.as_deref(), Some("12"));
+        assert_eq!(facts.role.as_deref(), Some("reviewer"));
+        let role_only = WorkFacts::from_metadata(&meta(&[("work.role", "x")])).unwrap();
+        assert_eq!(role_only.id, None);
+        assert_eq!(WorkFacts::from_metadata(&meta(&[("other", "x")])), None);
     }
 
     #[test]

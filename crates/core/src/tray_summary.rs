@@ -113,6 +113,8 @@ mod tests {
             owner_state,
             waiting_since,
             badge: None,
+            project: None,
+            work: None,
             attach_refusal: None,
         }
     }
