@@ -61,6 +61,38 @@ pub struct ReconcileReport {
     pub unordered_snapshots: u32,
 }
 
+/// What a seed changed compared with the state it replaced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeedChange {
+    /// Sessions in the seed that the store did not hold.
+    pub added: usize,
+    /// Sessions the store held that the seed lacks.
+    pub removed: usize,
+    /// Sessions in both whose snapshot differs, ignoring `updated_at` and
+    /// `native_last_activity_at`.
+    pub changed: usize,
+    /// Attention notifications added, removed, or differing.
+    pub attention: usize,
+}
+
+impl SeedChange {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Whether two snapshots of one session differ beyond the activity timestamps,
+/// which the daemon advances while a session works without an event for each
+/// step.
+fn differs_materially(old: &SessionInfo, new: &SessionInfo) -> bool {
+    let mut aligned = new.clone();
+    aligned.updated_at.clone_from(&old.updated_at);
+    aligned
+        .native_last_activity_at
+        .clone_from(&old.native_last_activity_at);
+    *old != aligned
+}
+
 /// Last applied `agent_state` evidence for one session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActivityBaseline {
@@ -128,12 +160,15 @@ impl SessionStore {
 
     /// Replaces all state with the `session.list` and `notification.list`
     /// results. Revision baselines start empty, so the first matching
-    /// `agent_state` event after a seed applies.
+    /// `agent_state` event after a seed applies. Returns what differs from
+    /// the state that was replaced.
     pub fn apply_seed(
         &mut self,
         sessions: impl IntoIterator<Item = SessionInfo>,
         notifications: impl IntoIterator<Item = NotificationRecord>,
-    ) {
+    ) -> SeedChange {
+        let previous = std::mem::take(&mut self.sessions);
+        let previous_attention = std::mem::take(&mut self.attention);
         self.sessions = sessions
             .into_iter()
             .map(|info| {
@@ -146,11 +181,33 @@ impl SessionStore {
                 )
             })
             .collect();
-        self.attention.clear();
         for record in notifications {
             self.track_attention(record);
         }
         self.report.seeds += 1;
+
+        let mut change = SeedChange::default();
+        for (key, tracked) in &self.sessions {
+            match previous.get(key) {
+                None => change.added += 1,
+                Some(old) if differs_materially(&old.info, &tracked.info) => change.changed += 1,
+                Some(_) => {}
+            }
+        }
+        change.removed = previous
+            .keys()
+            .filter(|key| !self.sessions.contains_key(key))
+            .count();
+        change.attention = self
+            .attention
+            .iter()
+            .filter(|(id, record)| previous_attention.get(id) != Some(record))
+            .count()
+            + previous_attention
+                .keys()
+                .filter(|id| !self.attention.contains_key(id))
+                .count();
+        change
     }
 
     /// Applies one subscription event and records the outcome in the report.
@@ -712,5 +769,34 @@ mod tests {
         let report = store.take_report();
         assert_eq!(report.ignored.values().sum::<u32>(), 2);
         assert!(store.report().ignored.is_empty());
+    }
+
+    #[test]
+    fn seed_reports_added_removed_and_changed_sessions() {
+        let mut store = SessionStore::default();
+        let first = store.apply_seed(
+            [
+                session("s-1", 1, "2026-01-01T00:00:01Z"),
+                session("s-2", 1, "2026-01-01T00:00:01Z"),
+            ],
+            [],
+        );
+        assert_eq!((first.added, first.removed, first.changed), (2, 0, 0));
+        let same = store.apply_seed(
+            [
+                session("s-1", 1, "2026-01-01T00:00:05Z"),
+                session("s-2", 1, "2026-01-01T00:00:01Z"),
+            ],
+            [],
+        );
+        assert!(same.is_empty());
+        let next = store.apply_seed(
+            [
+                session("s-1", 2, "2026-01-01T00:00:09Z"),
+                session("s-3", 1, "2026-01-01T00:00:01Z"),
+            ],
+            [],
+        );
+        assert_eq!((next.added, next.removed, next.changed), (1, 1, 1));
     }
 }
