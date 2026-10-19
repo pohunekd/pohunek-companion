@@ -57,3 +57,5 @@ cargo run -p pohunek-companion
 ```
 
 Never read `.env*`, key, or credential files, and never print a secret value.
+Never call `env` or `printenv` (the owner's agent settings stop on them):
+check a variable with `test -n "$VAR"` and list names with `compgen -e`.
