@@ -26,6 +26,9 @@ const GLYPH_ROWS: u32 = 5;
 /// exact number.
 const MAX_ICON_DIGIT: usize = 9;
 
+/// Menu text when the daemon is followed and no session needs the owner.
+const EMPTY_LABEL: &str = "No sessions need you";
+
 fn state_color(tray: &Tray, urgent: Option<OwnerState>) -> Color {
     let theme = tray.global::<Theme<'_>>();
     match urgent {
@@ -97,4 +100,16 @@ pub fn apply(tray: &Tray, summary: &TraySummary) {
     tray.set_tray_icon(icon(tray, summary));
     tray.set_tray_tooltip(tooltip(summary).into());
     tray.set_entries(slint::ModelRc::new(slint::VecModel::from(entries)));
+    tray.set_empty_label(EMPTY_LABEL.into());
+}
+
+/// Shows that no session data is current: grey icon, no entries, and the
+/// reason in the tooltip and the menu.
+pub fn apply_offline(tray: &Tray, reason: &str) {
+    tray.set_tray_icon(icon(tray, &TraySummary::from_rows(&[])));
+    tray.set_tray_tooltip(reason.into());
+    tray.set_entries(slint::ModelRc::new(slint::VecModel::from(Vec::<
+        TrayEntryData,
+    >::new())));
+    tray.set_empty_label(reason.into());
 }

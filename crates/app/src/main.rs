@@ -10,7 +10,7 @@ use pohunek_companion_core::{
     SessionRow, TraySummary, attach, clip_display, run_live,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 slint::include_modules!();
 
@@ -138,6 +138,9 @@ fn follow_daemon(
                     }
                 }
                 LiveUpdate::Reconnecting { attempt, reason } => {
+                    if let Some(tray) = tray.upgrade() {
+                        tray::apply_offline(&tray, "Not connected to the daemon");
+                    }
                     window.set_status(format!("Reconnecting (attempt {attempt}): {reason}").into());
                 }
             });
@@ -157,17 +160,29 @@ struct AttachContext {
 }
 
 /// Attaches on a background thread (the launcher waits out its observation
-/// window) and shows a failure in the window.
+/// window) and shows a failure in the window; `reveal` also opens the window
+/// on failure, for attaches started from the tray while it is hidden.
 fn start_attach(
     window: slint::Weak<AppWindow>,
     context: AttachContext,
     key: SessionKey,
     refusal: String,
+    reveal: bool,
 ) {
     std::thread::spawn(move || {
         let outcome = attach_outcome(&context, &key, &refusal);
+        if let Err(message) = &outcome {
+            warn!(session = %key.session_id, error = %message, "attach failed");
+        }
         let applied = window.upgrade_in_event_loop(move |window| {
+            let failed = outcome.is_err();
             window.set_attach_error(outcome.err().unwrap_or_default().into());
+            if reveal
+                && failed
+                && let Err(err) = window.show()
+            {
+                error!(error = %err, "show window after a failed attach");
+            }
         });
         if let Err(err) = applied {
             error!(error = %err, "deliver attach outcome to the UI");
@@ -238,7 +253,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 session_id: id.into(),
             };
             info!(host = %key.host, session = %key.session_id, source = "tray", "attach requested");
-            start_attach(weak.clone(), context.clone(), key, refusal.into());
+            start_attach(weak.clone(), context.clone(), key, refusal.into(), true);
         });
     }
     {
@@ -248,12 +263,17 @@ fn main() -> Result<(), slint::PlatformError> {
                 host: host.into(),
                 session_id: id.into(),
             };
-            start_attach(weak.clone(), attach_context.clone(), key, refusal.into());
+            start_attach(
+                weak.clone(),
+                attach_context.clone(),
+                key,
+                refusal.into(),
+                false,
+            );
         });
     }
 
-    tray::apply(&tray, &TraySummary::from_rows(&[]));
-    tray.set_empty_label("No sessions need you".into());
+    tray::apply_offline(&tray, "Not connected to the daemon");
 
     {
         let window = window.as_weak();
