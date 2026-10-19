@@ -48,7 +48,13 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 None => Default::default(),
             };
             let (owner_group, manual) = placed.get(&s.key).cloned().unwrap_or_default();
+            let (project_id, project_label) = s
+                .project
+                .map(|project| (project.id, project.label))
+                .unwrap_or_default();
             SessionRowData {
+                project_id: project_id.into(),
+                project_label: project_label.into(),
                 owner_group: owner_group.into(),
                 manual,
                 name: s.display_name.into(),
@@ -144,6 +150,13 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
         project_index,
     } = arranged;
     window.set_project_index(i32::try_from(project_index).unwrap_or_default());
+    window.set_filter_project_id(
+        match project_chips.get(project_index).map(|chip| &chip.selection) {
+            Some(ProjectSelection::Project(project)) => project.id.as_str(),
+            _ => "",
+        }
+        .into(),
+    );
     window.set_project_keys(ModelRc::new(VecModel::from(
         project_chips
             .iter()
@@ -883,7 +896,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     {
         let weak = window.as_weak();
         tray.on_new_session(move || {
-            let outcome = launch::spawn_new_session();
+            let outcome = launch::spawn_new_session(None);
             if let Err(message) = &outcome {
                 error!(error = %message, "start the new-session dialog from the tray");
             }
@@ -898,8 +911,9 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     }
     {
         let weak = window.as_weak();
-        window.on_new_session(move || {
-            let outcome = launch::spawn_new_session();
+        window.on_new_session(move |project| {
+            let outcome =
+                launch::spawn_new_session(Some(project.as_str()).filter(|id| !id.is_empty()));
             if let Err(message) = &outcome {
                 error!(error = %message, "start the new-session dialog from the sidebar");
             }
