@@ -2,8 +2,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+mod logging;
+
 use pohunek_companion_core::{Config, DaemonConfig, SessionRow, clip_display, fetch_sessions};
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use tracing::{error, info};
 
 slint::include_modules!();
 
@@ -70,7 +73,10 @@ fn load_sessions(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
         let outcome = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|err| format!("cannot start the background runtime: {err}"))
+            .map_err(|err| {
+                error!(error = %err, "cannot start the background runtime");
+                format!("cannot start the background runtime: {err}")
+            })
             .and_then(|runtime| {
                 runtime
                     .block_on(fetch_sessions(&daemon))
@@ -87,13 +93,24 @@ fn load_sessions(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
             }
         });
         if let Err(err) = applied {
-            eprintln!("deliver session list: {err}");
+            error!(error = %err, "deliver session list to the UI");
         }
     });
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    let log_error = match logging::init() {
+        Ok(path) => {
+            info!(log = %path.display(), "companion started");
+            String::new()
+        }
+        Err(err) => {
+            eprintln!("logging disabled: {err}");
+            format!("Logging disabled: {err}")
+        }
+    };
     let window = AppWindow::new()?;
+    window.set_log_error(log_error.into());
     // Compositor window rules match on this id (Wayland app_id); it needs the
     // platform, which the first component creates, and must precede show().
     slint::set_xdg_app_id(APP_ID)?;
@@ -102,7 +119,7 @@ fn main() -> Result<(), slint::PlatformError> {
     match Config::load() {
         Ok(config) => load_sessions(window.as_weak(), config.daemon),
         Err(err) => {
-            eprintln!("{err}");
+            error!(error = %err, "load companion.toml");
             window.set_error(err.to_string().into());
         }
     }
@@ -128,7 +145,7 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(window) = window.upgrade()
                 && let Err(err) = window.show()
             {
-                eprintln!("show window: {err}");
+                error!(error = %err, "show window");
             }
         });
     }
@@ -143,7 +160,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     tray.on_quit(|| {
         if let Err(err) = slint::quit_event_loop() {
-            eprintln!("quit: {err}");
+            error!(error = %err, "quit the event loop");
         }
     });
 
