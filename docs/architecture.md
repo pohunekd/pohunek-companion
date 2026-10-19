@@ -118,10 +118,15 @@ the existing pohunek-work native GUI (`native/crates/gui/src/attach.rs`,
 ## M0 spike result
 
 Decision: **go with Slint.** Tray and drag and drop work on Linux (sway,
-Wayland) with the targets met or closable by build configuration (below). The
-macOS half is unverified (see D2): the go/no-go for macOS stays open until the
-owner runs the app on the Mac desktop. Qt + cxx-qt and egui stay the fallbacks;
-nothing measured triggers either.
+Wayland), exercised with a virtual pointer rather than a physical mouse, and one
+drag-reliability problem has a workaround whose cause is unknown (Findings). As
+committed, the Linux build misses two targets (binary 17.5 MB against 15 MB, RSS
+93 MB against 60 MB); scratch builds with other features and profile settings
+reach 12.7 MB and, with the software renderer, 20 MB RSS at 20 s after start
+(not yet measured at 5 min). Closing that gap is a configuration choice for M1.
+The macOS half is unverified (see D2): the go/no-go for macOS stays open until
+the owner runs the app on the Mac desktop. Qt + cxx-qt and egui stay the
+fallbacks; nothing measured triggers either.
 
 ### Verified on Linux (sway 1.12, waybar tray module)
 
@@ -165,8 +170,9 @@ Linux build variants, measured in a scratch copy with the same sources:
 
 So the binary size target is reachable with release-profile and feature
 choices; the 60 MB RAM target is not reachable with femtovg (the GPU driver
-stack dominates RSS) but is with the software renderer, which drew the spike UI
-correctly in the nested compositor. M1 picks the renderer and the release
+stack dominates RSS) but a 20 MB RSS at 20 s after start was seen with the software renderer
+(5-minute idle not measured), which drew the spike UI correctly in the nested
+compositor. M1 picks the renderer and the release
 profile; this is a configuration decision, not a reason to leave Slint.
 
 ### D2: macOS (host zajcaair, run from a remote shell session)
@@ -198,8 +204,10 @@ No claim is made that the tray or drag and drop work on macOS.
 - `slint::set_xdg_app_id` works only after the first component is created and
   before `show()`; window rules match on `pohunek-companion`
   (`docs/linux-window-rules.md`).
-- The spike hardcodes its few tunables as named constants; real code reads
-  them from `companion.toml` per `.agents/instructions/coding.md`.
+- The spike hardcodes its few tunables as named constants, reports errors with
+  `eprintln!`, and keeps a few layout literals in the Slint components; real
+  code reads tunables from `companion.toml`, logs with `tracing`, and shows
+  errors in the UI per `.agents/instructions/coding.md`.
 
 ## Delivery phases (milestones)
 
