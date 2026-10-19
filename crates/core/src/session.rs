@@ -1,3 +1,4 @@
+use crate::attach::AttachRefusal;
 use crate::badge::WorkBadge;
 use pohunek_client::LOCAL_HOST;
 use pohunek_client::protocol::SessionInfo;
@@ -19,6 +20,8 @@ pub struct SessionRow {
     pub state: String,
     /// Pohunek Work link and role, when the metadata carries a link id.
     pub badge: Option<WorkBadge>,
+    /// Why the session cannot be attached; `None` when it can.
+    pub attach_refusal: Option<AttachRefusal>,
 }
 
 impl SessionRow {
@@ -33,6 +36,7 @@ impl SessionRow {
             agent: info.agent,
             state: info.state.as_str().to_owned(),
             badge: WorkBadge::from_metadata(&info.metadata),
+            attach_refusal: AttachRefusal::for_session(info.external, info.state),
         }
     }
 }
