@@ -9,8 +9,8 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupSection, LayoutStore, LiveUpdate,
-    NEEDS_YOU_ID, OwnerState, Placement, SessionKey, SessionRow, TraySummary, attach, clip_display,
-    layout_path, run_live, with_needs_you,
+    NEEDS_YOU_ID, OwnerState, Placement, SessionKey, SessionRow, TraySummary, View, attach,
+    clip_display, layout_path, run_live,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{error, info, warn};
@@ -114,6 +114,27 @@ struct DropRequest {
     anchor: Option<(SessionKey, bool)>,
 }
 
+/// Selects the view on a background thread (the save waits on disk) and shows
+/// it with the latest session list.
+fn spawn_view_change(window: slint::Weak<AppWindow>, layout: SharedLayout, view: View) {
+    std::thread::spawn(move || {
+        let mut state = lock(&layout);
+        state.store.set_view(view);
+        let layout_error = save_layout(&mut state);
+        let sections = state.store.layout().present(&state.rows);
+        let applied = window.upgrade_in_event_loop(move |window| {
+            window.set_view_index(i32::try_from(view.index()).unwrap_or_default());
+            window.set_editable(view.is_editable());
+            window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
+            window.set_layout_error(layout_error.unwrap_or_default().into());
+        });
+        drop(state);
+        if let Err(err) = applied {
+            error!(error = %err, "deliver the view change to the UI");
+        }
+    });
+}
+
 /// Applies drops one at a time, in the order they were made, off the UI thread
 /// because the save waits on disk. Sessions are addressed by key, so daemon
 /// updates that arrived during the drag do not matter.
@@ -142,7 +163,7 @@ fn spawn_drop_worker(
                 (Some(moved), Some(saved)) => Some(format!("{moved}\n{saved}")),
                 (moved, saved) => moved.or(saved),
             };
-            let sections = with_needs_you(state.store.layout().arrange(&state.rows));
+            let sections = state.store.layout().present(&state.rows);
             if let Err(err) = window.upgrade_in_event_loop(move |window| {
                 window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
                 window.set_layout_error(layout_error.unwrap_or_default().into());
@@ -195,7 +216,7 @@ fn follow_daemon(
                     state.store.reconcile(&keys);
                     let layout_error = save_layout(&mut state);
                     state.rows = sessions.clone();
-                    let sections = with_needs_you(state.store.layout().arrange(&state.rows));
+                    let sections = state.store.layout().present(&state.rows);
                     guard = Some(state);
                     Some((sections, layout_error))
                 }
@@ -314,6 +335,15 @@ fn main() -> Result<(), slint::PlatformError> {
         load_error: layout_error.clone(),
     }));
     window.set_layout_error(layout_error.clone().unwrap_or_default().into());
+    window.set_view_names(ModelRc::new(VecModel::from(
+        View::ALL
+            .iter()
+            .map(|view| slint::SharedString::from(view.label()))
+            .collect::<Vec<_>>(),
+    )));
+    let view = lock(&layout).store.layout().view();
+    window.set_view_index(i32::try_from(view.index()).unwrap_or_default());
+    window.set_editable(view.is_editable());
 
     let config_path = Config::path().map_err(|err| err.to_string());
     let attach_context = match Config::load() {
@@ -366,6 +396,21 @@ fn main() -> Result<(), slint::PlatformError> {
                 refusal.into(),
                 false,
             );
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let layout = layout.clone();
+        window.on_view_selected(move |index| {
+            let Some(view) = usize::try_from(index)
+                .ok()
+                .and_then(|index| View::ALL.get(index).copied())
+            else {
+                warn!(index, "view selected outside the view list");
+                return;
+            };
+            spawn_view_change(weak.clone(), layout.clone(), view);
         });
     }
 

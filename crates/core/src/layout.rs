@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 use crate::session::{SessionKey, SessionRow};
 use crate::sort_key;
+use crate::view::View;
 
 const FORMAT_VERSION: u32 = 1;
 const LAYOUT_FILE: &str = "layout.toml";
@@ -108,6 +109,10 @@ impl Item {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layout {
     version: u32,
+    /// Id of the selected view; kept as written so an unknown value survives
+    /// until the owner picks a view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    view: Option<String>,
     #[serde(default)]
     groups: Vec<Group>,
     #[serde(default)]
@@ -156,6 +161,7 @@ impl Default for Layout {
     fn default() -> Self {
         Self {
             version: FORMAT_VERSION,
+            view: None,
             groups: vec![inbox_group(sort_key::between(None, None))],
             items: Vec::new(),
         }
@@ -171,6 +177,20 @@ fn inbox_group(order: String) -> Group {
 }
 
 impl Layout {
+    /// The selected view; My groups when none is stored or the stored id is
+    /// unknown.
+    pub fn view(&self) -> View {
+        self.view
+            .as_deref()
+            .and_then(View::parse)
+            .unwrap_or_default()
+    }
+
+    /// Sections of the selected view for display.
+    pub fn present(&self, rows: &[SessionRow]) -> Vec<GroupSection> {
+        self.view().sections(self.arrange(rows))
+    }
+
     pub fn groups(&self) -> &[Group] {
         &self.groups
     }
@@ -352,6 +372,14 @@ impl Layout {
                 return Err(format!("session {:?} is listed twice", item.session_id));
             }
         }
+        if let Some(stored) = self.view.as_deref()
+            && View::parse(stored).is_none()
+        {
+            warn!(
+                view = stored,
+                "unknown view in the layout file; showing My groups"
+            );
+        }
         let mut repaired = false;
         if !self.groups.iter().any(|group| group.id == INBOX_ID) {
             let first = self.groups.iter().map(|group| group.order.as_str()).min();
@@ -470,6 +498,14 @@ impl LayoutStore {
             );
         }
         result
+    }
+
+    /// Selects the view; saved by the next [`save_if_changed`](Self::save_if_changed).
+    pub fn set_view(&mut self, view: View) {
+        if self.layout.view != Some(view.id().to_owned()) {
+            info!(view = view.id(), "view selected");
+        }
+        self.layout.view = Some(view.id().to_owned());
     }
 
     /// Moves a session (see [`Layout::move_session`]) and logs it with keys
@@ -808,6 +844,28 @@ order = "g"
         edited.reconcile(&keys(&["s1", "s2"]));
         assert!(!edited.save_if_changed().expect("no rewrite"));
         assert_eq!(fs::read_to_string(&path).expect("read"), annotated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_stored_view_loads_as_my_groups_and_a_selected_view_persists() {
+        let dir = scratch("view");
+        fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join(LAYOUT_FILE);
+        fs::write(
+            &path,
+            "version = 1\nview = \"by-banana\"\n[[groups]]\nid = \"inbox\"\nname = \"Inbox\"\norder = \"n\"\n",
+        )
+        .expect("write");
+        let (mut store, error) = LayoutStore::open(path.clone());
+        assert!(error.is_none());
+        assert_eq!(store.layout().view(), View::MyGroups);
+
+        store.set_view(View::ByState);
+        assert!(store.save_if_changed().expect("saves"));
+        let (reloaded, error) = LayoutStore::open(path);
+        assert!(error.is_none());
+        assert_eq!(reloaded.layout().view(), View::ByState);
         let _ = fs::remove_dir_all(&dir);
     }
 

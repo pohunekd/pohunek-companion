@@ -1,4 +1,4 @@
-import { AboutSlint, ScrollView } from "std-widgets.slint";
+import { AboutSlint, ComboBox, ScrollView } from "std-widgets.slint";
 
 export enum OwnerStateKind { needs-owner, working, idle, ended, no-agent-state }
 
@@ -238,7 +238,14 @@ export component AppWindow inherits Window {
     in property <string> log-error;
     // Outcome of the last attach click; empty when it launched.
     in property <string> attach-error;
+    // Labels of the selectable views, in order.
+    in property <[string]> view-names;
+    in-out property <int> view-index;
+    // Whether the selected view lets the owner rearrange sessions; derived
+    // views are read-only.
+    in property <bool> editable;
     callback attach(string, string, string);
+    callback view-selected(int);
     // Payload of a dragged row: its session.
     pure callback payload(SessionRowData) -> data-transfer;
     // Dropped payload, target group id, anchor session host and id (empty for
@@ -250,6 +257,11 @@ export component AppWindow inherits Window {
     VerticalLayout {
         padding: Theme.window-padding;
         spacing: Theme.row-spacing;
+        view-select := ComboBox {
+            model: root.view-names;
+            current-index <=> root.view-index;
+            selected => { root.view-selected(self.current-index); }
+        }
         if root.error != "": error-text := Text {
             text: root.error;
             color: Theme.error;
@@ -295,7 +307,7 @@ export component AppWindow inherits Window {
                         count: group.count;
                     }
                     for session in group.rows: row-drop := DropArea {
-                        enabled: !group.needs-you;
+                        enabled: root.editable && !group.needs-you;
                         can-drop(event) => {
                             root.indicator-after = event.position.y > self.height / 2;
                             DragAction.move
@@ -306,7 +318,7 @@ export component AppWindow inherits Window {
                         }
                         SessionRow {
                             data: session;
-                            draggable: !group.needs-you;
+                            draggable: root.editable && !group.needs-you;
                             indicator-above: row-drop.has-drag && !root.indicator-after;
                             indicator-below: row-drop.has-drag && root.indicator-after;
                             payload(row) => { root.payload(row) }
@@ -316,9 +328,9 @@ export component AppWindow inherits Window {
                     // Below the last row (the only target of an empty group):
                     // dropping here appends to the group.
                     group-end := DropArea {
-                        enabled: !group.needs-you;
-                        visible: !group.needs-you;
-                        height: group.needs-you ? 0px : Theme.group-end-drop-height + (group.rows.length == 0 ? Theme.row-height : 0px);
+                        enabled: root.editable && !group.needs-you;
+                        visible: root.editable && !group.needs-you;
+                        height: !root.editable || group.needs-you ? 0px : Theme.group-end-drop-height + (group.rows.length == 0 ? Theme.row-height : 0px);
                         can-drop(event) => {
                             DragAction.move
                         }
