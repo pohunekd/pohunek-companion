@@ -16,7 +16,7 @@ pub fn spawn_new_session() -> Result<(), String> {
         .spawn()
         .map_err(|err| format!("Cannot start the new-session dialog: {err}"))?;
     let pid = child.id();
-    info!(pid, "new-session dialog started from the sidebar");
+    info!(pid, "new-session dialog process started");
     std::thread::spawn(move || reap(child, pid));
     Ok(())
 }
