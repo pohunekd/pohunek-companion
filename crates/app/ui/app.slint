@@ -104,6 +104,8 @@ export component AppWindow inherits Window {
     in property <[SessionRowData]> sessions;
     // Typed connection or protocol error; empty when the list is valid.
     in property <string> error;
+    // Daemon connection status; empty while connected.
+    in property <string> status;
     // Why logging is unavailable; empty when log output is working.
     in property <string> log-error;
     // Outcome of the last attach click; empty when it launched.
@@ -116,6 +118,12 @@ export component AppWindow inherits Window {
         if root.error != "": Text {
             text: root.error;
             color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.status != "": Text {
+            text: root.status;
+            color: Theme.detail;
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
