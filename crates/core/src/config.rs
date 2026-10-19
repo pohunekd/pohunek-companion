@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::attach::{AttachConfig, AttachTemplate};
+use crate::attach_macos::AttachTerminal;
 
 const CONFIG_HOME_ENV: &str = "XDG_CONFIG_HOME";
 const HOME_ENV: &str = "HOME";
@@ -32,6 +33,10 @@ pub enum ConfigError {
     Parse { path: PathBuf, message: String },
     #[error("invalid {path}: `{key}` must be greater than zero")]
     ZeroValue { path: PathBuf, key: &'static str },
+    #[error(
+        "invalid {path}: `attach_command` and `attach_terminal` are mutually exclusive; set only one"
+    )]
+    AttachConflict { path: PathBuf },
     #[error("invalid {path}: `pohunek_bin` must not be empty")]
     EmptyPohunekBin { path: PathBuf },
     #[error(
@@ -62,14 +67,29 @@ pub struct Config {
     /// Example: `attach_command = ["foot", "--", "{bin}", "attach", "--host",
     /// "{host}", "{id}"]`.
     pub attach_command: Option<AttachTemplate>,
+    /// `attach_terminal`: opens a session in a terminal app without an argv
+    /// template. Only `"terminal"` (Terminal.app, macOS) is known. It starts
+    /// Terminal.app through `open -a` on a generated `.command` script that
+    /// runs `pohunek attach`. Optional; mutually exclusive with
+    /// `attach_command`. Example: `attach_terminal = "terminal"`.
+    pub attach_terminal: Option<AttachTerminal>,
     /// `pohunek_bin`: the `pohunek` executable that `{bin}` expands to, an
-    /// absolute path or a bare name resolved on `PATH`. Optional; default
-    /// `pohunek`. Example: `pohunek_bin = "/opt/pohunek/bin/pohunek"`.
+    /// absolute path or a bare name resolved on `PATH` (on macOS also in
+    /// the login shell's `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin`,
+    /// `~/.local/bin`). Optional; default `pohunek`. Example: `pohunek_bin = "/opt/pohunek/bin/pohunek"`.
     pub pohunek_bin: String,
     /// `attach_observe_ms`: how long a freshly started attach program is
     /// watched for an early failed exit, in milliseconds, greater than zero.
     /// Optional; default 1000. Example: `attach_observe_ms = 2000`.
     pub attach_observe_ms: u64,
+    /// `login_shell_timeout_ms`: how long the macOS probe of the login
+    /// shell's `PATH` may take, in milliseconds, greater than zero. Optional;
+    /// default 2000. Example: `login_shell_timeout_ms = 5000`.
+    pub login_shell_timeout_ms: u64,
+    /// `attach_script_max_age_s`: age after which a staged Terminal.app
+    /// script is removed, in seconds, greater than zero. Optional; default
+    /// 3600. Example: `attach_script_max_age_s = 600`.
+    pub attach_script_max_age_s: u64,
 }
 
 impl Default for Config {
@@ -77,8 +97,11 @@ impl Default for Config {
         Self {
             daemon: DaemonConfig::default(),
             attach_command: None,
+            attach_terminal: None,
             pohunek_bin: "pohunek".to_owned(),
             attach_observe_ms: 1000,
+            login_shell_timeout_ms: 2000,
+            attach_script_max_age_s: 3600,
         }
     }
 }
@@ -161,8 +184,11 @@ impl Config {
     pub fn attach(&self) -> AttachConfig {
         AttachConfig {
             command: self.attach_command.clone(),
+            terminal: self.attach_terminal,
             pohunek_bin: self.pohunek_bin.clone(),
             observe: Duration::from_millis(self.attach_observe_ms),
+            login_shell_timeout: Duration::from_millis(self.login_shell_timeout_ms),
+            script_max_age: Duration::from_secs(self.attach_script_max_age_s),
         }
     }
 
@@ -201,6 +227,8 @@ impl Config {
                 "daemon.notification_page_size",
                 u64::from(self.daemon.notification_page_size),
             ),
+            ("login_shell_timeout_ms", self.login_shell_timeout_ms),
+            ("attach_script_max_age_s", self.attach_script_max_age_s),
         ]
         .into_iter()
         .find_map(|(key, value)| (value == 0).then_some(key));
@@ -208,6 +236,11 @@ impl Config {
             return Err(ConfigError::ZeroValue {
                 path: path.to_owned(),
                 key,
+            });
+        }
+        if self.attach_command.is_some() && self.attach_terminal.is_some() {
+            return Err(ConfigError::AttachConflict {
+                path: path.to_owned(),
             });
         }
         if self.pohunek_bin.is_empty() {
@@ -360,10 +393,25 @@ mod tests {
             ("attach_command = \"foot {id}\"\n", "attach_command"),
             ("pohunek_bin = \"\"\n", "pohunek_bin"),
             ("attach_observe_ms = 0\n", "attach_observe_ms"),
+            ("login_shell_timeout_ms = 0\n", "login_shell_timeout_ms"),
+            ("attach_script_max_age_s = 0\n", "attach_script_max_age_s"),
+            ("attach_terminal = \"kitty\"\n", "attach_terminal"),
         ] {
             let msg = parse(text).unwrap_err().to_string();
             assert!(msg.contains(key), "{text}: {msg}");
         }
+    }
+
+    #[test]
+    fn attach_command_and_attach_terminal_conflict_naming_both_keys() {
+        let msg = parse("attach_command = [\"foot\"]\nattach_terminal = \"terminal\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("attach_command"), "{msg}");
+        assert!(msg.contains("attach_terminal"), "{msg}");
+        assert!(msg.contains("/cfg/companion.toml"), "{msg}");
+        let config = parse("attach_terminal = \"terminal\"\n").unwrap();
+        assert_eq!(config.attach().terminal, Some(AttachTerminal::Terminal));
     }
 
     #[test]
