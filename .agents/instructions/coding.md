@@ -34,6 +34,8 @@
 
 - UI lives in `.slint` files under `crates/*/ui/`; Rust exposes models and
   callbacks. Do not build UI trees from Rust.
+- A choice among a few fixed options is a chip row (`ChoiceChips` in
+  `crates/app/ui/choice_chips.slint`), never a `ComboBox`.
 - Design tokens (spacing, colours, sizes) are global `.slint` properties, not
   literals scattered across components.
 

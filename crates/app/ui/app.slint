@@ -1,4 +1,5 @@
-import { AboutSlint, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { AboutSlint, LineEdit, ScrollView } from "std-widgets.slint";
+import { ChoiceChips } from "choice_chips.slint";
 
 export enum OwnerStateKind { needs-owner, working, idle, ended, no-agent-state }
 
@@ -38,6 +39,14 @@ export global Theme {
     out property <length> window-padding: 8px;
     out property <length> detail-font-size: 11px;
     out property <length> error-font-size: 13px;
+    out property <length> chip-height: 26px;
+    out property <length> chip-padding: 8px;
+    out property <length> chip-radius: 13px;
+    out property <length> chip-spacing: 4px;
+    out property <length> chip-font-size: 12px;
+    out property <color> chip-background: #2b2d31;
+    out property <color> chip-hover-background: #35383d;
+    out property <color> chip-selected-background: #4a6fa5;
     out property <length> group-header-height: 24px;
     out property <length> group-spacing: 8px;
     out property <length> group-button-width: 22px;
@@ -396,10 +405,20 @@ export component AppWindow inherits Window {
     VerticalLayout {
         padding: Theme.window-padding;
         spacing: Theme.row-spacing;
-        view-select := ComboBox {
+        view-select := ChoiceChips {
             model: root.view-names;
-            current-index <=> root.view-index;
-            selected => { root.view-selected(self.current-index); }
+            selected-index <=> root.view-index;
+            chip-height: Theme.chip-height;
+            chip-padding: Theme.chip-padding;
+            chip-radius: Theme.chip-radius;
+            chip-spacing: Theme.chip-spacing;
+            font-size: Theme.chip-font-size;
+            chip-background: Theme.chip-background;
+            chip-hover-background: Theme.chip-hover-background;
+            chip-selected-background: Theme.chip-selected-background;
+            text-color: Theme.detail;
+            selected-text-color: Theme.text;
+            selected(index) => { root.view-selected(index); }
         }
         if root.error != "": error-text := Text {
             text: root.error;

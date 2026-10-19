@@ -49,6 +49,16 @@ impl View {
         }
     }
 
+    /// Short label for the chip row, which must fit the narrow sidebar.
+    pub fn tab_label(self) -> &'static str {
+        match self {
+            Self::MyGroups => "Groups",
+            Self::ByState => "State",
+            Self::ByProject => "Project",
+            Self::ByWorkItem => "Work",
+        }
+    }
+
     pub fn parse(id: &str) -> Option<View> {
         Self::ALL.into_iter().find(|view| view.id() == id)
     }
