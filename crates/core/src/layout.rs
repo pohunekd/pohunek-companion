@@ -369,8 +369,9 @@ impl Layout {
 
     /// Moves `key` into `group` at `placement` and marks it manually placed.
     /// Only that session's item changes: its group and one new sort key.
-    /// Returns whether anything changed; dropping a session where it already
-    /// is, or on itself, changes nothing.
+    /// Returns whether anything changed. A drop where the session already is,
+    /// or on itself, keeps its position but still marks it manually placed,
+    /// so only the flag changes.
     pub fn move_session(
         &mut self,
         key: &SessionKey,
@@ -390,7 +391,7 @@ impl Layout {
             Placement::End => None,
         };
         if anchor == Some(key) {
-            return Ok(false);
+            return Ok(self.pin(index));
         }
         let neighbours: Vec<&Item> = self
             .group_items(group)
@@ -416,7 +417,7 @@ impl Layout {
             && lower.is_none_or(|lower| lower < current.order.as_str())
             && upper.is_none_or(|upper| current.order.as_str() < upper);
         if stays {
-            return Ok(false);
+            return Ok(self.pin(index));
         }
         if let (Some(lower), Some(upper)) = (lower, upper)
             && lower >= upper
@@ -429,6 +430,11 @@ impl Layout {
         item.order = order;
         item.manual = true;
         Ok(true)
+    }
+
+    /// Marks the item manually placed; returns whether the flag changed.
+    fn pin(&mut self, index: usize) -> bool {
+        !std::mem::replace(&mut self.items[index].manual, true)
     }
 
     /// Groups in order, each with the rows of its items in order. A row
@@ -840,7 +846,7 @@ order = "t"
     }
 
     #[test]
-    fn dropping_a_session_where_it_is_or_on_itself_changes_nothing() {
+    fn dropping_a_moved_session_where_it_is_or_on_itself_changes_nothing() {
         let mut layout = arranged(&["a", "b", "c"]);
         layout
             .move_session(&key("b"), INBOX_ID, Placement::After(&key("a")))
@@ -1194,5 +1200,28 @@ order = "g"
         layout.apply_rules(&rows, &rules);
         assert_eq!(group_of(&layout, "a"), "Empty");
         assert_eq!(layout.groups().len(), 3);
+    }
+
+    #[test]
+    fn dropping_a_rule_placed_session_on_its_own_slot_pins_it() {
+        let rules = [rule("work", |r| r.agent = Some("claude".into()))];
+        let rows = [session("a", None, None), session("b", None, None)];
+        let mut layout: Layout = toml::from_str(THREE_GROUPS).expect("parses");
+        placed(&mut layout, &rows, &rules);
+        assert_eq!(order_of(&layout, "work"), ["a", "b"]);
+
+        assert_eq!(
+            layout.move_session(&key("a"), "work", Placement::Before(&key("b"))),
+            Ok(true)
+        );
+        assert_eq!(
+            layout.move_session(&key("a"), "work", Placement::Before(&key("b"))),
+            Ok(false)
+        );
+        assert_eq!(order_of(&layout, "work"), ["a", "b"]);
+
+        let other = [rule("empty", |r| r.agent = Some("claude".into()))];
+        layout.apply_rules(&rows, &other);
+        assert_eq!(group_of(&layout, "a"), "Work");
     }
 }
