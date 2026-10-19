@@ -1,5 +1,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
 mod logging;
@@ -7,7 +9,7 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupSection, LayoutStore, LiveUpdate,
-    NEEDS_YOU_ID, OwnerState, SessionKey, SessionRow, TraySummary, attach, clip_display,
+    NEEDS_YOU_ID, OwnerState, Placement, SessionKey, SessionRow, TraySummary, attach, clip_display,
     layout_path, run_live, with_needs_you,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
@@ -73,6 +75,85 @@ fn group_data(sections: Vec<GroupSection>) -> Vec<GroupData> {
         .collect()
 }
 
+/// The layout store with the session list it arranges. The daemon thread and
+/// the drop handler both change it, always under the lock and always queueing
+/// the resulting window update before releasing it, so updates reach the UI in
+/// the order the layout changed.
+struct LayoutState {
+    store: LayoutStore,
+    rows: Vec<SessionRow>,
+    load_error: Option<String>,
+}
+
+type SharedLayout = Arc<Mutex<LayoutState>>;
+
+fn lock(layout: &SharedLayout) -> MutexGuard<'_, LayoutState> {
+    // The state stays consistent across a panic elsewhere: every change is a
+    // single store call.
+    layout.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Saves the layout and returns the text for the window's layout error line.
+fn save_layout(state: &mut LayoutState) -> Option<String> {
+    state
+        .store
+        .save_if_changed()
+        .err()
+        .map(|err| {
+            error!(error = %err, "save the layout");
+            err.to_string()
+        })
+        .or_else(|| state.load_error.clone())
+}
+
+/// A drop to apply to the layout: the dragged session, the target group, and
+/// the anchor session with whether the drop lands after it (none: group end).
+struct DropRequest {
+    key: SessionKey,
+    group: String,
+    anchor: Option<(SessionKey, bool)>,
+}
+
+/// Applies drops one at a time, in the order they were made, off the UI thread
+/// because the save waits on disk. Sessions are addressed by key, so daemon
+/// updates that arrived during the drag do not matter.
+fn spawn_drop_worker(
+    window: slint::Weak<AppWindow>,
+    layout: SharedLayout,
+) -> mpsc::Sender<DropRequest> {
+    let (sender, receiver) = mpsc::channel::<DropRequest>();
+    std::thread::spawn(move || {
+        for DropRequest { key, group, anchor } in receiver {
+            let mut state = lock(&layout);
+            let placement = match &anchor {
+                Some((anchor, false)) => Placement::Before(anchor),
+                Some((anchor, true)) => Placement::After(anchor),
+                None => Placement::End,
+            };
+            let move_error = state
+                .store
+                .move_session(&key, &group, placement)
+                .err()
+                .map(|err| {
+                    warn!(session = %key.session_id, group = %group, error = %err, "drop refused");
+                    format!("Cannot move {}: {err}", key.session_id)
+                });
+            let layout_error = match (move_error, save_layout(&mut state)) {
+                (Some(moved), Some(saved)) => Some(format!("{moved}\n{saved}")),
+                (moved, saved) => moved.or(saved),
+            };
+            let sections = with_needs_you(state.store.layout().arrange(&state.rows));
+            if let Err(err) = window.upgrade_in_event_loop(move |window| {
+                window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
+                window.set_layout_error(layout_error.unwrap_or_default().into());
+            }) {
+                error!(error = %err, "deliver the moved layout to the UI");
+            }
+        }
+    });
+    sender
+}
+
 /// Follows the daemon on a background thread and hands every update to the UI
 /// thread; the UI thread never waits on the daemon.
 fn follow_daemon(
@@ -80,8 +161,7 @@ fn follow_daemon(
     tray: slint::Weak<Tray>,
     daemon: DaemonConfig,
     idle_threshold: Duration,
-    mut layout: LayoutStore,
-    load_error: Option<String>,
+    layout: SharedLayout,
 ) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -105,23 +185,19 @@ fn follow_daemon(
                 LiveUpdate::Sessions(sessions) => Some(TraySummary::from_rows(sessions)),
                 _ => None,
             };
-            // Reconciled and saved here so the UI thread never waits on disk.
+            // Reconciled and saved here so the UI thread never waits on disk;
+            // the lock is held until the update is queued.
+            let mut guard = None;
             let arranged = match &update {
                 LiveUpdate::Sessions(sessions) => {
+                    let mut state = lock(&layout);
                     let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
-                    layout.reconcile(&keys);
-                    let layout_error = layout
-                        .save_if_changed()
-                        .err()
-                        .map(|err| {
-                            error!(error = %err, "save the layout");
-                            err.to_string()
-                        })
-                        .or_else(|| load_error.clone());
-                    Some((
-                        with_needs_you(layout.layout().arrange(sessions)),
-                        layout_error,
-                    ))
+                    state.store.reconcile(&keys);
+                    let layout_error = save_layout(&mut state);
+                    state.rows = sessions.clone();
+                    let sections = with_needs_you(state.store.layout().arrange(&state.rows));
+                    guard = Some(state);
+                    Some((sections, layout_error))
                 }
                 _ => None,
             };
@@ -147,6 +223,7 @@ fn follow_daemon(
                     window.set_status(format!("Reconnecting (attempt {attempt}): {reason}").into());
                 }
             });
+            drop(guard);
             if let Err(err) = applied {
                 error!(error = %err, "deliver a daemon update to the UI");
             }
@@ -231,6 +308,11 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     };
     let layout_error = layout_error.map(|err| err.to_string());
+    let layout: SharedLayout = Arc::new(Mutex::new(LayoutState {
+        store: layout,
+        rows: Vec::new(),
+        load_error: layout_error.clone(),
+    }));
     window.set_layout_error(layout_error.clone().unwrap_or_default().into());
 
     let config_path = Config::path().map_err(|err| err.to_string());
@@ -245,8 +327,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 tray.as_weak(),
                 config.daemon,
                 config.tray.idle_threshold(),
-                layout,
-                layout_error,
+                layout.clone(),
             );
             context
         }
@@ -285,6 +366,46 @@ fn main() -> Result<(), slint::PlatformError> {
                 refusal.into(),
                 false,
             );
+        });
+    }
+
+    window.on_payload(|row| {
+        let mut transfer = slint::DataTransfer::default();
+        transfer.set_user_data(Rc::new(SessionKey {
+            host: row.host.into(),
+            session_id: row.id.into(),
+        }));
+        transfer
+    });
+    {
+        let drops = spawn_drop_worker(window.as_weak(), layout.clone());
+        window.on_drop(move |transfer, group, anchor_host, anchor_id, after| {
+            let Some(key) = transfer
+                .user_data()
+                .and_then(|data| data.downcast_ref::<SessionKey>().cloned())
+            else {
+                warn!("drop without a session payload");
+                return;
+            };
+            let anchor = (!anchor_id.is_empty()).then(|| {
+                (
+                    SessionKey {
+                        host: anchor_host.into(),
+                        session_id: anchor_id.into(),
+                    },
+                    after,
+                )
+            });
+            // The dragged row is destroyed by the model change, which arrives
+            // from the worker thread after this callback has returned.
+            let request = DropRequest {
+                key,
+                group: group.into(),
+                anchor,
+            };
+            if drops.send(request).is_err() {
+                error!("the drop worker has stopped");
+            }
         });
     }
 

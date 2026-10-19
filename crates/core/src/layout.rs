@@ -85,6 +85,14 @@ pub struct Item {
     pub session_id: String,
     pub group: String,
     pub order: String,
+    /// Set once the owner has dragged the session, so placement rules leave
+    /// it where the owner put it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub manual: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Item {
@@ -112,6 +120,28 @@ pub struct GroupSection {
     pub id: String,
     pub name: String,
     pub rows: Vec<SessionRow>,
+}
+
+/// Where a moved session lands in its target group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement<'a> {
+    Before(&'a SessionKey),
+    After(&'a SessionKey),
+    /// After the last session; the only placement into an empty group.
+    End,
+}
+
+/// Why a move was refused; the layout is left unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MoveError {
+    #[error("session {0:?} is not in the layout")]
+    UnknownSession(String),
+    #[error("group {0:?} is not in the layout")]
+    UnknownGroup(String),
+    #[error("session {0:?} is not in the target group")]
+    AnchorNotInGroup(String),
+    #[error("sessions in group {0:?} share an order key; fix layout.toml by hand")]
+    AmbiguousOrder(String),
 }
 
 /// What a reconcile changed.
@@ -180,10 +210,84 @@ impl Layout {
                 session_id: key.session_id.clone(),
                 group: INBOX_ID.to_owned(),
                 order,
+                manual: false,
             });
             result.added.push(key.clone());
         }
         result
+    }
+
+    /// Items of `group` in display order.
+    fn group_items(&self, group: &str) -> Vec<&Item> {
+        let mut items: Vec<&Item> = self.items.iter().filter(|i| i.group == group).collect();
+        items.sort_by(|a, b| {
+            (&a.order, &a.host, &a.session_id).cmp(&(&b.order, &b.host, &b.session_id))
+        });
+        items
+    }
+
+    /// Moves `key` into `group` at `placement` and marks it manually placed.
+    /// Only that session's item changes: its group and one new sort key.
+    /// Returns whether anything changed; dropping a session where it already
+    /// is, or on itself, changes nothing.
+    pub fn move_session(
+        &mut self,
+        key: &SessionKey,
+        group: &str,
+        placement: Placement<'_>,
+    ) -> Result<bool, MoveError> {
+        if !self.groups.iter().any(|g| g.id == group) {
+            return Err(MoveError::UnknownGroup(group.to_owned()));
+        }
+        let index = self
+            .items
+            .iter()
+            .position(|item| item.key() == *key)
+            .ok_or_else(|| MoveError::UnknownSession(key.session_id.clone()))?;
+        let anchor = match placement {
+            Placement::Before(anchor) | Placement::After(anchor) => Some(anchor),
+            Placement::End => None,
+        };
+        if anchor == Some(key) {
+            return Ok(false);
+        }
+        let neighbours: Vec<&Item> = self
+            .group_items(group)
+            .into_iter()
+            .filter(|item| item.key() != *key)
+            .collect();
+        let (lower, upper) = match (placement, anchor) {
+            (Placement::End, _) | (_, None) => (neighbours.last().map(|i| i.order.as_str()), None),
+            (placement, Some(anchor)) => {
+                let at = neighbours
+                    .iter()
+                    .position(|item| item.key() == *anchor)
+                    .ok_or_else(|| MoveError::AnchorNotInGroup(anchor.session_id.clone()))?;
+                let slot = at + usize::from(matches!(placement, Placement::After(_)));
+                (
+                    slot.checked_sub(1).map(|i| neighbours[i].order.as_str()),
+                    neighbours.get(slot).map(|i| i.order.as_str()),
+                )
+            }
+        };
+        let current = &self.items[index];
+        let stays = current.group == group
+            && lower.is_none_or(|lower| lower < current.order.as_str())
+            && upper.is_none_or(|upper| current.order.as_str() < upper);
+        if stays {
+            return Ok(false);
+        }
+        if let (Some(lower), Some(upper)) = (lower, upper)
+            && lower >= upper
+        {
+            return Err(MoveError::AmbiguousOrder(group.to_owned()));
+        }
+        let order = sort_key::between(lower, upper);
+        let item = &mut self.items[index];
+        item.group = group.to_owned();
+        item.order = order;
+        item.manual = true;
+        Ok(true)
     }
 
     /// Groups in order, each with the rows of its items in order. A row
@@ -196,14 +300,7 @@ impl Layout {
         groups
             .into_iter()
             .map(|group| {
-                let mut items: Vec<&Item> = self
-                    .items
-                    .iter()
-                    .filter(|item| item.group == group.id)
-                    .collect();
-                items.sort_by(|a, b| {
-                    (&a.order, &a.host, &a.session_id).cmp(&(&b.order, &b.host, &b.session_id))
-                });
+                let items = self.group_items(&group.id);
                 GroupSection {
                     id: group.id.clone(),
                     name: group.name.clone(),
@@ -375,6 +472,22 @@ impl LayoutStore {
         result
     }
 
+    /// Moves a session (see [`Layout::move_session`]) and logs it with keys
+    /// and group ids only. The change reaches the file at the next
+    /// [`save_if_changed`](Self::save_if_changed).
+    pub fn move_session(
+        &mut self,
+        key: &SessionKey,
+        group: &str,
+        placement: Placement<'_>,
+    ) -> Result<bool, MoveError> {
+        let changed = self.layout.move_session(key, group, placement)?;
+        if changed {
+            info!(session = %key.session_id, group, placement = ?placement_log(placement), "session moved");
+        }
+        Ok(changed)
+    }
+
     /// Writes the layout when it differs from the file; returns whether it
     /// wrote. Does nothing for a layout that failed to load.
     pub fn save_if_changed(&mut self) -> Result<bool, LayoutError> {
@@ -396,6 +509,14 @@ impl LayoutStore {
         );
         self.saved = Some(self.layout.clone());
         Ok(true)
+    }
+}
+
+fn placement_log(placement: Placement<'_>) -> String {
+    match placement {
+        Placement::Before(anchor) => format!("before {}", anchor.session_id),
+        Placement::After(anchor) => format!("after {}", anchor.session_id),
+        Placement::End => "end".to_owned(),
     }
 }
 
@@ -469,6 +590,145 @@ mod tests {
         assert_eq!(result.pruned, keys(&["s2"]));
         assert_eq!(result.added, keys(&["s4", "s5"]));
         assert_eq!(inbox_order(&layout), ["s1", "s3", "s4", "s5"]);
+    }
+
+    const THREE_GROUPS: &str = r#"
+version = 1
+[[groups]]
+id = "inbox"
+name = "Inbox"
+order = "g"
+[[groups]]
+id = "work"
+name = "Work"
+order = "n"
+[[groups]]
+id = "empty"
+name = "Empty"
+order = "t"
+"#;
+
+    fn arranged(ids: &[&str]) -> Layout {
+        let mut layout: Layout = toml::from_str(THREE_GROUPS).expect("parses");
+        layout.reconcile(&keys(ids));
+        layout
+    }
+
+    fn order_of(layout: &Layout, group: &str) -> Vec<String> {
+        layout
+            .group_items(group)
+            .iter()
+            .map(|item| item.session_id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_move_before_after_or_to_the_end_orders_within_and_across_groups() {
+        let mut layout = arranged(&["a", "b", "c", "d"]);
+        let move_to = |layout: &mut Layout, id: &str, group: &str, p: Placement<'_>| {
+            assert_eq!(layout.move_session(&key(id), group, p), Ok(true));
+        };
+        move_to(&mut layout, "d", INBOX_ID, Placement::Before(&key("a")));
+        assert_eq!(order_of(&layout, INBOX_ID), ["d", "a", "b", "c"]);
+        move_to(&mut layout, "d", INBOX_ID, Placement::After(&key("b")));
+        assert_eq!(order_of(&layout, INBOX_ID), ["a", "b", "d", "c"]);
+        move_to(&mut layout, "a", INBOX_ID, Placement::End);
+        assert_eq!(order_of(&layout, INBOX_ID), ["b", "d", "c", "a"]);
+
+        move_to(&mut layout, "b", "empty", Placement::End);
+        assert_eq!(order_of(&layout, "empty"), ["b"]);
+        move_to(&mut layout, "c", "work", Placement::End);
+        move_to(&mut layout, "a", "work", Placement::Before(&key("c")));
+        move_to(&mut layout, "d", "work", Placement::After(&key("a")));
+        assert_eq!(order_of(&layout, "work"), ["a", "d", "c"]);
+        assert!(order_of(&layout, INBOX_ID).is_empty());
+    }
+
+    #[test]
+    fn a_move_changes_one_item_and_marks_it_manual() {
+        let mut layout = arranged(&["a", "b", "c"]);
+        let before = layout.clone();
+        layout
+            .move_session(&key("c"), "work", Placement::End)
+            .expect("moves");
+        for (old, new) in before.items().iter().zip(layout.items()) {
+            if old.session_id == "c" {
+                assert_eq!((new.group.as_str(), new.manual), ("work", true));
+            } else {
+                assert_eq!(old, new);
+            }
+        }
+        let text = layout.to_toml();
+        assert_eq!(text.matches("manual = true").count(), 1);
+    }
+
+    #[test]
+    fn dropping_a_session_where_it_is_or_on_itself_changes_nothing() {
+        let mut layout = arranged(&["a", "b", "c"]);
+        layout
+            .move_session(&key("b"), INBOX_ID, Placement::After(&key("a")))
+            .expect("moves");
+        let settled = layout.clone();
+        for placement in [
+            Placement::After(&key("a")),
+            Placement::Before(&key("c")),
+            Placement::Before(&key("b")),
+        ] {
+            assert_eq!(
+                layout.move_session(&key("b"), INBOX_ID, placement),
+                Ok(false)
+            );
+        }
+        assert_eq!(layout, settled);
+    }
+
+    #[test]
+    fn a_move_between_neighbours_with_equal_keys_is_refused() {
+        let mut layout = arranged(&["a", "b", "c"]);
+        let same = layout.items()[0].order.clone();
+        layout.items[1].order = same;
+        let before = layout.clone();
+        assert_eq!(
+            layout.move_session(&key("c"), INBOX_ID, Placement::Before(&key("b"))),
+            Err(MoveError::AmbiguousOrder(INBOX_ID.to_owned()))
+        );
+        assert_eq!(layout, before);
+    }
+
+    #[test]
+    fn a_refused_move_leaves_the_layout_unchanged() {
+        let mut layout = arranged(&["a", "b"]);
+        let before = layout.clone();
+        assert_eq!(
+            layout.move_session(&key("zz"), INBOX_ID, Placement::End),
+            Err(MoveError::UnknownSession("zz".to_owned()))
+        );
+        assert_eq!(
+            layout.move_session(&key("a"), "nope", Placement::End),
+            Err(MoveError::UnknownGroup("nope".to_owned()))
+        );
+        assert_eq!(
+            layout.move_session(&key("a"), "work", Placement::Before(&key("b"))),
+            Err(MoveError::AnchorNotInGroup("b".to_owned()))
+        );
+        assert_eq!(layout, before);
+    }
+
+    #[test]
+    fn a_manual_flag_survives_save_and_load() {
+        let dir = scratch("manual");
+        let path = dir.join(LAYOUT_FILE);
+        let (mut store, _) = LayoutStore::open(path.clone());
+        store.reconcile(&keys(&["s1", "s2"]));
+        store
+            .move_session(&key("s1"), INBOX_ID, Placement::End)
+            .expect("moves");
+        assert!(store.save_if_changed().expect("saves"));
+        let (reloaded, error) = LayoutStore::open(path);
+        assert!(error.is_none());
+        assert_eq!(reloaded.layout(), store.layout());
+        assert!(reloaded.layout().items().iter().any(|i| i.manual));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

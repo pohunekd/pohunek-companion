@@ -24,7 +24,8 @@ pub use badge::{WorkBadge, WorkFacts, clip_display};
 pub use config::{Config, ConfigError, DaemonConfig, TrayConfig};
 pub use error::CoreError;
 pub use layout::{
-    GroupSection, INBOX_ID, LayoutError, LayoutStore, Reconciled, layout_path, state_dir,
+    GroupSection, INBOX_ID, LayoutError, LayoutStore, MoveError, Placement, Reconciled,
+    layout_path, state_dir,
 };
 pub use live::{LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
