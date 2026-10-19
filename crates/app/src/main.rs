@@ -9,9 +9,9 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
-    INBOX_ID, LayoutStore, LiveUpdate, NEEDS_YOU_ID, OwnerState, Placement, PlacementRule,
-    SessionKey, SessionRow, TraySummary, View, ViewConfig, attach, clip_display, layout_path,
-    run_live,
+    INBOX_ID, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState, Placement,
+    PlacementRule, SessionKey, SessionRow, TraySummary, View, ViewConfig, attach, clip_display,
+    layout_path, run_live,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{error, info, warn};
@@ -86,6 +86,9 @@ struct LayoutState {
     store: LayoutStore,
     rows: Vec<SessionRow>,
     load_error: Option<String>,
+    /// Placement rules from `companion.toml`, applied to sessions the owner
+    /// hands back with "Return to rule placement".
+    rules: Vec<PlacementRule>,
     /// Longest title of a derived section, from `view.section_title_max_chars`.
     title_max_chars: usize,
 }
@@ -137,6 +140,7 @@ enum LayoutRequest {
         after: bool,
     },
     DeleteGroup(String),
+    ReturnToRule(SessionKey),
 }
 
 /// Selects the view on a background thread (the save waits on disk) and shows
@@ -234,6 +238,22 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
                     .err()
                     .and_then(|err| group_refusal("move the group", &id, &err)),
             )
+        }
+        LayoutRequest::ReturnToRule(key) => {
+            let LayoutState {
+                store, rows, rules, ..
+            } = state;
+            let outcome = match rows.iter().find(|row| row.key == key) {
+                Some(row) => store.return_to_rule(row, rules),
+                None => Err(MoveError::UnknownSession(key.session_id.clone())),
+            };
+            Refusal {
+                drop: outcome.err().map(|err| {
+                    warn!(session = %key.session_id, error = %err, "return to rule refused");
+                    format!("Cannot return {} to rule placement: {err}", key.session_id)
+                }),
+                group: None,
+            }
         }
         LayoutRequest::DeleteGroup(id) => group(
             state
@@ -446,6 +466,7 @@ fn main() -> Result<(), slint::PlatformError> {
         store: layout,
         rows: Vec::new(),
         load_error: layout_error.clone(),
+        rules: Vec::new(),
         title_max_chars: ViewConfig::default().section_title_max_chars,
     }));
     window.set_layout_error(layout_error.clone().unwrap_or_default().into());
@@ -462,7 +483,11 @@ fn main() -> Result<(), slint::PlatformError> {
     let config_path = Config::path().map_err(|err| err.to_string());
     let attach_context = match Config::load() {
         Ok(config) => {
-            lock(&layout).title_max_chars = config.view.section_title_max_chars;
+            {
+                let mut state = lock(&layout);
+                state.title_max_chars = config.view.section_title_max_chars;
+                state.rules = config.layout.rules.clone();
+            }
             let context = AttachContext {
                 config_path,
                 settings: Ok(config.attach()),
@@ -624,6 +649,15 @@ fn main() -> Result<(), slint::PlatformError> {
                     id: id.into(),
                     collapsed,
                 })
+            }
+        });
+        window.on_return_to_rule({
+            let send = send.clone();
+            move |host, id| {
+                send(LayoutRequest::ReturnToRule(SessionKey {
+                    host: host.into(),
+                    session_id: id.into(),
+                }))
             }
         });
         window.on_delete_group(move |id| send(LayoutRequest::DeleteGroup(id.into())));
