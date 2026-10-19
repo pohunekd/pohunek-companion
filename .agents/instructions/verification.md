@@ -47,6 +47,13 @@ was done and observed (and a screenshot for visible changes). On Linux the
 session runs Wayland; macOS behaviour that was not run on a Mac is reported as
 unverified, not as passed.
 
+Agent sessions share the owner's live desktop. Never inject synthetic input
+there (uinput, ydotool, wtype, xdotool, `swaymsg seat`): it lands in whatever
+window has focus. Automated UI interaction runs only inside a nested headless
+compositor with its own socket (for example `WLR_BACKENDS=headless sway`);
+anything that cannot be driven there is left to the owner as a manual check
+with exact steps on the issue.
+
 ## CI
 
 `.github/workflows/ci.yml` is built to finish a PR in a few minutes:
