@@ -191,6 +191,26 @@ impl GroupError {
     }
 }
 
+/// Why creating a group and moving a session into it was refused; the layout
+/// is left unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CreateAndMoveError {
+    #[error(transparent)]
+    Group(#[from] GroupError),
+    #[error(transparent)]
+    Move(#[from] MoveError),
+}
+
+impl CreateAndMoveError {
+    /// A label for logs that names the refusal without the group name.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Group(err) => err.kind(),
+            Self::Move(_) => "move refused",
+        }
+    }
+}
+
 /// What a reconcile changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reconciled {
@@ -557,6 +577,30 @@ impl Layout {
         Ok(id)
     }
 
+    /// Appends a group and moves `key` to its end as one change: on any
+    /// refusal the layout is left as it was. Returns the new group's id.
+    pub fn create_group_and_move(
+        &mut self,
+        name: &str,
+        key: &SessionKey,
+    ) -> Result<String, CreateAndMoveError> {
+        if !self.items.iter().any(|item| item.key() == *key) {
+            return Err(MoveError::UnknownSession(key.session_id.clone()).into());
+        }
+        let before = self.clone();
+        let outcome = self
+            .create_group(name)
+            .map_err(CreateAndMoveError::from)
+            .and_then(|id| {
+                self.move_session(key, &id, Placement::End)?;
+                Ok(id)
+            });
+        if outcome.is_err() {
+            *self = before;
+        }
+        outcome
+    }
+
     /// Renames a group; Inbox keeps its name. Returns whether the name changed.
     pub fn rename_group(&mut self, id: &str, name: &str) -> Result<bool, GroupError> {
         let index = self.group_index(id)?;
@@ -910,6 +954,18 @@ impl LayoutStore {
         Ok(id)
     }
 
+    /// Creates a group and moves a session to its end (see
+    /// [`Layout::create_group_and_move`]); logs keys and the group id only.
+    pub fn create_group_and_move(
+        &mut self,
+        name: &str,
+        key: &SessionKey,
+    ) -> Result<String, CreateAndMoveError> {
+        let id = self.layout.create_group_and_move(name, key)?;
+        info!(group = %id, session = %key.session_id, operation = "create and move", "group changed");
+        Ok(id)
+    }
+
     pub fn rename_group(&mut self, id: &str, name: &str) -> Result<bool, GroupError> {
         let changed = self.layout.rename_group(id, name)?;
         if changed {
@@ -1239,6 +1295,31 @@ order = "t"
         // Renaming a group to its own name in another case is allowed.
         assert_eq!(layout.rename_group(&id, "REVIEW"), Ok(true));
         assert_eq!(layout.rename_group(&id, "REVIEW"), Ok(false));
+    }
+
+    #[test]
+    fn create_and_move_adds_one_group_and_one_manual_item_or_changes_nothing() {
+        let mut layout = arranged(&["a", "b"]);
+        let before = layout.clone();
+        for name in ["", "  ", "work", "INBOX"] {
+            assert!(layout.create_group_and_move(name, &key("a")).is_err());
+            assert_eq!(layout, before);
+        }
+        assert!(layout.create_group_and_move("Builds", &key("zz")).is_err());
+        assert_eq!(layout, before);
+
+        let id = layout
+            .create_group_and_move(" Builds ", &key("a"))
+            .expect("creates and moves");
+        assert_eq!(layout.groups().len(), before.groups().len() + 1);
+        assert_eq!(
+            layout.groups().last().map(|g| g.id.as_str()),
+            Some(id.as_str())
+        );
+        let moved: Vec<_> = layout.items().iter().filter(|i| i.group == id).collect();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].key(), key("a"));
+        assert!(moved[0].manual);
     }
 
     #[test]
