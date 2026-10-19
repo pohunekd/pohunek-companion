@@ -54,6 +54,7 @@ links to them. Edit only `.agents/skills/`.
 ```bash
 scripts/gates                 # fmt, clippy, tests: the same set CI runs
 cargo run -p pohunek-companion
+scripts/ui-agent start        # headless app + Slint MCP: screenshots, element tree, clicks
 ```
 
 Never read `.env*`, key, or credential files, and never print a secret value.

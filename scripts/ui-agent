@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# Runs the companion with Slint's embedded MCP server so an agent can take
+# screenshots, read the element tree, and click, without touching the owner's
+# desktop. The MCP feature is a command-line feature of this script only; it
+# is never part of Cargo.toml features, so normal and release builds do not
+# contain the server.
+#
+#   scripts/ui-agent start [--port N] [--windowed]   build, run, print endpoint
+#   scripts/ui-agent stop                            stop the instance
+#   scripts/ui-agent status                          print the endpoint if running
+#   scripts/ui-agent call TOOL [JSON_ARGS]           one MCP tools/call, JSON out
+#   scripts/ui-agent screenshot OUT.png [WINDOW]     save a window as PNG
+#   scripts/ui-agent tree [MAX_ELEMENTS]             element tree of window 1
+#   scripts/ui-agent find ELEMENT_ID                 e.g. SessionRow::row-touch
+#   scripts/ui-agent click ELEMENT_ID [N]            click the Nth match (0-based)
+#   scripts/ui-agent log                             print the app's JSON log path
+#
+# The server binds 127.0.0.1 without authentication: any local process can
+# drive the app while it runs. Use only for agent-run debug builds.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+state=${UI_AGENT_DIR:-$root/target/ui-agent}
+mkdir -p "$state"
+state=$(cd "$state" && pwd)
+bin=$state/cargo-target/debug/pohunek-companion
+pidfile=$state/pid
+endpoint_file=$state/endpoint
+app_log=$state/stdout.log
+
+die() {
+    echo "ui-agent: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"
+}
+
+free_port() {
+    python3 -c 'import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()'
+}
+
+# Prints the pid when the recorded process is this script's binary. `ps` is
+# used instead of /proc so the check also works on macOS.
+running_pid() {
+    [ -f "$pidfile" ] || return 1
+    local pid
+    pid=$(cat "$pidfile")
+    case $(ps -o command= -p "$pid" 2>/dev/null) in
+        "$bin" | "$bin "*) ;;
+        *) return 1 ;;
+    esac
+    echo "$pid"
+}
+
+endpoint() {
+    running_pid >/dev/null || die "not running; start it with: scripts/ui-agent start"
+    cat "$endpoint_file"
+}
+
+start() {
+    local port="" windowed=0
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --port)
+                port=${2:?--port needs a value}
+                case $port in
+                    '' | *[!0-9]* | 0*) die "--port must be a number from 1 to 65535" ;;
+                esac
+                [ "$port" -le 65535 ] || die "--port must be a number from 1 to 65535"
+                shift 2
+                ;;
+            --windowed) windowed=1; shift ;;
+            *) die "unknown start option: $1" ;;
+        esac
+    done
+    need python3
+    need curl
+    need jq
+    if running_pid >/dev/null; then
+        die "already running at $(cat "$endpoint_file"); run scripts/ui-agent stop first"
+    fi
+    [ -n "$port" ] || port=$(free_port)
+
+    mkdir -p "$state"
+    # Debug info is what gives elements their ids; the separate target dir
+    # keeps the MCP build from invalidating the normal one.
+    (
+        cd "$root"
+        SLINT_EMIT_DEBUG_INFO=1 CARGO_TARGET_DIR="$state/cargo-target" \
+            cargo build --locked -p pohunek-companion \
+            --features slint/mcp,slint/renderer-software
+    ) >&2
+
+    # A temporary config whose attach command is harmless: a click on a
+    # session row runs `true` instead of opening a terminal on the owner's
+    # desktop.
+    mkdir -p "$state/config/pohunek"
+    echo 'attach_command = ["true"]' >"$state/config/pohunek/companion.toml"
+
+    local -a envs=(
+        SLINT_EMIT_DEBUG_INFO=1
+        "SLINT_MCP_PORT=$port"
+        "XDG_CONFIG_HOME=$state/config"
+    )
+    if [ "$windowed" -eq 0 ]; then
+        # No display variables: the headless backend renders in process.
+        envs+=(SLINT_BACKEND=headless-software)
+        unset WAYLAND_DISPLAY DISPLAY
+    fi
+    : >"$app_log"
+    (
+        cd "$state"
+        exec env "${envs[@]}" "$bin" >>"$app_log" 2>&1 </dev/null
+    ) &
+    echo $! >"$pidfile"
+    echo "http://127.0.0.1:$port/mcp" >"$endpoint_file"
+
+    local i
+    for i in $(seq 1 100); do
+        if grep -q "Slint MCP server listening" "$app_log" 2>/dev/null; then
+            cat "$endpoint_file"
+            return 0
+        fi
+        running_pid >/dev/null || break
+        sleep 0.2
+    done
+    stop >/dev/null 2>&1 || true
+    die "the MCP server did not start; see $app_log"
+}
+
+stop() {
+    local pid
+    if ! pid=$(running_pid); then
+        rm -f "$pidfile" "$endpoint_file"
+        echo "not running"
+        return 0
+    fi
+    kill "$pid"
+    local i
+    for i in $(seq 1 50); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        die "process $pid did not exit after SIGTERM"
+    fi
+    rm -f "$pidfile" "$endpoint_file"
+    echo "stopped"
+}
+
+rpc() {
+    curl -sS --fail-with-body -X POST "$(endpoint)" \
+        -H "Content-Type: application/json" -d "$1"
+}
+
+# Prints the tool result as JSON text, or the raw result for image content.
+call() {
+    local tool=${1:?tool name required} args=${2:-"{}"}
+    local body
+    body=$(jq -cn --arg t "$tool" --argjson a "$args" \
+        '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$t,arguments:$a}}')
+    rpc "$body"
+}
+
+# The first text content of a tools/call response, parsed as JSON.
+call_json() {
+    call "$@" | jq -e '.result.content[] | select(.type=="text") | .text | fromjson' ||
+        die "tool call failed: $*"
+}
+
+window_handle() {
+    call_json list_windows | jq -ce --argjson n "${1:-0}" '.windowHandles[$n] // empty' ||
+        die "no window"
+}
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+case $cmd in
+    start) start "$@" ;;
+    stop) stop ;;
+    status) endpoint ;;
+    call) call "$@" ;;
+    screenshot)
+        out=${1:?output PNG path required}
+        wh=$(window_handle "${2:-0}")
+        resp=$(call take_screenshot "$(jq -cn --argjson h "$wh" '{windowHandle:$h}')")
+        data=$(printf '%s' "$resp" | jq -er '.result.content[] | select(.type=="image") | .data') ||
+            die "no image in the response: $(printf '%s' "$resp" | cut -c1-300)"
+        printf '%s' "$data" |
+            python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' >"$out.tmp"
+        mv "$out.tmp" "$out"
+        echo "$out"
+        ;;
+    tree)
+        wh=$(window_handle 0)
+        root_handle=$(call_json get_window_properties "$(jq -cn --argjson h "$wh" '{windowHandle:$h}')" |
+            jq -ce '.rootElementHandle // .root_element_handle') || die "no root element"
+        call_json get_element_tree "$(jq -cn --argjson h "$root_handle" --argjson m "${1:-200}" \
+            '{elementHandle:$h,maxElements:$m}')"
+        ;;
+    find)
+        wh=$(window_handle 0)
+        call_json find_elements_by_id "$(jq -cn --argjson h "$wh" --arg id "${1:?element id required}" \
+            '{windowHandle:$h,elementsId:$id}')"
+        ;;
+    click)
+        wh=$(window_handle 0)
+        eh=$(call_json find_elements_by_id "$(jq -cn --argjson h "$wh" --arg id "${1:?element id required}" \
+            '{windowHandle:$h,elementsId:$id}')" |
+            jq -ce --argjson n "${2:-0}" '.elementHandles[$n] // empty')
+        [ -n "$eh" ] || die "no element matches ${1}"
+        call_json click_element "$(jq -cn --argjson h "$eh" '{elementHandle:$h,action:"SingleClick",button:"Left"}')"
+        ;;
+    log) echo "$state/logs/companion.json" ;;
+    *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

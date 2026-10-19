@@ -49,10 +49,52 @@ unverified, not as passed.
 
 Agent sessions share the owner's live desktop. Never inject synthetic input
 there (uinput, ydotool, wtype, xdotool, `swaymsg seat`): it lands in whatever
-window has focus. Automated UI interaction runs only inside a nested headless
-compositor with its own socket (for example `WLR_BACKENDS=headless sway`);
-anything that cannot be driven there is left to the owner as a manual check
-with exact steps on the issue.
+window has focus.
+
+The default agent UI check is Slint's embedded MCP server, driven through
+`scripts/ui-agent`. It builds a debug binary with the command-line feature
+`slint/mcp` into `target/ui-agent/` (never a `Cargo.toml` feature, never in
+release builds or packaging) and runs it on the headless software backend: no
+window, no display, and the real daemon. The tray icon is not part of the
+backend, so a headless run still registers a tray icon on the owner's panel
+while it runs.
+
+```bash
+scripts/ui-agent start                  # prints http://127.0.0.1:<port>/mcp
+scripts/ui-agent screenshot shot.png    # PNG of the window
+scripts/ui-agent tree                   # element tree with ids
+scripts/ui-agent find SessionRow::row-touch
+scripts/ui-agent click SessionRow::row-touch 0
+scripts/ui-agent call TOOL '{"json":"args"}'   # any other Slint MCP tool
+scripts/ui-agent stop                   # always stop it when done
+```
+
+Element ids are `Component::id` from the `.slint` source (for example
+`SessionRow::row-touch`, `SessionRow::name-text`, `AppWindow::session-list`,
+`AppWindow::status-text`); give new elements that agents need to target a
+stable id. Attach PR screenshots taken this way. `start --windowed` uses the
+real winit backend for checks that need it; it opens a window on the owner's
+screen, so use it only when headless cannot show the behaviour.
+
+Rules for the MCP route:
+
+- Needs `jq`, `python3`, and `curl` 7.76 or newer on the host.
+- The server binds 127.0.0.1 without authentication, so any local process can
+  drive the app while it runs. Stop it when the check is done.
+- `scripts/ui-agent` runs the app with a temporary `XDG_CONFIG_HOME` whose
+  `attach_command` is `["true"]`, so clicking a session row logs an `attach`
+  line (`target/ui-agent/logs/companion.json`) instead of opening a terminal.
+  Never click a row with the owner's real `attach_command`.
+- Not covered, left to the owner as a manual check with exact steps on the
+  issue: the tray icon and menu (native, not Slint-rendered) and anything that
+  needs the real compositor. For compositor-level checks a nested headless
+  compositor with its own socket (for example `WLR_BACKENDS=headless sway`) is
+  the only allowed automated route.
+
+macOS: the same script works on a Mac from a shell session (the headless image
+is rendered in process, so no Screen Recording permission is involved). Run it
+in a scratch checkout with its own `UI_AGENT_DIR`, never in the owner's
+checkout.
 
 ## CI
 
