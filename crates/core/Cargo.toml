@@ -1,0 +1,16 @@
+[package]
+name = "pohunek-companion-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Daemon connection and session model for Pohunek Companion; no UI dependency."
+
+[dependencies]
+pohunek-client = { workspace = true }
+rustix = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

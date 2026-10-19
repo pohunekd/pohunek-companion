@@ -1,127 +1,47 @@
 import { ScrollView } from "std-widgets.slint";
 
-export struct RowData {
-    id: int,
-    title: string,
+export struct SessionRowData {
+    name: string,
+    agent: string,
+    state: string,
 }
 
 global Theme {
-    out property <length> row-height: 28px;
-    out property <length> gap: 6px;
-    out property <length> indicator-height: 2px;
+    out property <length> row-height: 36px;
     out property <length> row-radius: 4px;
     out property <length> row-padding: 8px;
     out property <length> row-spacing: 2px;
     out property <length> window-padding: 8px;
-    out property <length> status-font-size: 12px;
-    out property <int> header-font-weight: 700;
+    out property <length> detail-font-size: 11px;
+    out property <length> error-font-size: 13px;
     out property <color> background: #1e1f22;
     out property <color> row: #2b2d31;
-    out property <color> row-dragging: #3a3d44;
     out property <color> text: #e6e6e6;
-    out property <color> accent: #f0a030;
-    out property <color> group-header: #8a8f98;
+    out property <color> detail: #8a8f98;
+    out property <color> error: #e04040;
 }
 
-component Row inherits Rectangle {
-    in property <RowData> data;
-    in property <bool> indicator-above;
-    in property <bool> indicator-below;
-    pure callback payload(RowData) -> data-transfer;
-    callback finished();
+component SessionRow inherits Rectangle {
+    in property <SessionRowData> data;
 
     height: Theme.row-height;
-    background: drag.dragging ? Theme.row-dragging : Theme.row;
+    background: Theme.row;
     border-radius: Theme.row-radius;
 
-    Text {
-        x: Theme.row-padding;
-        text: root.data.title;
-        color: Theme.text;
-        vertical-alignment: center;
-    }
-
-    drag := DragArea {
-        data: root.payload(root.data);
-        allow-move: true;
-        drag-finished(action) => { root.finished(); }
-        // Empirically required: without a mouse-handling child, later drags stop
-        // starting (cause unknown, see docs/architecture.md Findings).
-        TouchArea {
-            mouse-cursor: MouseCursor.grab;
-        }
-    }
-
-    Rectangle {
-        visible: root.indicator-above;
-        y: 0;
-        height: Theme.indicator-height;
-        background: Theme.accent;
-    }
-
-    Rectangle {
-        visible: root.indicator-below;
-        y: root.height - self.height;
-        height: Theme.indicator-height;
-        background: Theme.accent;
-    }
-}
-
-component Group inherits Rectangle {
-    in property <string> name;
-    in property <int> group-index;
-    in property <[RowData]> rows;
-    // Insertion slot shown as the drop indicator, or -1.
-    in property <int> indicator-slot;
-    pure callback payload(RowData) -> data-transfer;
-    callback hover(int, int);
-    callback drop(data-transfer, int, int);
-    callback finished();
-
     VerticalLayout {
-        spacing: Theme.gap;
+        padding-left: Theme.row-padding;
+        padding-right: Theme.row-padding;
+        alignment: center;
         Text {
-            text: root.name;
-            color: Theme.group-header;
-            font-weight: Theme.header-font-weight;
+            text: root.data.name;
+            color: Theme.text;
+            overflow: elide;
         }
-        VerticalLayout {
-            spacing: Theme.row-spacing;
-            for row[i] in root.rows: Rectangle {
-                height: Theme.row-height;
-                DropArea {
-                    can-drop(event) => {
-                        root.hover(root.group-index, i + (event.position.y > Theme.row-height / 2 ? 1 : 0));
-                        DragAction.move
-                    }
-                    dropped(event) => {
-                        root.drop(event.data, root.group-index, i + (event.position.y > Theme.row-height / 2 ? 1 : 0));
-                        DragAction.move
-                    }
-                    Row {
-                        data: row;
-                        indicator-above: root.indicator-slot == i;
-                        indicator-below: i == root.rows.length - 1 && root.indicator-slot == root.rows.length;
-                        payload(r) => { root.payload(r) }
-                        finished => { root.finished(); }
-                    }
-                }
-            }
-        }
-        // Empty space below the rows: dropping here appends to the group.
-        Rectangle {
-            vertical-stretch: 1;
-            min-height: Theme.row-height;
-            DropArea {
-                can-drop(event) => {
-                    root.hover(root.group-index, root.rows.length);
-                    DragAction.move
-                }
-                dropped(event) => {
-                    root.drop(event.data, root.group-index, root.rows.length);
-                    DragAction.move
-                }
-            }
+        Text {
+            text: root.data.agent + " - " + root.data.state;
+            color: Theme.detail;
+            font-size: Theme.detail-font-size;
+            overflow: elide;
         }
     }
 }
@@ -132,42 +52,24 @@ export component AppWindow inherits Window {
     preferred-height: 800px;
     background: Theme.background;
 
-    in property <[RowData]> group-a;
-    in property <[RowData]> group-b;
-    in property <string> status;
-    in-out property <int> indicator-group: -1;
-    in-out property <int> indicator-slot: -1;
-    pure callback payload(RowData) -> data-transfer;
-    callback drop(data-transfer, int, int);
+    in property <[SessionRowData]> sessions;
+    // Typed connection or protocol error; empty when the list is valid.
+    in property <string> error;
 
     VerticalLayout {
         padding: Theme.window-padding;
-        spacing: Theme.gap;
-        Text {
-            text: root.status;
-            color: Theme.text;
-            font-size: Theme.status-font-size;
+        spacing: Theme.row-spacing;
+        if root.error != "": Text {
+            text: root.error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
         }
-        HorizontalLayout {
-            spacing: Theme.gap;
-            for name[g] in ["Inbox", "Review"]: Group {
-                name: name;
-                group-index: g;
-                rows: g == 0 ? root.group-a : root.group-b;
-                indicator-slot: root.indicator-group == g ? root.indicator-slot : -1;
-                payload(r) => { root.payload(r) }
-                hover(gi, slot) => {
-                    root.indicator-group = gi;
-                    root.indicator-slot = slot;
-                }
-                drop(data, gi, slot) => {
-                    root.indicator-group = -1;
-                    root.indicator-slot = -1;
-                    root.drop(data, gi, slot);
-                }
-                finished => {
-                    root.indicator-group = -1;
-                    root.indicator-slot = -1;
+        ScrollView {
+            VerticalLayout {
+                spacing: Theme.row-spacing;
+                for session in root.sessions: SessionRow {
+                    data: session;
                 }
             }
         }
