@@ -34,6 +34,7 @@ pub fn with_needs_you(sections: Vec<GroupSection>) -> Vec<GroupSection> {
     out.push(GroupSection {
         id: NEEDS_YOU_ID.into(),
         name: NEEDS_YOU_NAME.into(),
+        collapsed: false,
         rows: lifted,
     });
     out.extend(rest);
@@ -76,6 +77,7 @@ mod tests {
         GroupSection {
             id: id.into(),
             name: id.into(),
+            collapsed: false,
             rows,
         }
     }
@@ -144,6 +146,22 @@ mod tests {
         let cleared = with_needs_you(rows(OwnerState::Working));
         assert_eq!(cleared.len(), 1);
         assert_eq!(ids(&cleared[0]), ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn a_collapsed_group_still_lifts_its_waiting_sessions() {
+        let mut collapsed = section(
+            "a",
+            vec![
+                row("1", "one", OwnerState::Working, None),
+                row("2", "two", OwnerState::NeedsOwner, None),
+            ],
+        );
+        collapsed.collapsed = true;
+        let out = with_needs_you(vec![collapsed]);
+        assert_eq!(ids(&out[0]), ["2"]);
+        assert!(out[1].collapsed);
+        assert_eq!(ids(&out[1]), ["1"]);
     }
 
     #[test]

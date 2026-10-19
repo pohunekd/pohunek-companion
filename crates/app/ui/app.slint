@@ -1,4 +1,4 @@
-import { AboutSlint, ComboBox, ScrollView } from "std-widgets.slint";
+import { AboutSlint, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 
 export enum OwnerStateKind { needs-owner, working, idle, ended, no-agent-state }
 
@@ -21,6 +21,9 @@ export struct GroupData {
     id: string,
     name: string,
     count: int,
+    collapsed: bool,
+    // Inbox: it can be collapsed and moved but not renamed or deleted.
+    fixed: bool,
     // The leading section of sessions that need the owner.
     needs-you: bool,
     rows: [SessionRowData],
@@ -37,6 +40,12 @@ export global Theme {
     out property <length> error-font-size: 13px;
     out property <length> group-header-height: 24px;
     out property <length> group-spacing: 8px;
+    out property <length> group-button-width: 22px;
+    out property <color> group-button: #8a8f98;
+    out property <color> group-button-hover: #e6e6e6;
+    out property <length> group-edit-height: 22px;
+    out property <length> new-group-height: 26px;
+    out property <color> new-group-text: #8a8f98;
     out property <length> group-font-size: 12px;
     out property <color> group-text: #b5bac1;
     out property <length> badge-row-height: 16px;
@@ -193,16 +202,63 @@ component SessionRow inherits Rectangle {
 component GroupHeader inherits Rectangle {
     in property <string> name;
     in property <int> count;
+    in property <bool> collapsed;
     in property <color> name-color: Theme.group-text;
+    // False for the Needs-you section, which is derived and has no controls.
+    in property <bool> owner-group: true;
+    // False for Inbox: no rename or delete.
+    in property <bool> editable: true;
+    pure callback payload() -> data-transfer;
+    callback toggle-collapse();
+    callback rename(string);
+    callback delete();
+    // The header is a group drop target on its upper or lower half.
+    callback group-dropped(data-transfer, bool);
+    pure callback is-group(data-transfer) -> bool;
+    out property <bool> editing: false;
+    in-out property <bool> drop-after;
 
     height: Theme.group-header-height;
+
+    header-drop := DropArea {
+        enabled: root.owner-group;
+        can-drop(event) => {
+            root.drop-after = event.position.y > self.height / 2;
+            root.is-group(event.data) ? DragAction.move : DragAction.none
+        }
+        dropped(event) => {
+            root.group-dropped(event.data, event.position.y > self.height / 2);
+            DragAction.move
+        }
+        header-drag := DragArea {
+            data: root.payload();
+            enabled: root.owner-group && !root.editing;
+            allow-move: true;
+            // Keeps a mouse-handling child, like the session rows.
+            header-touch := TouchArea { }
+        }
+    }
 
     HorizontalLayout {
         padding-left: Theme.row-padding;
         padding-right: Theme.row-padding;
         spacing: Theme.badge-spacing;
         alignment: start;
-        name-text := Text {
+        if root.owner-group: collapse-touch := TouchArea {
+            width: Theme.group-button-width;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: root.collapsed ? "Expand " + root.name : "Collapse " + root.name;
+            clicked => { root.toggle-collapse(); }
+            Text {
+                text: root.collapsed ? "▸" : "▾";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.group-button;
+                font-size: Theme.group-font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        if !root.editing: name-text := Text {
             text: root.name;
             color: root.name-color;
             font-size: Theme.group-font-size;
@@ -210,13 +266,75 @@ component GroupHeader inherits Rectangle {
             overflow: elide;
             vertical-alignment: center;
         }
-        count-text := Text {
+        if !root.editing: count-text := Text {
             text: root.count;
             color: Theme.detail;
             font-size: Theme.group-font-size;
             horizontal-stretch: 0;
             vertical-alignment: center;
         }
+        if root.editing: edit-scope := FocusScope {
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.editing = false;
+                    return accept;
+                }
+                reject
+            }
+            name-edit := LineEdit {
+                height: Theme.group-edit-height;
+                text: root.name;
+                font-size: Theme.group-font-size;
+                accessible-label: "Group name";
+                init => { self.focus(); self.select-all(); }
+                accepted(value) => {
+                    root.editing = false;
+                    root.rename(value);
+                }
+            }
+        }
+        if root.owner-group && root.editable: rename-touch := TouchArea {
+            width: Theme.group-button-width;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Rename " + root.name;
+            clicked => { root.editing = !root.editing; }
+            Text {
+                text: "✎";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.group-button;
+                font-size: Theme.group-font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        if root.owner-group && root.editable: delete-touch := TouchArea {
+            width: Theme.group-button-width;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Delete " + root.name;
+            clicked => { root.delete(); }
+            Text {
+                text: "✕";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.group-button;
+                font-size: Theme.group-font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    Rectangle {
+        visible: header-drop.has-drag && !root.drop-after;
+        y: 0;
+        height: Theme.drop-indicator-height;
+        background: Theme.drop-indicator;
+    }
+
+    Rectangle {
+        visible: header-drop.has-drag && root.drop-after;
+        y: root.height - self.height;
+        height: Theme.drop-indicator-height;
+        background: Theme.drop-indicator;
     }
 }
 
@@ -253,6 +371,18 @@ export component AppWindow inherits Window {
     callback drop(data-transfer, string, string, string, bool);
     // Whether the drag is over the lower half of the row under it.
     in-out property <bool> indicator-after;
+    // Why the last group operation was refused; empty when it succeeded.
+    in property <string> group-error;
+    callback create-group(string);
+    callback rename-group(string, string);
+    callback toggle-group(string, bool);
+    callback delete-group(string);
+    // Payload of a dragged group header: its group id.
+    pure callback group-payload(string) -> data-transfer;
+    pure callback is-group(data-transfer) -> bool;
+    // Dropped group payload, the group it landed on, and whether after it.
+    callback drop-group(data-transfer, string, bool);
+    in-out property <bool> creating-group;
 
     VerticalLayout {
         padding: Theme.window-padding;
@@ -292,58 +422,115 @@ export component AppWindow inherits Window {
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
+        if root.group-error != "": group-error-text := Text {
+            text: root.group-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.editable && !root.creating-group: new-group-touch := TouchArea {
+            height: Theme.new-group-height;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "New group";
+            clicked => { root.creating-group = true; }
+            Text {
+                x: Theme.row-padding;
+                text: "+ New group";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
+                font-size: Theme.group-font-size;
+                vertical-alignment: center;
+            }
+        }
+        if root.editable && root.creating-group: new-group-scope := FocusScope {
+            height: Theme.new-group-height;
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.creating-group = false;
+                    return accept;
+                }
+                reject
+            }
+            new-group-edit := LineEdit {
+                placeholder-text: "Group name";
+                font-size: Theme.group-font-size;
+                accessible-label: "New group name";
+                init => { self.focus(); }
+                accepted(value) => {
+                    root.creating-group = false;
+                    root.create-group(value);
+                }
+            }
+        }
         session-list := ScrollView {
             VerticalLayout {
                 spacing: Theme.group-spacing;
+                alignment: start;
                 for group in root.groups: VerticalLayout {
                     spacing: Theme.row-spacing;
+                    alignment: start;
                     if group.needs-you: needs-you-header := GroupHeader {
                         name: group.name;
                         count: group.count;
                         name-color: Theme.owner-needs-owner;
+                        owner-group: false;
+                        is-group(data) => { root.is-group(data) }
                     }
                     if !group.needs-you: GroupHeader {
                         name: group.name;
                         count: group.count;
+                        collapsed: group.collapsed;
+                        owner-group: root.editable;
+                        editable: !group.fixed;
+                        payload() => { root.group-payload(group.id) }
+                        is-group(data) => { root.is-group(data) }
+                        toggle-collapse => { root.toggle-group(group.id, !group.collapsed); }
+                        rename(value) => { root.rename-group(group.id, value); }
+                        delete => { root.delete-group(group.id); }
+                        group-dropped(data, after) => { root.drop-group(data, group.id, after); }
                     }
-                    for session in group.rows: row-drop := DropArea {
-                        enabled: root.editable && !group.needs-you;
-                        can-drop(event) => {
-                            root.indicator-after = event.position.y > self.height / 2;
-                            DragAction.move
+                    if !group.collapsed: VerticalLayout {
+                        spacing: Theme.row-spacing;
+                        alignment: start;
+                        for session in group.rows: row-drop := DropArea {
+                            enabled: root.editable && !group.needs-you;
+                            can-drop(event) => {
+                                root.indicator-after = event.position.y > self.height / 2;
+                                root.is-group(event.data) ? DragAction.none : DragAction.move
+                            }
+                            dropped(event) => {
+                                root.drop(event.data, group.id, session.host, session.id, event.position.y > self.height / 2);
+                                DragAction.move
+                            }
+                            SessionRow {
+                                data: session;
+                                draggable: root.editable && !group.needs-you;
+                                indicator-above: row-drop.has-drag && !root.indicator-after;
+                                indicator-below: row-drop.has-drag && root.indicator-after;
+                                payload(row) => { root.payload(row) }
+                                clicked => { root.attach(session.host, session.id, session.attach-refusal); }
+                            }
                         }
-                        dropped(event) => {
-                            root.drop(event.data, group.id, session.host, session.id, event.position.y > self.height / 2);
-                            DragAction.move
-                        }
-                        SessionRow {
-                            data: session;
-                            draggable: root.editable && !group.needs-you;
-                            indicator-above: row-drop.has-drag && !root.indicator-after;
-                            indicator-below: row-drop.has-drag && root.indicator-after;
-                            payload(row) => { root.payload(row) }
-                            clicked => { root.attach(session.host, session.id, session.attach-refusal); }
-                        }
-                    }
-                    // Below the last row (the only target of an empty group):
-                    // dropping here appends to the group.
-                    group-end := DropArea {
-                        enabled: root.editable && !group.needs-you;
-                        visible: root.editable && !group.needs-you;
-                        height: !root.editable || group.needs-you ? 0px : Theme.group-end-drop-height + (group.rows.length == 0 ? Theme.row-height : 0px);
-                        can-drop(event) => {
-                            DragAction.move
-                        }
-                        dropped(event) => {
-                            root.drop(event.data, group.id, "", "", true);
-                            DragAction.move
-                        }
-                        Rectangle {
+                        // Below the last row (the only target of an empty group):
+                        // dropping here appends to the group.
+                        group-end := DropArea {
+                            enabled: root.editable && !group.needs-you;
+                            visible: root.editable && !group.needs-you;
+                            height: !root.editable || group.needs-you ? 0px : Theme.group-end-drop-height + (group.rows.length == 0 ? Theme.row-height : 0px);
+                            can-drop(event) => {
+                                root.is-group(event.data) ? DragAction.none : DragAction.move
+                            }
+                            dropped(event) => {
+                                root.drop(event.data, group.id, "", "", true);
+                                DragAction.move
+                            }
                             Rectangle {
-                                visible: group-end.has-drag;
-                                y: 0;
-                                height: Theme.drop-indicator-height;
-                                background: Theme.drop-indicator;
+                                Rectangle {
+                                    visible: group-end.has-drag;
+                                    y: 0;
+                                    height: Theme.drop-indicator-height;
+                                    background: Theme.drop-indicator;
+                                }
                             }
                         }
                     }

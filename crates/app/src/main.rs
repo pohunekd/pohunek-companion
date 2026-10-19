@@ -8,9 +8,10 @@ mod logging;
 mod tray;
 
 use pohunek_companion_core::{
-    AttachConfig, AttachError, Config, DaemonConfig, GroupSection, LayoutStore, LiveUpdate,
-    NEEDS_YOU_ID, OwnerState, Placement, PlacementRule, SessionKey, SessionRow, TraySummary, View,
-    ViewConfig, attach, clip_display, layout_path, run_live,
+    AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
+    INBOX_ID, LayoutStore, LiveUpdate, NEEDS_YOU_ID, OwnerState, Placement, PlacementRule,
+    SessionKey, SessionRow, TraySummary, View, ViewConfig, attach, clip_display, layout_path,
+    run_live,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{error, info, warn};
@@ -67,6 +68,8 @@ fn group_data(sections: Vec<GroupSection>) -> Vec<GroupData> {
         .into_iter()
         .map(|section| GroupData {
             needs_you: section.id == NEEDS_YOU_ID,
+            fixed: section.id == INBOX_ID,
+            collapsed: section.collapsed,
             id: section.id.into(),
             name: section.name.into(),
             count: i32::try_from(section.rows.len()).unwrap_or(i32::MAX),
@@ -108,12 +111,32 @@ fn save_layout(state: &mut LayoutState) -> Option<String> {
         .or_else(|| state.load_error.clone())
 }
 
-/// A drop to apply to the layout: the dragged session, the target group, and
-/// the anchor session with whether the drop lands after it (none: group end).
-struct DropRequest {
-    key: SessionKey,
-    group: String,
-    anchor: Option<(SessionKey, bool)>,
+/// A layout change the owner made in the window. Sessions and groups are
+/// addressed by key and id, so daemon updates that arrive in the meantime do
+/// not matter.
+enum LayoutRequest {
+    /// The dragged session, the target group, and the anchor session with
+    /// whether the drop lands after it (none: group end).
+    Drop {
+        key: SessionKey,
+        group: String,
+        anchor: Option<(SessionKey, bool)>,
+    },
+    CreateGroup(String),
+    RenameGroup {
+        id: String,
+        name: String,
+    },
+    SetCollapsed {
+        id: String,
+        collapsed: bool,
+    },
+    MoveGroup {
+        id: String,
+        anchor: String,
+        after: bool,
+    },
+    DeleteGroup(String),
 }
 
 /// Selects the view on a background thread (the save waits on disk) and shows
@@ -140,31 +163,107 @@ fn spawn_view_change(window: slint::Weak<AppWindow>, layout: SharedLayout, view:
     });
 }
 
-/// Applies drops one at a time, in the order they were made, off the UI thread
-/// because the save waits on disk. Sessions are addressed by key, so daemon
-/// updates that arrived during the drag do not matter.
-fn spawn_drop_worker(
-    window: slint::Weak<AppWindow>,
-    layout: SharedLayout,
-) -> mpsc::Sender<DropRequest> {
-    let (sender, receiver) = mpsc::channel::<DropRequest>();
-    std::thread::spawn(move || {
-        for DropRequest { key, group, anchor } in receiver {
-            let mut state = lock(&layout);
+/// Why a request was refused, for the owner; a drop and a group operation
+/// each have their own message line.
+#[derive(Default)]
+struct Refusal {
+    drop: Option<String>,
+    group: Option<String>,
+}
+
+fn group_refusal(operation: &str, id: &str, err: &GroupError) -> Option<String> {
+    warn!(group = %id, operation, error = %err, "group operation refused");
+    Some(format!("Cannot {operation}: {err}"))
+}
+
+fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
+    let group = |refusal| Refusal {
+        group: refusal,
+        ..Refusal::default()
+    };
+    match request {
+        LayoutRequest::Drop { key, group, anchor } => {
             let placement = match &anchor {
                 Some((anchor, false)) => Placement::Before(anchor),
                 Some((anchor, true)) => Placement::After(anchor),
                 None => Placement::End,
             };
-            let move_error = state
+            Refusal {
+                drop: state
+                    .store
+                    .move_session(&key, &group, placement)
+                    .err()
+                    .map(|err| {
+                        warn!(session = %key.session_id, group = %group, error = %err, "drop refused");
+                        format!("Cannot move {}: {err}", key.session_id)
+                    }),
+                group: None,
+            }
+        }
+        LayoutRequest::CreateGroup(name) => group(
+            state
                 .store
-                .move_session(&key, &group, placement)
+                .create_group(&name)
                 .err()
-                .map(|err| {
-                    warn!(session = %key.session_id, group = %group, error = %err, "drop refused");
-                    format!("Cannot move {}: {err}", key.session_id)
-                });
-            let layout_error = match (move_error, save_layout(&mut state)) {
+                .and_then(|err| group_refusal("create the group", "new", &err)),
+        ),
+        LayoutRequest::RenameGroup { id, name } => group(
+            state
+                .store
+                .rename_group(&id, &name)
+                .err()
+                .and_then(|err| group_refusal("rename the group", &id, &err)),
+        ),
+        LayoutRequest::SetCollapsed { id, collapsed } => group(
+            state
+                .store
+                .set_collapsed(&id, collapsed)
+                .err()
+                .and_then(|err| group_refusal("collapse the group", &id, &err)),
+        ),
+        LayoutRequest::MoveGroup { id, anchor, after } => {
+            let placement = if after {
+                GroupPlacement::After(&anchor)
+            } else {
+                GroupPlacement::Before(&anchor)
+            };
+            group(
+                state
+                    .store
+                    .move_group(&id, placement)
+                    .err()
+                    .and_then(|err| group_refusal("move the group", &id, &err)),
+            )
+        }
+        LayoutRequest::DeleteGroup(id) => group(
+            state
+                .store
+                .delete_group(&id)
+                .err()
+                .and_then(|err| group_refusal("delete the group", &id, &err)),
+        ),
+    }
+}
+
+/// Payload of a dragged group header: the group's id.
+#[derive(Clone)]
+struct GroupDrag(String);
+
+/// Applies layout changes one at a time, in the order they were made, off the
+/// UI thread because the save waits on disk.
+fn spawn_layout_worker(
+    window: slint::Weak<AppWindow>,
+    layout: SharedLayout,
+) -> mpsc::Sender<LayoutRequest> {
+    let (sender, receiver) = mpsc::channel::<LayoutRequest>();
+    std::thread::spawn(move || {
+        for request in receiver {
+            let mut state = lock(&layout);
+            let Refusal {
+                drop,
+                group: group_error,
+            } = apply_request(&mut state, request);
+            let layout_error = match (drop, save_layout(&mut state)) {
                 (Some(moved), Some(saved)) => Some(format!("{moved}\n{saved}")),
                 (moved, saved) => moved.or(saved),
             };
@@ -175,8 +274,9 @@ fn spawn_drop_worker(
             if let Err(err) = window.upgrade_in_event_loop(move |window| {
                 window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
                 window.set_layout_error(layout_error.unwrap_or_default().into());
+                window.set_group_error(group_error.unwrap_or_default().into());
             }) {
-                error!(error = %err, "deliver the moved layout to the UI");
+                error!(error = %err, "deliver the changed layout to the UI");
             }
         }
     });
@@ -438,36 +538,95 @@ fn main() -> Result<(), slint::PlatformError> {
         }));
         transfer
     });
+    window.on_group_payload(|id| {
+        let mut transfer = slint::DataTransfer::default();
+        transfer.set_user_data(Rc::new(GroupDrag(id.into())));
+        transfer
+    });
+    window.on_is_group(|transfer| {
+        transfer
+            .user_data()
+            .is_some_and(|data| data.downcast_ref::<GroupDrag>().is_some())
+    });
     {
-        let drops = spawn_drop_worker(window.as_weak(), layout.clone());
-        window.on_drop(move |transfer, group, anchor_host, anchor_id, after| {
-            let Some(key) = transfer
-                .user_data()
-                .and_then(|data| data.downcast_ref::<SessionKey>().cloned())
-            else {
-                warn!("drop without a session payload");
-                return;
-            };
-            let anchor = (!anchor_id.is_empty()).then(|| {
-                (
-                    SessionKey {
-                        host: anchor_host.into(),
-                        session_id: anchor_id.into(),
-                    },
-                    after,
-                )
-            });
-            // The dragged row is destroyed by the model change, which arrives
-            // from the worker thread after this callback has returned.
-            let request = DropRequest {
-                key,
-                group: group.into(),
-                anchor,
-            };
-            if drops.send(request).is_err() {
-                error!("the drop worker has stopped");
+        let requests = spawn_layout_worker(window.as_weak(), layout.clone());
+        let send = {
+            let requests = requests.clone();
+            move |request: LayoutRequest| {
+                // The dragged row or header is destroyed by the model change,
+                // which arrives from the worker thread after the callback
+                // that sent the request has returned.
+                if requests.send(request).is_err() {
+                    error!("the layout worker has stopped");
+                }
+            }
+        };
+        window.on_drop({
+            let send = send.clone();
+            move |transfer, group, anchor_host, anchor_id, after| {
+                let Some(key) = transfer
+                    .user_data()
+                    .and_then(|data| data.downcast_ref::<SessionKey>().cloned())
+                else {
+                    warn!("drop without a session payload");
+                    return;
+                };
+                let anchor = (!anchor_id.is_empty()).then(|| {
+                    (
+                        SessionKey {
+                            host: anchor_host.into(),
+                            session_id: anchor_id.into(),
+                        },
+                        after,
+                    )
+                });
+                send(LayoutRequest::Drop {
+                    key,
+                    group: group.into(),
+                    anchor,
+                });
             }
         });
+        window.on_drop_group({
+            let send = send.clone();
+            move |transfer, anchor, after| {
+                let Some(GroupDrag(id)) = transfer
+                    .user_data()
+                    .and_then(|data| data.downcast_ref::<GroupDrag>().cloned())
+                else {
+                    warn!("group drop without a group payload");
+                    return;
+                };
+                send(LayoutRequest::MoveGroup {
+                    id,
+                    anchor: anchor.into(),
+                    after,
+                });
+            }
+        });
+        window.on_create_group({
+            let send = send.clone();
+            move |name| send(LayoutRequest::CreateGroup(name.into()))
+        });
+        window.on_rename_group({
+            let send = send.clone();
+            move |id, name| {
+                send(LayoutRequest::RenameGroup {
+                    id: id.into(),
+                    name: name.into(),
+                })
+            }
+        });
+        window.on_toggle_group({
+            let send = send.clone();
+            move |id, collapsed| {
+                send(LayoutRequest::SetCollapsed {
+                    id: id.into(),
+                    collapsed,
+                })
+            }
+        });
+        window.on_delete_group(move |id| send(LayoutRequest::DeleteGroup(id.into())));
     }
 
     tray::apply_offline(&tray, "Not connected to the daemon");

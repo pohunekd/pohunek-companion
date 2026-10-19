@@ -27,8 +27,8 @@ pub use config::{
 };
 pub use error::CoreError;
 pub use layout::{
-    GroupSection, INBOX_ID, LayoutError, LayoutStore, MoveError, Placement, Reconciled,
-    RulePlacement, layout_path, state_dir,
+    GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError, LayoutStore, MoveError,
+    Placement, Reconciled, RulePlacement, layout_path, state_dir,
 };
 pub use live::{LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};

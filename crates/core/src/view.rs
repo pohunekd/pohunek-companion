@@ -98,6 +98,7 @@ pub fn by_state(arranged: Vec<GroupSection>) -> Vec<GroupSection> {
     let all = GroupSection {
         id: String::new(),
         name: String::new(),
+        collapsed: false,
         rows: arranged.into_iter().flat_map(|s| s.rows).collect(),
     };
     let mut lifted = with_needs_you(vec![all]);
@@ -113,6 +114,7 @@ pub fn by_state(arranged: Vec<GroupSection>) -> Vec<GroupSection> {
             out.push(GroupSection {
                 id: id.to_owned(),
                 name: state.label().to_owned(),
+                collapsed: false,
                 rows,
             });
         }
@@ -250,6 +252,7 @@ mod tests {
         GroupSection {
             id: id.into(),
             name: id.into(),
+            collapsed: false,
             rows,
         }
     }
