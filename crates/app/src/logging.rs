@@ -13,7 +13,13 @@ const LOG_FILE: &str = "companion.json";
 const DEBUG_DIR: &str = "logs";
 const DIR_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
-const MAX_LEVEL: Level = Level::INFO;
+/// Debug builds (development and `scripts/ui-agent`) also keep `debug` events
+/// such as per-query filter timings; installed builds stop at `info`.
+const MAX_LEVEL: Level = if cfg!(debug_assertions) {
+    Level::DEBUG
+} else {
+    Level::INFO
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogError {
