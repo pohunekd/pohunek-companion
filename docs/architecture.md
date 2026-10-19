@@ -122,6 +122,10 @@ Storage and reconciliation:
 - An item is a session now; a whole herd block that moves as a unit and keeps
   its own tree order (manager, then members by role, nested herds inside)
   comes with herds (M3).
+- A drag in My groups moves one session: it rewrites that item's group and
+  sort key only and sets `manual = true` on it, which placement rules must
+  respect. The drop is addressed by session key, so a daemon update during a
+  drag cannot lose it.
 - Drag never changes daemon state: no herd add/remove, no work relinking.
 
 ## Tray states
