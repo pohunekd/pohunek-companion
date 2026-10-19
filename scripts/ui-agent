@@ -33,6 +33,16 @@
 # The server binds 127.0.0.1 without authentication: any local process can
 # drive the app while it runs. Use only for agent-run debug builds.
 set -euo pipefail
+shopt -s inherit_errexit
+
+# A session's inherited POHUNEK_* variables (socket path, session id) must not
+# steer the CLI or the app to another daemon; only the two overrides survive.
+for name in $(compgen -e | grep '^POHUNEK_' || true); do
+    case $name in
+        POHUNEK_CLI | POHUNEKD) ;;
+        *) unset "$name" ;;
+    esac
+done
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 state=${UI_AGENT_DIR:-$root/target/ui-agent}
@@ -134,12 +144,13 @@ remove_iso_dir() {
 start_isolated_daemon() {
     need "$cli"
     local iso bin_dir daemon_bin i line name meta
-    daemon_bin=$(find_daemon_bin)
-    iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX")
-    mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/work"
-    chmod 700 "$iso" "$iso/run"
+    daemon_bin=$(find_daemon_bin) || exit 1
+    iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
     echo "$iso" >"$iso_file"
-    ln -s "$daemon_bin" "$iso/bin/pohunekd"
+    mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/work" &&
+        chmod 700 "$iso" "$iso/run" &&
+        ln -s "$daemon_bin" "$iso/bin/pohunekd" ||
+        { stop >/dev/null 2>&1 || true; die "cannot prepare the isolated directory"; }
     local -a envs
     mapfile -t envs < <(isolated_env "$iso")
     (
@@ -164,11 +175,43 @@ start_isolated_daemon() {
     echo "$iso"
 }
 
+# Calls `fn` with the pid of every process whose environment carries the
+# isolated XDG_RUNTIME_DIR: the daemon and its workers, nothing else.
+each_isolated_pid() {
+    local iso=$1 pid_dir
+    for pid_dir in /proc/[0-9]*; do
+        if { tr '\0' '\n' <"$pid_dir/environ"; } 2>/dev/null | grep -qxF "XDG_RUNTIME_DIR=$iso/run"; then
+            echo "${pid_dir#/proc/}"
+        fi
+    done
+}
+
+kill_isolated() {
+    local pid
+    for pid in $(each_isolated_pid "$1"); do
+        kill "-$2" "$pid" 2>/dev/null || true
+    done
+}
+
+daemon_alive() {
+    [ -n "$(each_isolated_pid "$1")" ]
+}
+
 # Stops the isolated daemon: its sessions first, then the daemon itself.
 stop_isolated_daemon() {
     [ -f "$iso_file" ] || return 0
-    local iso id pid
+    local iso id i
     iso=$(cat "$iso_file")
+    case $iso in
+        */../* | */..) iso="" ;;
+        /tmp/"$iso_prefix".*) ;;
+        *) iso="" ;;
+    esac
+    if [ -z "$iso" ] || [ ! -d "$iso" ]; then
+        echo "ui-agent: ignoring an invalid isolated directory record" >&2
+        rm -f "$iso_file" "$daemon_pidfile"
+        return 0
+    fi
     local -a envs
     mapfile -t envs < <(isolated_env "$iso")
     if [ -S "$iso/run/pohunek/daemon.sock" ]; then
@@ -176,15 +219,15 @@ stop_isolated_daemon() {
             env "${envs[@]}" "$cli" session rm "$id" >/dev/null 2>&1 || true
         done
     fi
-    # Every process of the isolated daemon (the daemon, its workers) carries the
-    # isolated XDG_RUNTIME_DIR in its environment; nothing else does.
-    local pid_dir
-    for pid_dir in /proc/[0-9]*; do
-        if { tr '\0' '\n' <"$pid_dir/environ"; } 2>/dev/null | grep -qxF "XDG_RUNTIME_DIR=$iso/run"; then
-            kill "${pid_dir#/proc/}" 2>/dev/null || true
-        fi
+    kill_isolated "$iso" TERM
+    for i in $(seq 1 50); do
+        daemon_alive "$iso" || break
+        sleep 0.1
     done
-    sleep 1
+    if daemon_alive "$iso"; then
+        kill_isolated "$iso" KILL
+        sleep 0.5
+    fi
     rm -f "$daemon_pidfile"
     remove_iso_dir
 }
@@ -215,10 +258,7 @@ start() {
     [ -n "$port" ] || port=$(free_port)
 
     mkdir -p "$state"
-    local iso=""
-    if [ "$isolated" -eq 1 ]; then
-        iso=$(start_isolated_daemon)
-    fi
+    stop_isolated_daemon
     # Debug info is what gives elements their ids; the separate target dir
     # keeps the MCP build from invalidating the normal one.
     (
@@ -227,6 +267,11 @@ start() {
             cargo build --locked -p pohunek-companion \
             --features slint/mcp,slint/renderer-software
     ) >&2
+
+    local iso=""
+    if [ "$isolated" -eq 1 ]; then
+        iso=$(start_isolated_daemon)
+    fi
 
     # A temporary config whose attach command is harmless (a click on a
     # session row runs `true` instead of opening a terminal on the owner's
