@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod logging;
 mod new_session;
@@ -12,11 +12,11 @@ mod tray;
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
     INBOX_ID, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState, Placement,
-    PlacementRule, SessionKey, SessionRow, TraySummary, View, ViewConfig, attach, clip_display,
-    layout_path, run_live,
+    PlacementRule, SessionFilter, SessionKey, SessionRow, TraySummary, View, ViewConfig, attach,
+    clip_display, filter_sections, layout_path, run_live,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 slint::include_modules!();
 
@@ -75,15 +75,29 @@ type Placements = HashMap<SessionKey, (String, bool)>;
 /// each session's placement, and the owner groups in display order as
 /// (id, name).
 struct Arranged {
+    /// A filter is active and no session matches it.
+    filter_empty: bool,
     sections: Vec<GroupSection>,
     placed: Placements,
     owner_groups: Vec<(String, String)>,
 }
 
 fn arrange(state: &LayoutState) -> Arranged {
+    let started = Instant::now();
     let layout = state.store.layout();
+    let sections = filter_sections(
+        layout.present(&state.rows, state.title_max_chars),
+        &state.filter,
+    );
+    debug!(
+        elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        filtered = state.filter.is_active(),
+        sessions = state.rows.len(),
+        "filter and present"
+    );
     Arranged {
-        sections: layout.present(&state.rows, state.title_max_chars),
+        filter_empty: state.filter.is_active() && sections.is_empty(),
+        sections,
         placed: layout
             .items()
             .iter()
@@ -105,11 +119,13 @@ fn arrange(state: &LayoutState) -> Arranged {
 
 fn show_arranged(window: &AppWindow, arranged: Arranged) {
     let Arranged {
+        filter_empty,
         sections,
         placed,
         owner_groups,
     } = arranged;
     window.set_groups(ModelRc::new(VecModel::from(group_data(sections, &placed))));
+    window.set_filter_empty(filter_empty);
     window.set_owner_groups(ModelRc::new(VecModel::from(
         owner_groups
             .into_iter()
@@ -149,6 +165,8 @@ struct LayoutState {
     rules: Vec<PlacementRule>,
     /// Longest title of a derived section, from `view.section_title_max_chars`.
     title_max_chars: usize,
+    /// The query typed into the filter field; not persisted.
+    filter: SessionFilter,
 }
 
 type SharedLayout = Arc<Mutex<LayoutState>>;
@@ -204,6 +222,8 @@ enum LayoutRequest {
     },
     DeleteGroup(String),
     ReturnToRule(SessionKey),
+    /// The text of the filter field.
+    SetFilter(String),
 }
 
 /// Selects the view on a background thread (the save waits on disk) and shows
@@ -321,6 +341,10 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
                 }),
                 group: None,
             }
+        }
+        LayoutRequest::SetFilter(query) => {
+            state.filter = SessionFilter::new(&query);
+            Refusal::default()
         }
         LayoutRequest::DeleteGroup(id) => group(
             state
@@ -556,6 +580,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         load_error: layout_error.clone(),
         rules: Vec::new(),
         title_max_chars: ViewConfig::default().section_title_max_chars,
+        filter: SessionFilter::default(),
     }));
     window.set_layout_error(layout_error.clone().unwrap_or_default().into());
     window.set_view_names(ModelRc::new(VecModel::from(
@@ -774,6 +799,10 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                     session_id: id.into(),
                 }))
             }
+        });
+        window.on_filter_changed({
+            let send = send.clone();
+            move |query| send(LayoutRequest::SetFilter(query.into()))
         });
         window.on_delete_group(move |id| send(LayoutRequest::DeleteGroup(id.into())));
     }
