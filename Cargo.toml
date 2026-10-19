@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.99"
+repository = "https://github.com/pohunekd/pohunek-companion"
+
+[workspace.dependencies]
+# Slint's default features minus backend-qt, so no Qt toolchain is needed to
+# build; winit + femtovg is the backend and renderer the companion targets.
+slint = { version = "1.18.1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-femtovg",
+    "accessibility",
+    "system-tray",
+] }
+slint-build = "1.18.1"
+
+[workspace.lints.rust]
+# `deny`, not `forbid`: Slint-generated code carries its own allow attributes.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Dependencies carry no debug info: it is the largest share of dev link time
+# and of target/ size, and their backtraces are rarely needed.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
