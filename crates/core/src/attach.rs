@@ -13,12 +13,17 @@ use pohunek_client::protocol::SessionState;
 use serde::{Deserialize, Deserializer};
 use tracing::{error, info};
 
+use crate::attach_macos::{AttachTerminal, open_command, stage_script};
+use crate::attach_path::search_path;
 use crate::session::SessionKey;
 
 const BIN_PLACEHOLDER: &str = "bin";
 const HOST_PLACEHOLDER: &str = "host";
 const ID_PLACEHOLDER: &str = "id";
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const HOME_ENV: &str = "HOME";
+/// Staged Terminal.app scripts, relative to the owner's home directory.
+const SCRIPT_DIR: &str = "Library/Caches/pohunek-companion/attach";
 
 /// Why a session cannot be attached; shown to the owner as is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -50,7 +55,7 @@ impl AttachRefusal {
 /// Why the attach settings or an attach attempt failed.
 #[derive(Debug, thiserror::Error)]
 pub enum AttachError {
-    #[error("attach_command is not set in {}", .config.display())]
+    #[error("neither attach_command nor attach_terminal is set in {}", .config.display())]
     NotConfigured { config: PathBuf },
     #[error("cannot find `{program}` on PATH")]
     NotOnPath { program: String },
@@ -66,6 +71,10 @@ pub enum AttachError {
     },
     #[error("`{}` exited immediately ({status})", .program.display())]
     ExitedEarly { program: PathBuf, status: String },
+    #[error("attach_terminal opens Terminal.app and works on macOS only")]
+    TerminalUnsupported,
+    #[error("cannot stage the Terminal.app script: {0}")]
+    Script(#[source] io::Error),
     #[error("cannot watch `{}`: {source}", .program.display())]
     Watch {
         program: PathBuf,
@@ -185,20 +194,24 @@ impl<'de> Deserialize<'de> for AttachTemplate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachConfig {
     pub command: Option<AttachTemplate>,
+    pub terminal: Option<AttachTerminal>,
     pub pohunek_bin: String,
     pub observe: Duration,
+    pub login_shell_timeout: Duration,
+    pub script_max_age: Duration,
 }
 
-/// Resolves a program word: an absolute path as is, a bare name on `PATH`;
-/// the result is an absolute path to an executable file.
-pub fn resolve_program(program: &str) -> Result<PathBuf, AttachError> {
-    resolve_program_in(program, std::env::var_os("PATH").as_deref())
+/// Resolves a program word: an absolute path as is, a bare name in the search
+/// path (see `attach_path`); the result is an absolute path to an executable
+/// file.
+fn resolve_program(program: &str, config: &AttachConfig) -> Result<PathBuf, AttachError> {
+    if Path::new(program).is_absolute() || program.contains('/') {
+        return resolve_program_in(program, &[]);
+    }
+    resolve_program_in(program, &search_path(config.login_shell_timeout))
 }
 
-fn resolve_program_in(
-    program: &str,
-    path_var: Option<&std::ffi::OsStr>,
-) -> Result<PathBuf, AttachError> {
+fn resolve_program_in(program: &str, search: &[PathBuf]) -> Result<PathBuf, AttachError> {
     let candidate = Path::new(program);
     if candidate.is_absolute() {
         return check_executable(candidate.to_owned());
@@ -211,10 +224,7 @@ fn resolve_program_in(
     let not_found = || AttachError::NotOnPath {
         program: program.to_owned(),
     };
-    for dir in std::env::split_paths(path_var.ok_or_else(not_found)?) {
-        if !dir.is_absolute() {
-            continue;
-        }
+    for dir in search {
         let full = dir.join(program);
         if is_executable_file(&full) {
             return Ok(full);
@@ -267,6 +277,9 @@ fn launch(
     config_path: &Path,
     key: &SessionKey,
 ) -> Result<PathBuf, AttachError> {
+    if let Some(terminal) = config.terminal {
+        return launch_terminal(config, terminal, key);
+    }
     let template = config
         .command
         .as_ref()
@@ -274,20 +287,55 @@ fn launch(
             config: config_path.to_owned(),
         })?;
     let bin = if template.uses_bin() {
-        resolve_program(&config.pohunek_bin)?
+        resolve_program(&config.pohunek_bin, config)?
             .to_string_lossy()
             .into_owned()
     } else {
         String::new()
     };
     let argv = template.render(&bin, &key.host, &key.session_id);
-    let program = resolve_program(&argv[0])?;
+    let program = resolve_program(&argv[0], config)?;
     let child = spawn_detached(&program, &argv[1..])?;
     observe(child, &program, config.observe)?;
     Ok(program)
 }
 
-fn spawn_detached(program: &Path, args: &[String]) -> Result<Child, AttachError> {
+/// Stages the attach script and asks `open` to run it in the terminal app.
+fn launch_terminal(
+    config: &AttachConfig,
+    terminal: AttachTerminal,
+    key: &SessionKey,
+) -> Result<PathBuf, AttachError> {
+    if !cfg!(target_os = "macos") {
+        return Err(AttachError::TerminalUnsupported);
+    }
+    let bin = resolve_program(&config.pohunek_bin, config)?;
+    let home = std::env::var_os(HOME_ENV)
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .ok_or_else(|| {
+            AttachError::Script(io::Error::other("HOME is not set to an absolute path"))
+        })?;
+    let script = stage_script(
+        &home.join(SCRIPT_DIR),
+        config.script_max_age,
+        &bin,
+        &key.host,
+        &key.session_id,
+    )
+    .map_err(AttachError::Script)?;
+    info!(script = %script.display(), "stage the Terminal.app attach script");
+    let (open, args) = open_command(terminal, &script);
+    let open = PathBuf::from(open);
+    let child = spawn_detached(&open, &args)?;
+    observe(child, &open, config.observe)?;
+    Ok(open)
+}
+
+fn spawn_detached<S: AsRef<std::ffi::OsStr>>(
+    program: &Path,
+    args: &[S],
+) -> Result<Child, AttachError> {
     Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -407,18 +455,21 @@ mod tests {
 
     #[test]
     fn bare_names_resolve_on_path_and_relative_paths_are_rejected() {
-        let sh = resolve_program_in("sh", Some("/nonexistent:/usr/bin:/bin".as_ref())).unwrap();
+        let search: Vec<PathBuf> = ["/nonexistent", "/usr/bin", "/bin"]
+            .map(PathBuf::from)
+            .into();
+        let sh = resolve_program_in("sh", &search).unwrap();
         assert!(sh.is_absolute());
         assert!(matches!(
-            resolve_program_in("no-such-program-xyz", Some("/usr/bin".as_ref())),
+            resolve_program_in("no-such-program-xyz", &search),
             Err(AttachError::NotOnPath { .. })
         ));
         assert!(matches!(
-            resolve_program_in("./term", Some("/usr/bin".as_ref())),
+            resolve_program_in("./term", &search),
             Err(AttachError::RelativePath { .. })
         ));
         assert!(matches!(
-            resolve_program_in("/no/such/term", None),
+            resolve_program_in("/no/such/term", &[]),
             Err(AttachError::NotExecutable { .. })
         ));
     }
