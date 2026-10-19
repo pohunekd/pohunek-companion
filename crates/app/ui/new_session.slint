@@ -71,7 +71,7 @@ component FieldLabel inherits Text {
 export component NewSessionWindow inherits Window {
     title: "New session";
     preferred-width: 480px;
-    preferred-height: 420px;
+    preferred-height: 520px;
     background: Theme.background;
     forward-focus: project-field;
 
@@ -82,6 +82,14 @@ export component NewSessionWindow inherits Window {
     in-out property <int> agent-index: -1;
     in-out property <string> session-name;
     in-out property <string> prompt;
+    // "Blank" followed by the project's templates; index 0 is Blank.
+    in property <[string]> template-names;
+    in-out property <int> template-index: 0;
+    // A chosen template's recipe is still being read from the daemon.
+    in property <bool> template-loading;
+    in-out property <string> branch;
+    in-out property <string> base-branch;
+    in-out property <bool> advanced-open: false;
     // The choices are still being read from the daemon.
     in property <bool> loading: true;
     // A create request is in flight, or its outcome is unknown and it must
@@ -89,11 +97,13 @@ export component NewSessionWindow inherits Window {
     in property <bool> busy;
     // Why the choices or the create failed; empty when there is nothing to show.
     in property <string> error;
+    callback project-changed(int);
+    callback template-chosen(int);
     callback submit();
     callback cancel();
 
     pure function can-submit() -> bool {
-        !root.loading && !root.busy && root.project-index >= 0 && root.agent-index >= 0
+        !root.loading && !root.busy && !root.template-loading && root.project-index >= 0 && root.agent-index >= 0
     }
 
     function try-submit() {
@@ -127,6 +137,7 @@ export component NewSessionWindow inherits Window {
                 project-field := ChipField {
                     model: root.project-names;
                     selected-index <=> root.project-index;
+                    selected(index) => { root.project-changed(index); }
                 }
             }
             VerticalLayout {
@@ -135,6 +146,15 @@ export component NewSessionWindow inherits Window {
                 agent-field := ChipField {
                     model: root.agent-names;
                     selected-index <=> root.agent-index;
+                }
+            }
+            if root.template-names.length > 1: VerticalLayout {
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: root.template-loading ? "Template (loading...)" : "Template"; }
+                template-field := ChipField {
+                    model: root.template-names;
+                    selected-index <=> root.template-index;
+                    selected(index) => { root.template-chosen(index); }
                 }
             }
             VerticalLayout {
@@ -153,6 +173,28 @@ export component NewSessionWindow inherits Window {
                     text <=> root.prompt;
                     min-height: DialogTheme.prompt-height;
                     wrap: word-wrap;
+                }
+            }
+            if root.template-index == 0: VerticalLayout {
+                spacing: DialogTheme.field-spacing;
+                advanced-toggle := Rectangle {
+                    height: DialogTheme.button-height;
+                    Text {
+                        text: (root.advanced-open ? "v " : "> ") + "Advanced";
+                        color: Theme.detail;
+                        font-size: DialogTheme.label-font-size;
+                        horizontal-alignment: left;
+                    }
+                    advanced-touch := TouchArea {
+                        clicked => { root.advanced-open = !root.advanced-open; }
+                    }
+                }
+                if root.advanced-open: VerticalLayout {
+                    spacing: DialogTheme.field-spacing;
+                    FieldLabel { text: "Branch (optional)"; }
+                    branch-edit := LineEdit { text <=> root.branch; }
+                    FieldLabel { text: "Base branch (optional)"; }
+                    base-branch-edit := LineEdit { text <=> root.base-branch; }
                 }
             }
             if root.loading: loading-text := Text {

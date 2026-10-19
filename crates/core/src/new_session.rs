@@ -3,10 +3,12 @@
 //! daemon state.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use pohunek_client::protocol::method::{HostInspect, ProjectList};
+use pohunek_client::protocol::method::{HostInspect, ProjectAction, ProjectActions, ProjectList};
 use pohunek_client::protocol::{
-    AgentRuntime, HostCapabilities, ProjectInfo, ProjectListParams, SessionNewParams,
+    ActionSummary, AgentRuntime, HostCapabilities, ProjectActionParams, ProjectActionResult,
+    ProjectActionsParams, ProjectInfo, ProjectListParams, ProviderKind, SessionNewParams,
 };
 use pohunek_client::{Client, ClientError};
 use tracing::{error, info};
@@ -35,6 +37,15 @@ pub struct Choices {
     pub agents: Vec<String>,
 }
 
+/// The launch recipe of a chosen project template. Its prompt is static text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recipe {
+    pub agent: String,
+    pub branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub prompt: String,
+}
+
 /// The form as the owner filled it in.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NewSessionForm {
@@ -42,6 +53,14 @@ pub struct NewSessionForm {
     pub agent: Option<String>,
     pub name: String,
     pub prompt: String,
+    /// The chosen template's recipe; `None` means Blank.
+    pub recipe: Option<Recipe>,
+    /// A template was chosen and its recipe has not arrived yet.
+    pub template_loading: bool,
+    /// Branch override, used only for Blank.
+    pub branch: String,
+    /// Base branch override, used only for Blank.
+    pub base_branch: String,
 }
 
 /// Why a form cannot be submitted; the message is shown as is.
@@ -53,6 +72,33 @@ pub enum FormError {
     NoAgent,
     #[error("The agent `{0}` is not launchable on this host.")]
     AgentNotLaunchable(String),
+    #[error("The template is still loading.")]
+    TemplateLoading,
+}
+
+/// Why a template could not be offered or applied.
+#[derive(Debug, thiserror::Error)]
+pub enum TemplateError {
+    #[error("The template `{0}` uses variables (`${{...}}`); only static templates are supported.")]
+    Variables(String),
+    #[error(transparent)]
+    Daemon(#[from] CoreError),
+}
+
+/// Counts selection changes so a response that arrives after the project or
+/// template changed can be recognised and dropped.
+#[derive(Debug, Default)]
+pub struct Generation(AtomicU64);
+
+impl Generation {
+    /// Invalidates every earlier token and returns the new one.
+    pub fn advance(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn is_current(&self, token: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == token
+    }
 }
 
 /// Why a create did not produce a session.
@@ -127,6 +173,16 @@ pub fn build_params(
     if !agents.iter().any(|offered| offered == agent) {
         return Err(FormError::AgentNotLaunchable(agent.to_owned()));
     }
+    if form.template_loading {
+        return Err(FormError::TemplateLoading);
+    }
+    let (branch, base_branch) = match &form.recipe {
+        Some(recipe) => (recipe.branch.clone(), recipe.base_branch.clone()),
+        None => (
+            trimmed_or_none(&form.branch),
+            trimmed_or_none(&form.base_branch),
+        ),
+    };
     Ok(SessionNewParams {
         agent: agent.to_owned(),
         name: trimmed_or_none(&form.name),
@@ -135,8 +191,8 @@ pub fn build_params(
         rows: config.rows,
         project: Some(project.to_owned()),
         repo: None,
-        branch: None,
-        base_branch: None,
+        branch,
+        base_branch,
         input: trimmed_or_none(&form.prompt),
         extended_input_ready_wait: None,
         metadata: BTreeMap::new(),
@@ -175,6 +231,65 @@ pub async fn load_choices(daemon: &DaemonConfig) -> Result<Choices, CoreError> {
         "new-session choices loaded"
     );
     Ok(choices)
+}
+
+/// Names of the offered templates: the provider-less project actions.
+pub fn template_names(actions: Vec<ActionSummary>) -> Vec<String> {
+    actions
+        .into_iter()
+        .filter(|action| action.provider == ProviderKind::None)
+        .map(|action| action.name)
+        .collect()
+}
+
+/// Turns a resolved action into a recipe, refusing a prompt with `${...}`
+/// variables because rendering is static.
+pub fn recipe_from_action(
+    name: &str,
+    result: ProjectActionResult,
+) -> Result<Recipe, TemplateError> {
+    if result.prompt_content.contains("${") {
+        return Err(TemplateError::Variables(name.to_owned()));
+    }
+    Ok(Recipe {
+        agent: result.agent,
+        branch: result.branch,
+        base_branch: result.base_branch,
+        prompt: result.prompt_content,
+    })
+}
+
+/// Reads the templates of `project` (a project id) from the local daemon.
+pub async fn load_templates(
+    daemon: &DaemonConfig,
+    project: &str,
+) -> Result<Vec<String>, CoreError> {
+    let socket = resolve_socket()?;
+    let mut client = connect(&socket, daemon).await?;
+    let result = client
+        .call::<ProjectActions>(ProjectActionsParams {
+            reference: project.to_owned(),
+        })
+        .await?;
+    Ok(template_names(result.actions))
+}
+
+/// Resolves the template `name` of `project` to its recipe.
+pub async fn load_recipe(
+    daemon: &DaemonConfig,
+    project: &str,
+    name: &str,
+) -> Result<Recipe, TemplateError> {
+    let socket = resolve_socket()?;
+    let mut client = connect(&socket, daemon).await?;
+    let result = client
+        .call::<ProjectAction>(ProjectActionParams {
+            reference: project.to_owned(),
+            name: name.to_owned(),
+        })
+        .await
+        .map_err(CoreError::from)?;
+    recipe_from_action(name, result)
 }
 
 /// Sends exactly one `session.new` and returns the new session's id. Never
@@ -249,6 +364,18 @@ mod tests {
             agent: Some("shell".to_owned()),
             name: "  epsilon-new \n".to_owned(),
             prompt: "\n echo hi  ".to_owned(),
+            ..NewSessionForm::default()
+        }
+    }
+
+    fn action(provider: ProviderKind, prompt: &str) -> ProjectActionResult {
+        ProjectActionResult {
+            provider,
+            agent: "shell".to_owned(),
+            base_branch: Some("main".to_owned()),
+            branch: Some("feat/x".to_owned()),
+            prompt_name: "t".to_owned(),
+            prompt_content: prompt.to_owned(),
         }
     }
 
@@ -345,5 +472,81 @@ mod tests {
         assert_eq!(timeout.to_string(), UNCONFIRMED_MESSAGE);
         let lost = classify(ClientError::Framing("eof".to_owned()));
         assert!(matches!(lost, CreateError::Unconfirmed));
+    }
+
+    #[test]
+    fn recipe_branches_reach_params_and_blank_overrides_are_trimmed() {
+        let config = NewSessionConfig::default();
+        let recipe = recipe_from_action("t", action(ProviderKind::None, "do it")).unwrap();
+        let from_recipe = NewSessionForm {
+            recipe: Some(recipe),
+            branch: "ignored".to_owned(),
+            base_branch: "ignored".to_owned(),
+            ..form()
+        };
+        let params = build_params(&from_recipe, &agents(), &config).unwrap();
+        assert_eq!(params.branch.as_deref(), Some("feat/x"));
+        assert_eq!(params.base_branch.as_deref(), Some("main"));
+
+        let overridden = NewSessionForm {
+            branch: "  topic \n".to_owned(),
+            base_branch: "release".to_owned(),
+            ..form()
+        };
+        let params = build_params(&overridden, &agents(), &config).unwrap();
+        assert_eq!(params.branch.as_deref(), Some("topic"));
+        assert_eq!(params.base_branch.as_deref(), Some("release"));
+
+        let empty = NewSessionForm {
+            branch: " ".to_owned(),
+            ..form()
+        };
+        let params = build_params(&empty, &agents(), &config).unwrap();
+        assert_eq!((params.branch, params.base_branch), (None, None));
+    }
+
+    #[test]
+    fn loading_template_blocks_create() {
+        let loading = NewSessionForm {
+            template_loading: true,
+            ..form()
+        };
+        assert_eq!(
+            build_params(&loading, &agents(), &NewSessionConfig::default()).unwrap_err(),
+            FormError::TemplateLoading
+        );
+    }
+
+    #[test]
+    fn variable_prompt_is_refused_and_static_one_kept() {
+        let refused = recipe_from_action("fix", action(ProviderKind::None, "work on ${issue}"));
+        assert!(matches!(refused, Err(TemplateError::Variables(name)) if name == "fix"));
+        let kept = recipe_from_action("fix", action(ProviderKind::None, "plain $5 text")).unwrap();
+        assert_eq!(kept.prompt, "plain $5 text");
+    }
+
+    #[test]
+    fn only_provider_less_actions_are_templates() {
+        let summary = |name: &str, provider| ActionSummary {
+            name: name.to_owned(),
+            provider,
+            template: "t".to_owned(),
+            layer: pohunek_client::protocol::PromptLayer::InRepo,
+        };
+        let names = template_names(vec![
+            summary("a", ProviderKind::None),
+            summary("b", ProviderKind::GithubPr),
+            summary("c", ProviderKind::None),
+        ]);
+        assert_eq!(names, ["a", "c"]);
+    }
+
+    #[test]
+    fn stale_generation_token_is_not_current() {
+        let generation = Generation::default();
+        let first = generation.advance();
+        assert!(generation.is_current(first));
+        let second = generation.advance();
+        assert!(!generation.is_current(first) && generation.is_current(second));
     }
 }
