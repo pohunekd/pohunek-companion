@@ -70,8 +70,9 @@ fn is_subsequence(needle: &[char], haystack: &[char]) -> bool {
 }
 
 /// Keeps only the matching rows of each section, in their order. While the
-/// filter is active, sections left without a row are dropped; an inactive
-/// filter returns the sections unchanged.
+/// filter is active, sections left without a row are dropped and the rest are
+/// shown expanded so their matches are visible; an inactive filter returns the
+/// sections unchanged.
 pub fn filter_sections(sections: Vec<GroupSection>, filter: &SessionFilter) -> Vec<GroupSection> {
     if !filter.is_active() {
         return sections;
@@ -80,6 +81,7 @@ pub fn filter_sections(sections: Vec<GroupSection>, filter: &SessionFilter) -> V
         .into_iter()
         .filter_map(|mut section| {
             section.rows.retain(|row| filter.matches(row));
+            section.collapsed = false;
             (!section.rows.is_empty()).then_some(section)
         })
         .collect()
@@ -188,6 +190,11 @@ mod tests {
         let out = filter_sections(sections.clone(), &SessionFilter::new("beta"));
         assert_eq!(ids(&out), [vec!["1", "3"]]);
         assert!(filter_sections(sections.clone(), &SessionFilter::new("qqq")).is_empty());
+        let mut collapsed = sections.clone();
+        collapsed[1].collapsed = true;
+        let out = filter_sections(collapsed, &SessionFilter::new("gamma"));
+        assert_eq!(ids(&out), [vec!["4"]]);
+        assert!(!out[0].collapsed);
         assert_eq!(
             filter_sections(sections.clone(), &SessionFilter::new(" ")),
             sections
