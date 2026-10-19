@@ -208,7 +208,7 @@ fn resolve_program(program: &str, config: &AttachConfig) -> Result<PathBuf, Atta
     if Path::new(program).is_absolute() || program.contains('/') {
         return resolve_program_in(program, &[]);
     }
-    resolve_program_in(program, search_path(config.login_shell_timeout))
+    resolve_program_in(program, &search_path(config.login_shell_timeout))
 }
 
 fn resolve_program_in(program: &str, search: &[PathBuf]) -> Result<PathBuf, AttachError> {
@@ -324,6 +324,7 @@ fn launch_terminal(
         &key.session_id,
     )
     .map_err(AttachError::Script)?;
+    info!(script = %script.display(), "stage the Terminal.app attach script");
     let (open, args) = open_command(terminal, &script);
     let open = PathBuf::from(open);
     let child = spawn_detached(&open, &args)?;

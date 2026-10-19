@@ -3,22 +3,21 @@
 //! and a fixed list of package-manager directories are consulted as well.
 
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use rustix::process::{Pid, Signal, kill_process_group};
 use tracing::warn;
 
 const SHELL_ENV: &str = "SHELL";
 const HOME_ENV: &str = "HOME";
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-/// Grace period for the reader thread after the probe shell is killed.
-const READER_GRACE: Duration = Duration::from_millis(200);
 /// Printed around `$PATH` so output from the shell's startup files is ignored.
 const PROBE_MARKER: &str = "__POHUNEK_COMPANION_PATH__";
 const PROBE_SCRIPT: &str =
@@ -56,22 +55,28 @@ pub fn compose_search_path(
     dirs
 }
 
-/// The search path for this process, computed once: the login-shell probe
-/// runs at most one time per run.
-pub fn search_path(login_shell_timeout: Duration) -> &'static [PathBuf] {
-    static PATH: OnceLock<Vec<PathBuf>> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let darwin = cfg!(target_os = "macos");
-        let login = darwin
-            .then(|| probe_login_shell(login_shell_timeout))
-            .flatten();
-        compose_search_path(
-            std::env::var_os("PATH").as_deref(),
-            login.as_deref(),
-            &fallback_dirs(std::env::var_os(HOME_ENV).as_deref()),
-            darwin,
-        )
-    })
+/// The search path for this process. A successful login-shell probe is kept
+/// for the rest of the run; a failed one is retried on the next call so a slow
+/// shell start does not disable the login `PATH` until restart.
+pub fn search_path(login_shell_timeout: Duration) -> Vec<PathBuf> {
+    static PROBED: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    if let Some(path) = PROBED.get() {
+        return path.clone();
+    }
+    let darwin = cfg!(target_os = "macos");
+    let login = darwin
+        .then(|| probe_login_shell(login_shell_timeout))
+        .flatten();
+    let path = compose_search_path(
+        std::env::var_os("PATH").as_deref(),
+        login.as_deref(),
+        &fallback_dirs(std::env::var_os(HOME_ENV).as_deref()),
+        darwin,
+    );
+    if login.is_some() || !darwin {
+        let _ = PROBED.set(path.clone());
+    }
+    path
 }
 
 fn fallback_dirs(home: Option<&OsStr>) -> Vec<PathBuf> {
@@ -115,8 +120,7 @@ fn run_probe(shell: &Path, timeout: Duration) -> Result<Option<OsString>, String
     let mut stdout = child.stdout.take().ok_or("no stdout pipe")?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = tx.send(stdout.read_to_end(&mut out).map(|_| out));
+        let _ = tx.send(read_marked(&mut stdout));
     });
     let deadline = Instant::now() + timeout;
     loop {
@@ -125,18 +129,45 @@ fn run_probe(shell: &Path, timeout: Duration) -> Result<Option<OsString>, String
             Ok(Some(status)) => return Err(format!("shell exited with {status}")),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
             Ok(None) => {
-                let _ = child.kill();
+                kill_group(&child);
                 let _ = child.wait();
                 return Err(format!("shell did not answer within {timeout:?}"));
             }
             Err(err) => return Err(err.to_string()),
         }
     }
-    let out = rx
-        .recv_timeout(READER_GRACE)
+    // The reader stops at the marked value, so background jobs of the shell
+    // that keep the pipe open do not delay the result.
+    rx.recv_timeout(timeout)
         .map_err(|err| err.to_string())?
-        .map_err(|err| err.to_string())?;
-    Ok(extract_marked(&out))
+        .map_err(|err| err.to_string())
+}
+
+/// Kills the probe shell and everything it started in its process group.
+fn kill_group(child: &Child) {
+    let killed = i32::try_from(child.id())
+        .ok()
+        .and_then(Pid::from_raw)
+        .map(|pid| kill_process_group(pid, Signal::KILL));
+    if !matches!(killed, Some(Ok(()))) {
+        warn!("cannot kill the login shell probe process group");
+    }
+}
+
+/// Reads `reader` until the marked value is complete or the stream ends.
+fn read_marked(reader: &mut impl Read) -> io::Result<Option<OsString>> {
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(extract_marked(&out));
+        }
+        out.extend_from_slice(&chunk[..read]);
+        if let Some(value) = extract_marked(&out) {
+            return Ok(Some(value));
+        }
+    }
 }
 
 /// The bytes between the last two probe markers, if present and non-empty.
@@ -235,6 +266,15 @@ mod tests {
         let hung = dir.join("hung-shell");
         std::fs::write(&hung, "#!/bin/sh\nexec sleep 30\n").unwrap();
         std::fs::set_permissions(&hung, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let noisy = dir.join("noisy-shell");
+        std::fs::write(
+            &noisy,
+            format!("#!/bin/sh\nsleep 30 &\nprintf '{PROBE_MARKER}/x:/y{PROBE_MARKER}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&noisy, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let got = run_probe(&noisy, Duration::from_secs(5)).unwrap();
+        assert_eq!(got, Some("/x:/y".into()));
         let started = Instant::now();
         let err = run_probe(&hung, Duration::from_millis(100)).unwrap_err();
         std::fs::remove_dir_all(&dir).unwrap();
