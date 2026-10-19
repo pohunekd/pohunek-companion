@@ -21,6 +21,8 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 state=${UI_AGENT_DIR:-$root/target/ui-agent}
+mkdir -p "$state"
+state=$(cd "$state" && pwd)
 bin=$state/cargo-target/debug/pohunek-companion
 pidfile=$state/pid
 endpoint_file=$state/endpoint
@@ -49,7 +51,10 @@ running_pid() {
     [ -f "$pidfile" ] || return 1
     local pid
     pid=$(cat "$pidfile")
-    [ "$(ps -o command= -p "$pid" 2>/dev/null | cut -d' ' -f1)" = "$bin" ] || return 1
+    case $(ps -o command= -p "$pid" 2>/dev/null) in
+        "$bin" | "$bin "*) ;;
+        *) return 1 ;;
+    esac
     echo "$pid"
 }
 
@@ -62,7 +67,14 @@ start() {
     local port="" windowed=0
     while [ $# -gt 0 ]; do
         case $1 in
-            --port) port=${2:?--port needs a value}; shift 2 ;;
+            --port)
+                port=${2:?--port needs a value}
+                case $port in
+                    '' | *[!0-9]* | 0*) die "--port must be a number from 1 to 65535" ;;
+                esac
+                [ "$port" -le 65535 ] || die "--port must be a number from 1 to 65535"
+                shift 2
+                ;;
             --windowed) windowed=1; shift ;;
             *) die "unknown start option: $1" ;;
         esac
@@ -71,8 +83,7 @@ start() {
     need curl
     need jq
     if running_pid >/dev/null; then
-        cat "$endpoint_file"
-        return 0
+        die "already running at $(cat "$endpoint_file"); run scripts/ui-agent stop first"
     fi
     [ -n "$port" ] || port=$(free_port)
 
@@ -178,9 +189,12 @@ case $cmd in
     screenshot)
         out=${1:?output PNG path required}
         wh=$(window_handle "${2:-0}")
-        call take_screenshot "$(jq -cn --argjson h "$wh" '{windowHandle:$h}')" |
-            jq -er '.result.content[] | select(.type=="image") | .data' |
-            python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' >"$out"
+        resp=$(call take_screenshot "$(jq -cn --argjson h "$wh" '{windowHandle:$h}')")
+        data=$(printf '%s' "$resp" | jq -er '.result.content[] | select(.type=="image") | .data') ||
+            die "no image in the response: $(printf '%s' "$resp" | cut -c1-300)"
+        printf '%s' "$data" |
+            python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' >"$out.tmp"
+        mv "$out.tmp" "$out"
         echo "$out"
         ;;
     tree)
