@@ -12,8 +12,9 @@ mod tray;
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
     INBOX_ID, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState, Placement,
-    PlacementRule, SessionFilter, SessionKey, SessionRow, TraySummary, View, ViewConfig, attach,
-    clip_display, filter_sections, layout_path, run_live,
+    PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow,
+    TraySummary, View, ViewConfig, attach, clip_display, filter_sections, layout_path,
+    project_chips, run_live,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -80,6 +81,18 @@ struct Arranged {
     sections: Vec<GroupSection>,
     placed: Placements,
     owner_groups: Vec<(String, String)>,
+    project_chips: Vec<ProjectChip>,
+    project_index: usize,
+}
+
+/// The identifier the window sends back for a project chip; stable across
+/// session list changes, unlike the chip's position.
+fn chip_key(selection: &ProjectSelection) -> String {
+    match selection {
+        ProjectSelection::All => "all".to_owned(),
+        ProjectSelection::NoProject => "none".to_owned(),
+        ProjectSelection::Project(project) => format!("project:{}", project.id),
+    }
 }
 
 fn arrange(state: &LayoutState) -> Arranged {
@@ -95,9 +108,12 @@ fn arrange(state: &LayoutState) -> Arranged {
         sessions = state.rows.len(),
         "filter and present"
     );
+    let (project_chips, project_index) = project_chips(&state.rows, state.filter.project());
     Arranged {
         filter_empty: state.filter.is_active() && sections.is_empty(),
         sections,
+        project_chips,
+        project_index,
         placed: layout
             .items()
             .iter()
@@ -123,7 +139,22 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
         sections,
         placed,
         owner_groups,
+        project_chips,
+        project_index,
     } = arranged;
+    window.set_project_index(i32::try_from(project_index).unwrap_or_default());
+    window.set_project_keys(ModelRc::new(VecModel::from(
+        project_chips
+            .iter()
+            .map(|chip| slint::SharedString::from(chip_key(&chip.selection)))
+            .collect::<Vec<_>>(),
+    )));
+    window.set_project_names(ModelRc::new(VecModel::from(
+        project_chips
+            .into_iter()
+            .map(|chip| slint::SharedString::from(chip.label))
+            .collect::<Vec<_>>(),
+    )));
     window.set_groups(ModelRc::new(VecModel::from(group_data(sections, &placed))));
     window.set_filter_empty(filter_empty);
     window.set_owner_groups(ModelRc::new(VecModel::from(
@@ -224,6 +255,8 @@ enum LayoutRequest {
     ReturnToRule(SessionKey),
     /// The text of the filter field.
     SetFilter(String),
+    /// The key (`chip_key`) of the project chip the owner picked.
+    SetProject(String),
 }
 
 /// Selects the view on a background thread (the save waits on disk) and shows
@@ -343,7 +376,18 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
             }
         }
         LayoutRequest::SetFilter(query) => {
-            state.filter = SessionFilter::new(&query);
+            state.filter.set_query(&query);
+            Refusal::default()
+        }
+        LayoutRequest::SetProject(key) => {
+            let (chips, _) = project_chips(&state.rows, state.filter.project());
+            match chips
+                .into_iter()
+                .find(|chip| chip_key(&chip.selection) == key)
+            {
+                Some(chip) => state.filter.set_project(chip.selection),
+                None => warn!(chip = %key, "project chip is no longer offered"),
+            }
             Refusal::default()
         }
         LayoutRequest::DeleteGroup(id) => group(
@@ -803,6 +847,10 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         window.on_filter_changed({
             let send = send.clone();
             move |query| send(LayoutRequest::SetFilter(query.into()))
+        });
+        window.on_project_selected({
+            let send = send.clone();
+            move |key| send(LayoutRequest::SetProject(key.into()))
         });
         window.on_delete_group(move |id| send(LayoutRequest::DeleteGroup(id.into())));
     }
