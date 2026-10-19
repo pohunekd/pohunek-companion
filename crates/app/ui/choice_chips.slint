@@ -1,0 +1,46 @@
+// Single-choice row of chips. Colours and sizes come from the caller so the
+// component does not depend on the window's `Theme`.
+export component ChoiceChips inherits FlexboxLayout {
+    in property <[string]> model;
+    in-out property <int> selected-index;
+    in property <length> chip-height;
+    in property <length> chip-padding;
+    in property <length> chip-radius;
+    in property <length> font-size;
+    in property <color> chip-background;
+    in property <color> chip-selected-background;
+    in property <color> chip-hover-background;
+    in property <color> text-color;
+    in property <color> selected-text-color;
+    callback selected(int);
+
+    in property <length> chip-spacing;
+    spacing: root.chip-spacing;
+    for name[index] in root.model: chip := Rectangle {
+        height: root.chip-height;
+        border-radius: root.chip-radius;
+        background: index == root.selected-index ? root.chip-selected-background
+            : chip-touch.has-hover ? root.chip-hover-background
+            : root.chip-background;
+
+        HorizontalLayout {
+            padding-left: root.chip-padding;
+            padding-right: root.chip-padding;
+            Text {
+                text: name;
+                font-size: root.font-size;
+                color: index == root.selected-index ? root.selected-text-color : root.text-color;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                overflow: clip;
+            }
+        }
+
+        chip-touch := TouchArea {
+            clicked => {
+                root.selected-index = index;
+                root.selected(index);
+            }
+        }
+    }
+}

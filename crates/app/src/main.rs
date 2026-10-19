@@ -473,7 +473,7 @@ fn main() -> Result<(), slint::PlatformError> {
     window.set_view_names(ModelRc::new(VecModel::from(
         View::ALL
             .iter()
-            .map(|view| slint::SharedString::from(view.label()))
+            .map(|view| slint::SharedString::from(view.tab_label()))
             .collect::<Vec<_>>(),
     )));
     let view = lock(&layout).store.layout().view();
