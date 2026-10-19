@@ -253,8 +253,8 @@ pub fn recipe_from_action(
     }
     Ok(Recipe {
         agent: result.agent,
-        branch: result.branch,
-        base_branch: result.base_branch,
+        branch: result.branch.as_deref().and_then(trimmed_or_none),
+        base_branch: result.base_branch.as_deref().and_then(trimmed_or_none),
         prompt: result.prompt_content,
     })
 }
@@ -523,6 +523,10 @@ mod tests {
         assert!(matches!(refused, Err(TemplateError::Variables(name)) if name == "fix"));
         let kept = recipe_from_action("fix", action(ProviderKind::None, "plain $5 text")).unwrap();
         assert_eq!(kept.prompt, "plain $5 text");
+        let mut blank_branch = action(ProviderKind::None, "x");
+        blank_branch.branch = Some("  ".to_owned());
+        let recipe = recipe_from_action("fix", blank_branch).unwrap();
+        assert_eq!(recipe.branch, None);
     }
 
     #[test]

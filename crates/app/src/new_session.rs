@@ -181,6 +181,7 @@ impl Templates {
         let (Some(name), Some(project)) = (name, selected_project(window, &self.choices)) else {
             return;
         };
+        info!(template = %name, "template chosen");
         lock(&self.state).loading = true;
         window.set_template_loading(true);
         let this = self.clone();
