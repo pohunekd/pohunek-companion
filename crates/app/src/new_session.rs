@@ -5,8 +5,9 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pohunek_companion_core::{
-    Choices, Config, CreateError, DaemonConfig, NewSessionConfig, NewSessionForm, SessionNewParams,
-    build_params, create_session, load_choices,
+    Choices, Config, CreateError, DaemonConfig, Generation, NewSessionConfig, NewSessionForm,
+    Recipe, SessionNewParams, build_params, create_session, load_choices, load_recipe,
+    load_templates,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -78,11 +79,169 @@ fn show_choices(window: &NewSessionWindow, choices: &Choices, preselect: Option<
     window.set_agent_index(if choices.agents.is_empty() { -1 } else { 0 });
 }
 
+/// Label of the chip that means "no template".
+const BLANK_LABEL: &str = "Blank";
+
+#[derive(Default)]
+struct TemplateState {
+    /// Template names of the selected project, without Blank.
+    names: Vec<String>,
+    /// The applied recipe of the chosen template; `None` for Blank.
+    recipe: Option<Recipe>,
+    loading: bool,
+}
+
+/// Template loading for the selected project. Every project or template
+/// change advances `generation`, and a response that no longer matches it is
+/// dropped.
+#[derive(Clone)]
+struct Templates {
+    daemon: DaemonConfig,
+    choices: Arc<Mutex<Choices>>,
+    generation: Arc<Generation>,
+    state: Arc<Mutex<TemplateState>>,
+}
+
+fn selected_project(window: &NewSessionWindow, choices: &Mutex<Choices>) -> Option<String> {
+    usize::try_from(window.get_project_index())
+        .ok()
+        .and_then(|index| lock(choices).projects.get(index).map(|p| p.id.clone()))
+}
+
+fn show_template_names(window: &NewSessionWindow, names: &[String]) {
+    let labels = std::iter::once(BLANK_LABEL)
+        .chain(names.iter().map(String::as_str))
+        .map(SharedString::from)
+        .collect::<Vec<_>>();
+    window.set_template_names(ModelRc::new(VecModel::from(labels)));
+}
+
+impl Templates {
+    fn new(daemon: DaemonConfig, choices: Arc<Mutex<Choices>>) -> Self {
+        Self {
+            daemon,
+            choices,
+            generation: Arc::new(Generation::default()),
+            state: Arc::new(Mutex::new(TemplateState::default())),
+        }
+    }
+
+    /// Resets to Blank and reads the templates of the selected project.
+    fn project_changed(&self, window: &NewSessionWindow) {
+        let token = self.generation.advance();
+        *lock(&self.state) = TemplateState::default();
+        show_template_names(window, &[]);
+        window.set_template_index(0);
+        window.set_template_loading(false);
+        let Some(project) = selected_project(window, &self.choices) else {
+            return;
+        };
+        let this = self.clone();
+        let weak = window.as_weak();
+        std::thread::spawn(move || {
+            let outcome = block_on(load_templates(&this.daemon, &project))
+                .map_err(|err| format!("cannot start the background runtime: {err}"))
+                .and_then(|loaded| loaded.map_err(|err| err.to_string()));
+            if let Err(message) = &outcome {
+                error!(error = %message, "load project templates");
+            }
+            let delivered = weak.upgrade_in_event_loop(move |window| {
+                if !this.generation.is_current(token) {
+                    return;
+                }
+                match outcome {
+                    Ok(names) => {
+                        show_template_names(&window, &names);
+                        lock(&this.state).names = names;
+                    }
+                    Err(message) => window.set_error(message.into()),
+                }
+            });
+            if let Err(err) = delivered {
+                error!(error = %err, "deliver the project templates to the UI");
+            }
+        });
+    }
+
+    /// Applies the chip at `index` (0 is Blank): reads the recipe and fills
+    /// the prompt and agent from it.
+    fn chosen(&self, window: &NewSessionWindow, index: i32) {
+        let token = self.generation.advance();
+        {
+            let mut state = lock(&self.state);
+            state.recipe = None;
+            state.loading = false;
+        }
+        window.set_template_loading(false);
+        window.set_error("".into());
+        let name = usize::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| lock(&self.state).names.get(index).cloned());
+        let (Some(name), Some(project)) = (name, selected_project(window, &self.choices)) else {
+            return;
+        };
+        info!(template = %name, "template chosen");
+        lock(&self.state).loading = true;
+        window.set_template_loading(true);
+        let this = self.clone();
+        let weak = window.as_weak();
+        std::thread::spawn(move || {
+            let outcome = block_on(load_recipe(&this.daemon, &project, &name))
+                .map_err(|err| format!("cannot start the background runtime: {err}"))
+                .and_then(|loaded| loaded.map_err(|err| err.to_string()));
+            if let Err(message) = &outcome {
+                error!(template = %name, error = %message, "load template");
+            }
+            let delivered = weak.upgrade_in_event_loop(move |window| {
+                if !this.generation.is_current(token) {
+                    return;
+                }
+                lock(&this.state).loading = false;
+                window.set_template_loading(false);
+                match outcome {
+                    Ok(recipe) => this.apply(&window, recipe),
+                    Err(message) => {
+                        window.set_template_index(0);
+                        window.set_error(message.into());
+                    }
+                }
+            });
+            if let Err(err) = delivered {
+                error!(error = %err, "deliver the template to the UI");
+            }
+        });
+    }
+
+    fn apply(&self, window: &NewSessionWindow, recipe: Recipe) {
+        let agent = lock(&self.choices)
+            .agents
+            .iter()
+            .position(|agent| *agent == recipe.agent)
+            .and_then(|index| i32::try_from(index).ok());
+        let Some(agent) = agent else {
+            window.set_template_index(0);
+            window.set_error(
+                format!(
+                    "The template's agent `{}` is not launchable on this host.",
+                    recipe.agent
+                )
+                .into(),
+            );
+            return;
+        };
+        window.set_agent_index(agent);
+        window.set_prompt(recipe.prompt.as_str().into());
+        lock(&self.state).recipe = Some(recipe);
+    }
+}
+
 fn load_in_background(
     window: slint::Weak<NewSessionWindow>,
     daemon: DaemonConfig,
     preselect: Option<String>,
     choices: Arc<Mutex<Choices>>,
+    templates: Templates,
 ) {
     std::thread::spawn(move || {
         let outcome = block_on(load_choices(&daemon))
@@ -102,6 +261,7 @@ fn load_in_background(
                         window.set_error("The daemon reports no launchable agent.".into());
                     }
                     *lock(&choices) = loaded;
+                    templates.project_changed(&window);
                 }
                 Err(message) => window.set_error(message.into()),
             }
@@ -157,28 +317,53 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
     slint::set_xdg_app_id(APP_ID)?;
 
     let choices = Arc::new(Mutex::new(Choices::default()));
+    show_template_names(&window, &[]);
     match Config::load() {
         Ok(config) => {
+            let templates = Templates::new(config.daemon.clone(), choices.clone());
             load_in_background(
                 window.as_weak(),
                 config.daemon.clone(),
                 args.project,
                 choices.clone(),
+                templates.clone(),
             );
+            let on_project = templates.clone();
             let weak = window.as_weak();
+            window.on_project_changed(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    on_project.project_changed(&window);
+                }
+            });
+            let on_template = templates.clone();
+            let weak = window.as_weak();
+            window.on_template_chosen(move |index| {
+                if let Some(window) = weak.upgrade() {
+                    on_template.chosen(&window, index);
+                }
+            });
+            let weak = window.as_weak();
+            let submit_templates = templates.clone();
             window.on_submit(move || {
+                let templates = &submit_templates;
                 let Some(window) = weak.upgrade() else { return };
-                let project = usize::try_from(window.get_project_index())
-                    .ok()
-                    .and_then(|index| lock(&choices).projects.get(index).map(|p| p.id.clone()));
+                let project = selected_project(&window, &choices);
                 let agent = usize::try_from(window.get_agent_index())
                     .ok()
                     .and_then(|index| lock(&choices).agents.get(index).cloned());
+                let (recipe, template_loading) = {
+                    let state = lock(&templates.state);
+                    (state.recipe.clone(), state.loading)
+                };
                 let form = NewSessionForm {
                     project,
                     agent,
                     name: window.get_session_name().into(),
                     prompt: window.get_prompt().into(),
+                    recipe,
+                    template_loading,
+                    branch: window.get_branch().into(),
+                    base_branch: window.get_base_branch().into(),
                 };
                 let agents = lock(&choices).agents.clone();
                 match build_params(&form, &agents, &config.new_session) {
