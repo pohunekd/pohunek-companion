@@ -151,8 +151,8 @@ component SessionRow inherits Rectangle {
     row-menu := ContextMenuArea {
         Menu {
             MenuItem {
+                // A refused row still opens: the attach shows the refusal.
                 title: "Open";
-                enabled: root.data.attach-refusal == "";
                 activated => { root.clicked(); }
             }
             if root.arrangeable: Menu {
