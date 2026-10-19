@@ -115,6 +115,100 @@ or, on macOS, a terminal app. The binary resolution and macOS edge cases follow
 the existing pohunek-work native GUI (`native/crates/gui/src/attach.rs`,
 `bin_resolver.rs`).
 
+## M0 spike result
+
+Decision: **go with Slint.** Tray and drag and drop work on Linux (sway,
+Wayland), exercised with a virtual pointer rather than a physical mouse, and one
+drag-reliability problem has a workaround whose cause is unknown (Findings). As
+committed, the Linux build misses two targets (binary 17.5 MB against 15 MB, RSS
+93 MB against 60 MB); scratch builds with other features and profile settings
+reach 12.7 MB and, with the software renderer, 20 MB RSS at 20 s after start
+(not yet measured at 5 min). Closing that gap is a configuration choice for M1.
+The macOS half is unverified (see D2): the go/no-go for macOS stays open until
+the owner runs the app on the Mac desktop. Qt + cxx-qt and egui stay the
+fallbacks; nothing measured triggers either.
+
+### Verified on Linux (sway 1.12, waybar tray module)
+
+- Tray: an icon whose colour and bars change every 2 s, a tooltip and menu
+  labels that follow, and a menu entry that runs a Rust callback. Observed in
+  waybar (`docs/m0-spike/tray-states.png`) and over D-Bus: the
+  StatusNotifierItem `ToolTip` and the DBusMenu `GetLayout` labels change at
+  runtime, and `Event(clicked)` on the "Bump counter" entry advanced the count
+  between two timer ticks.
+- Drag and drop: rows reorder within a group, move between two groups, and
+  append to a group by dropping in the empty space below it, with a drop
+  indicator between rows (`docs/m0-spike/dnd-*.png`; left half mid-drag, right
+  half after the drop). Payload travels as `DataTransfer::set_user_data`
+  (an in-process Rust value), the model change is applied as `remove` plus
+  `insert` after the drop callback returned.
+- Input was a wlroots virtual pointer in a nested headless sway; a physical
+  mouse was not used. Real-mouse behaviour on the owner's desktop and on macOS
+  is for the owner's manual check.
+
+### Measurements (release profile as committed: thin LTO, strip, femtovg)
+
+| Metric | Target | Linux | macOS (arm64) |
+| --- | --- | --- | --- |
+| Clean `cargo build --release` | < 90 s | 37.6 s (24 cores) | 80.2 s (8 GB host) |
+| Incremental `cargo build` after `touch main.rs` | < 5 s | 0.4 to 0.5 s | 1.0 s |
+| Release binary | < 15 MB | 17.5 MB (17,538,648 B) | 9.8 MB |
+| Idle CPU, window open, 60 s after 5 min | about 0 % | 0.033 % | about 0.5 % (CPU time 2.49 s to 2.78 s over about 60 s, at 6 min) |
+| RSS after 5 min | < 60 MB | 93 MB | 99 MB (at 6 min) |
+
+Idle numbers include the 2 s tray timer of the spike. Linux ran on the
+owner's GPU desktop with the sidebar window rule applied.
+
+Linux build variants, measured in a scratch copy with the same sources:
+
+| Variant | Binary | RSS (20 s after start) |
+| --- | --- | --- |
+| as committed (femtovg, accessibility on) | 17.5 MB | 92 MB |
+| femtovg, without the `accessibility` feature | 15.8 MB | not measured |
+| femtovg, no `accessibility`, `opt-level = "s"`, `panic = "abort"` | 12.7 MB | 88 MB |
+| software renderer, no `accessibility`, `opt-level = "s"`, `panic = "abort"` | 12.9 MB | 20 MB |
+
+So the binary size target is reachable with release-profile and feature
+choices; the 60 MB RAM target is not reachable with femtovg (the GPU driver
+stack dominates RSS) but a 20 MB RSS at 20 s after start was seen with the software renderer
+(5-minute idle not measured), which drew the spike UI correctly in the nested
+compositor. M1 picks the renderer and the release
+profile; this is a configuration decision, not a reason to leave Slint.
+
+### D2: macOS (host zajcaair, run from a remote shell session)
+
+The release binary builds and starts, stays running, and is registered with
+LaunchServices (`lsappinfo list` shows `pohunek-companion`). The window and the
+menu bar item could not be observed from the remote session:
+
+- `osascript -e 'tell application "System Events" to get name of every process whose name contains "pohunek"'`:
+  `execution error: System Events got an error: AppleEvent timed out. (-1712)`
+- `screencapture -x shot.png`: `could not create image from display`
+- the app wrote nothing to stderr.
+
+No claim is made that the tray or drag and drop work on macOS.
+
+### Findings that shape M1 and M2
+
+- `SystemTrayIcon` must be the root of its own exported component, so it is
+  separate from the window component and cannot read window properties
+  directly; its icon and tooltip are set through properties of that component.
+  The root element's own `icon` and `tooltip` have no generated Rust setters.
+- A `DragArea` that has no mouse-handling child stopped starting drags after
+  the first two or three drops (most later presses did not start one), in
+  Slint 1.18.1. With a `TouchArea` child, every one of the roughly 20 drags
+  attempted started and finished. The cause was not found; keep a child on
+  every `DragArea`.
+- The dragged row is destroyed by the model change that the drop causes, so
+  the model is changed after the `dropped` callback has returned.
+- `slint::set_xdg_app_id` works only after the first component is created and
+  before `show()`; window rules match on `pohunek-companion`
+  (`docs/linux-window-rules.md`).
+- The spike hardcodes its few tunables as named constants, reports errors with
+  `eprintln!`, and keeps a few layout literals in the Slint components; real
+  code reads tunables from `companion.toml`, logs with `tracing`, and shows
+  errors in the UI per `.agents/instructions/coding.md`.
+
 ## Delivery phases (milestones)
 
 - **M0 Spike:** Slint tray and drag and drop on the owner's compositor and on
