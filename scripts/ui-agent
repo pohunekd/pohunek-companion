@@ -7,8 +7,9 @@
 # is never part of Cargo.toml features, so normal and release builds do not
 # contain the server.
 #
-#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon]
+#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
+#   scripts/ui-agent restart                         stop and start only the app
 #   scripts/ui-agent stop                            stop the instance
 #   scripts/ui-agent status                          print the endpoint if running
 #   scripts/ui-agent call TOOL [JSON_ARGS]           one MCP tools/call, JSON out
@@ -29,6 +30,11 @@
 # Overrides: POHUNEK_CLI (the pohunek CLI, default `pohunek` on PATH) and
 # POHUNEKD (the daemon binary, default: next to the CLI, then
 # ~/.local/libexec/pohunek/<cli version>/pohunekd, then PATH).
+#
+# `start ... -- APP_ARGS` runs the app with those arguments (for example
+# `-- new-session --project ID`). `restart` stops and starts only the app with
+# the same environment, arguments, and MCP port, so the isolated daemon, its
+# session ids, and the layout file are kept; `stop` still removes everything.
 #
 # The server binds 127.0.0.1 without authentication: any local process can
 # drive the app while it runs. Use only for agent-run debug builds.
@@ -56,6 +62,10 @@ daemon_pidfile=$state/daemon-pid
 iso_prefix=ph-ui-agent
 cli=${POHUNEK_CLI:-pohunek}
 app_log=$state/stdout.log
+# What `restart` replays: the app's environment (one KEY=value per line) and
+# its arguments (NUL-separated).
+launch_env_file=$state/launch-env
+launch_args_file=$state/launch-args
 
 die() {
     echo "ui-agent: $*" >&2
@@ -234,6 +244,7 @@ stop_isolated_daemon() {
 
 start() {
     local port="" windowed=0 isolated=1
+    local -a app_args=()
     while [ $# -gt 0 ]; do
         case $1 in
             --port)
@@ -246,6 +257,7 @@ start() {
                 ;;
             --windowed) windowed=1; shift ;;
             --owner-daemon) isolated=0; shift ;;
+            --) shift; app_args=("$@"); break ;;
             *) die "unknown start option: $1" ;;
         esac
     done
@@ -259,14 +271,8 @@ start() {
 
     mkdir -p "$state"
     stop_isolated_daemon
-    # Debug info is what gives elements their ids; the separate target dir
-    # keeps the MCP build from invalidating the normal one.
-    (
-        cd "$root"
-        SLINT_EMIT_DEBUG_INFO=1 CARGO_TARGET_DIR="$state/cargo-target" \
-            cargo build --locked -p pohunek-companion \
-            --features slint/mcp,slint/renderer-software
-    ) >&2
+    rm -f "$launch_env_file" "$launch_args_file"
+    build_app
 
     local iso=""
     if [ "$isolated" -eq 1 ]; then
@@ -302,10 +308,44 @@ start() {
         envs+=(SLINT_BACKEND=headless-software)
         unset WAYLAND_DISPLAY DISPLAY
     fi
+    if [ "$windowed" -eq 1 ]; then
+        [ -z "${WAYLAND_DISPLAY:-}" ] || envs+=("WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+        [ -z "${DISPLAY:-}" ] || envs+=("DISPLAY=$DISPLAY")
+    fi
+    printf '%s\n' "${envs[@]}" >"$launch_env_file"
+    : >"$launch_args_file"
+    [ "${#app_args[@]}" -eq 0 ] || printf '%s\0' "${app_args[@]}" >"$launch_args_file"
+    launch_app "$port"
+}
+
+# Debug info is what gives elements their ids; the separate target dir keeps
+# the MCP build from invalidating the normal one.
+build_app() {
+    (
+        cd "$root"
+        SLINT_EMIT_DEBUG_INFO=1 CARGO_TARGET_DIR="$state/cargo-target" \
+            cargo build --locked -p pohunek-companion \
+            --features slint/mcp,slint/renderer-software
+    ) >&2
+}
+
+# Runs the app with the recorded environment and arguments and waits for its
+# MCP server. When the server does not come up, stops the app, and the whole
+# instance too unless `keep_daemon` is set.
+launch_app() {
+    local port=$1 keep_daemon=${2:-}
+    local -a envs=() app_args=()
+    mapfile -t envs <"$launch_env_file"
+    mapfile -d '' app_args <"$launch_args_file"
+    # Display variables are absent from the record of a headless run, and the
+    # headless backend must not inherit them from this shell.
+    case " ${envs[*]} " in
+        *" SLINT_BACKEND=headless-software "*) unset WAYLAND_DISPLAY DISPLAY ;;
+    esac
     : >"$app_log"
     (
         cd "$state"
-        exec env "${envs[@]}" "$bin" >>"$app_log" 2>&1 </dev/null
+        exec env "${envs[@]}" "$bin" "${app_args[@]}" >>"$app_log" 2>&1 </dev/null
     ) &
     echo $! >"$pidfile"
     echo "http://127.0.0.1:$port/mcp" >"$endpoint_file"
@@ -319,11 +359,25 @@ start() {
         running_pid >/dev/null || break
         sleep 0.2
     done
-    stop >/dev/null 2>&1 || true
+    if [ -n "$keep_daemon" ]; then stop_app >/dev/null 2>&1 || true; else stop >/dev/null 2>&1 || true; fi
     die "the MCP server did not start; see $app_log"
 }
 
-stop() {
+# Stops only the app and starts it again with the recorded environment,
+# arguments, and port; the isolated daemon and the layout file stay.
+restart() {
+    [ -f "$launch_env_file" ] && [ -f "$launch_args_file" ] ||
+        die "nothing to restart; start it with: scripts/ui-agent start"
+    local port
+    port=$(grep -m1 '^SLINT_MCP_PORT=' "$launch_env_file" | cut -d= -f2) ||
+        die "the launch record has no MCP port"
+    build_app
+    stop_app
+    launch_app "$port" keep_daemon
+}
+
+# Stops the app process and forgets its endpoint; leaves the daemon alone.
+stop_app() {
     local pid
     if pid=$(running_pid); then
         kill "$pid"
@@ -340,6 +394,11 @@ stop() {
         echo "not running"
     fi
     rm -f "$pidfile" "$endpoint_file"
+}
+
+stop() {
+    stop_app
+    rm -f "$launch_env_file" "$launch_args_file"
     stop_isolated_daemon
 }
 
@@ -372,6 +431,7 @@ cmd=${1:-}
 [ $# -gt 0 ] && shift
 case $cmd in
     start) start "$@" ;;
+    restart) [ $# -eq 0 ] || die "restart takes no arguments; pass app arguments to start after --"; restart ;;
     stop) stop ;;
     status) endpoint ;;
     call) call "$@" ;;
@@ -414,5 +474,5 @@ case $cmd in
             echo "$state/state/pohunek-companion/layout.toml"
         fi
         ;;
-    *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -67,8 +67,16 @@ scripts/ui-agent tree                   # element tree with ids
 scripts/ui-agent find SessionRow::row-touch
 scripts/ui-agent click SessionRow::row-touch 0
 scripts/ui-agent call TOOL '{"json":"args"}'   # any other Slint MCP tool
+scripts/ui-agent restart                # stop and start only the app
 scripts/ui-agent stop                   # always stop it when done
 ```
+
+`scripts/ui-agent start [options] -- <app args>` runs the app with those
+arguments (for example `-- new-session --project <id>`). `restart` keeps the
+environment, the arguments, the MCP port, the isolated daemon, and the layout
+file: session ids and `scripts/ui-agent layout` content survive it, which is how
+a restart-persistence check runs in isolated mode. `stop` after a `restart`
+still removes the daemon and the isolated directory.
 
 ## Published evidence
 
