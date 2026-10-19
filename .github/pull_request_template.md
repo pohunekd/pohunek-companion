@@ -1,5 +1,9 @@
 Closes #
 
+<!-- Use "Closes #N" only when this PR meets the issue's full DoD; otherwise
+"Refs #N". Never write a closing keyword (close, fix, resolve) next to an
+issue number anywhere else in the body, even negated: GitHub closes it. -->
+
 ## What and why
 
 <!-- The change, the reason, and any autonomous decision taken. Before/after
