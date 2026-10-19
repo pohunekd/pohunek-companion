@@ -38,6 +38,8 @@
   `crates/app/ui/choice_chips.slint`), never a `ComboBox`.
 - Design tokens (spacing, colours, sizes) are global `.slint` properties, not
   literals scattered across components.
+- Per-session actions live in the session row's right-click context menu
+  (`ContextMenuArea` in `SessionRow`), not in buttons on the row.
 
 ## Configuration
 

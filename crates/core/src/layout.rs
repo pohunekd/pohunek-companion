@@ -533,7 +533,7 @@ impl Layout {
     }
 
     /// Groups in display order.
-    fn ordered_groups(&self) -> Vec<&Group> {
+    pub fn ordered_groups(&self) -> Vec<&Group> {
         let mut groups: Vec<&Group> = self.groups.iter().collect();
         groups.sort_by(|a, b| (&a.order, &a.id).cmp(&(&b.order, &b.id)));
         groups

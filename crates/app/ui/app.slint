@@ -16,6 +16,15 @@ export struct SessionRowData {
     id: string,
     // Why the session cannot be attached; empty when it can.
     attach-refusal: string,
+    // Id of the owner group that holds the session, whatever section shows it.
+    owner-group: string,
+    // The owner placed the session by hand, so placement rules leave it alone.
+    manual: bool,
+}
+
+export struct OwnerGroupData {
+    id: string,
+    name: string,
 }
 
 export struct GroupData {
@@ -110,8 +119,14 @@ component SessionRow inherits Rectangle {
     in property <bool> draggable: true;
     in property <bool> indicator-above;
     in property <bool> indicator-below;
+    // Owner groups in display order, offered by "Move to group".
+    in property <[OwnerGroupData]> owner-groups;
+    // Whether the session can be moved or handed back to the rules.
+    in property <bool> arrangeable;
     pure callback payload(SessionRowData) -> data-transfer;
     callback clicked();
+    callback move-to-group(string);
+    callback return-to-rule();
 
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: row-drag.dragging ? Theme.row-dragging : Theme.row;
@@ -128,6 +143,32 @@ component SessionRow inherits Rectangle {
             accessible-role: button;
             accessible-label: root.data.name;
             clicked => { root.clicked(); }
+        }
+    }
+
+    // On top of the row; only the right button opens the menu, so clicks and
+    // drags reach the DragArea below.
+    row-menu := ContextMenuArea {
+        Menu {
+            MenuItem {
+                // A refused row still opens: the attach shows the refusal.
+                title: "Open";
+                activated => { root.clicked(); }
+            }
+            if root.arrangeable: Menu {
+                title: "Move to group";
+                for owner-group in root.owner-groups: MenuItem {
+                    title: owner-group.name;
+                    checkable: true;
+                    checked: owner-group.id == root.data.owner-group;
+                    enabled: owner-group.id != root.data.owner-group;
+                    activated => { root.move-to-group(owner-group.id); }
+                }
+            }
+            if root.arrangeable && root.data.manual: MenuItem {
+                title: "Return to rule placement";
+                activated => { root.return-to-rule(); }
+            }
         }
     }
 
@@ -377,6 +418,10 @@ export component AppWindow inherits Window {
     callback attach(string, string, string);
     // Hands a manually placed session (host, id) back to the placement rules.
     callback return-to-rule(string, string);
+    // Moves a session (host, id) to the end of an owner group.
+    callback move-to-group(string, string, string);
+    // Owner groups in display order.
+    in property <[OwnerGroupData]> owner-groups;
     callback view-selected(int);
     // Payload of a dragged row: its session.
     pure callback payload(SessionRowData) -> data-transfer;
@@ -542,7 +587,11 @@ export component AppWindow inherits Window {
                                 indicator-above: row-drop.has-drag && !root.indicator-after;
                                 indicator-below: row-drop.has-drag && root.indicator-after;
                                 payload(row) => { root.payload(row) }
+                                owner-groups: root.owner-groups;
+                                arrangeable: root.editable;
                                 clicked => { root.attach(session.host, session.id, session.attach-refusal); }
+                                move-to-group(target) => { root.move-to-group(session.host, session.id, target); }
+                                return-to-rule => { root.return-to-rule(session.host, session.id); }
                             }
                         }
                         // Below the last row (the only target of an empty group):
