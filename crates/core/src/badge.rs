@@ -90,7 +90,7 @@ fn sanitize(value: &str) -> String {
 }
 
 fn is_format_char(c: char) -> bool {
-    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+    matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
 }
 
 /// Clips `text` to at most `max_chars` characters, ending with an ellipsis
