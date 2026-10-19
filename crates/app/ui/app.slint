@@ -92,7 +92,6 @@ component SessionRow inherits Rectangle {
     in property <bool> indicator-below;
     pure callback payload(SessionRowData) -> data-transfer;
     callback clicked();
-    callback drag-finished();
 
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: row-drag.dragging ? Theme.row-dragging : Theme.row;
@@ -101,7 +100,6 @@ component SessionRow inherits Rectangle {
     row-drag := DragArea {
         data: root.payload(root.data);
         allow-move: true;
-        drag-finished(action) => { root.drag-finished(); }
         // A DragArea without a mouse-handling child stops starting drags
         // (docs/architecture.md, findings); the click attaches.
         row-touch := TouchArea {
@@ -243,19 +241,8 @@ export component AppWindow inherits Window {
     // Dropped payload, target group id, anchor session host and id (empty for
     // the end of the group), and whether it lands after the anchor.
     callback drop(data-transfer, string, string, string, bool);
-    // Drop indicator: the group, the anchor session (empty host and id for the
-    // end of the group), and whether the line is below the anchor.
-    in-out property <string> indicator-group;
-    in-out property <string> indicator-host;
-    in-out property <string> indicator-id;
+    // Whether the drag is over the lower half of the row under it.
     in-out property <bool> indicator-after;
-
-    function clear-indicator() {
-        root.indicator-group = "";
-        root.indicator-host = "";
-        root.indicator-id = "";
-        root.indicator-after = false;
-    }
 
     VerticalLayout {
         padding: Theme.window-padding;
@@ -306,24 +293,19 @@ export component AppWindow inherits Window {
                     }
                     for session in group.rows: row-drop := DropArea {
                         can-drop(event) => {
-                            root.indicator-group = group.id;
-                            root.indicator-host = session.host;
-                            root.indicator-id = session.id;
                             root.indicator-after = event.position.y > self.height / 2;
                             DragAction.move
                         }
                         dropped(event) => {
                             root.drop(event.data, group.id, session.host, session.id, event.position.y > self.height / 2);
-                            root.clear-indicator();
                             DragAction.move
                         }
                         SessionRow {
                             data: session;
-                            indicator-above: root.indicator-group == group.id && root.indicator-host == session.host && root.indicator-id == session.id && !root.indicator-after;
-                            indicator-below: root.indicator-group == group.id && root.indicator-host == session.host && root.indicator-id == session.id && root.indicator-after;
+                            indicator-above: row-drop.has-drag && !root.indicator-after;
+                            indicator-below: row-drop.has-drag && root.indicator-after;
                             payload(row) => { root.payload(row) }
                             clicked => { root.attach(session.host, session.id, session.attach-refusal); }
-                            drag-finished => { root.clear-indicator(); }
                         }
                     }
                     // Below the last row (the only target of an empty group):
@@ -331,20 +313,15 @@ export component AppWindow inherits Window {
                     group-end := DropArea {
                         height: Theme.group-end-drop-height + (group.rows.length == 0 ? Theme.row-height : 0px);
                         can-drop(event) => {
-                            root.indicator-group = group.id;
-                            root.indicator-host = "";
-                            root.indicator-id = "";
-                            root.indicator-after = true;
                             DragAction.move
                         }
                         dropped(event) => {
                             root.drop(event.data, group.id, "", "", true);
-                            root.clear-indicator();
                             DragAction.move
                         }
                         Rectangle {
                             Rectangle {
-                                visible: root.indicator-group == group.id && root.indicator-id == "" && root.indicator-host == "";
+                                visible: group-end.has-drag;
                                 y: 0;
                                 height: Theme.drop-indicator-height;
                                 background: Theme.drop-indicator;

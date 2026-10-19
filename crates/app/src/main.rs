@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
 mod logging;
@@ -106,41 +106,52 @@ fn save_layout(state: &mut LayoutState) -> Option<String> {
         .or_else(|| state.load_error.clone())
 }
 
-/// Moves the dropped session in the layout, saves it, and shows the result.
-/// Runs off the UI thread because the save waits on disk; the session is
-/// addressed by key, so daemon updates that arrived during the drag do not
-/// matter.
-fn apply_drop(
-    window: slint::Weak<AppWindow>,
-    layout: SharedLayout,
+/// A drop to apply to the layout: the dragged session, the target group, and
+/// the anchor session with whether the drop lands after it (none: group end).
+struct DropRequest {
     key: SessionKey,
     group: String,
     anchor: Option<(SessionKey, bool)>,
-) {
+}
+
+/// Applies drops one at a time, in the order they were made, off the UI thread
+/// because the save waits on disk. Sessions are addressed by key, so daemon
+/// updates that arrived during the drag do not matter.
+fn spawn_drop_worker(
+    window: slint::Weak<AppWindow>,
+    layout: SharedLayout,
+) -> mpsc::Sender<DropRequest> {
+    let (sender, receiver) = mpsc::channel::<DropRequest>();
     std::thread::spawn(move || {
-        let mut state = lock(&layout);
-        let placement = match &anchor {
-            Some((anchor, false)) => Placement::Before(anchor),
-            Some((anchor, true)) => Placement::After(anchor),
-            None => Placement::End,
-        };
-        let move_error = state
-            .store
-            .move_session(&key, &group, placement)
-            .err()
-            .map(|err| {
-                warn!(session = %key.session_id, group = %group, error = %err, "drop refused");
-                format!("Cannot move {}: {err}", key.session_id)
-            });
-        let layout_error = save_layout(&mut state).or(move_error);
-        let sections = state.store.layout().arrange(&state.rows);
-        if let Err(err) = window.upgrade_in_event_loop(move |window| {
-            window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
-            window.set_layout_error(layout_error.unwrap_or_default().into());
-        }) {
-            error!(error = %err, "deliver the moved layout to the UI");
+        for DropRequest { key, group, anchor } in receiver {
+            let mut state = lock(&layout);
+            let placement = match &anchor {
+                Some((anchor, false)) => Placement::Before(anchor),
+                Some((anchor, true)) => Placement::After(anchor),
+                None => Placement::End,
+            };
+            let move_error = state
+                .store
+                .move_session(&key, &group, placement)
+                .err()
+                .map(|err| {
+                    warn!(session = %key.session_id, group = %group, error = %err, "drop refused");
+                    format!("Cannot move {}: {err}", key.session_id)
+                });
+            let layout_error = match (move_error, save_layout(&mut state)) {
+                (Some(moved), Some(saved)) => Some(format!("{moved}\n{saved}")),
+                (moved, saved) => moved.or(saved),
+            };
+            let sections = state.store.layout().arrange(&state.rows);
+            if let Err(err) = window.upgrade_in_event_loop(move |window| {
+                window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
+                window.set_layout_error(layout_error.unwrap_or_default().into());
+            }) {
+                error!(error = %err, "deliver the moved layout to the UI");
+            }
         }
     });
+    sender
 }
 
 /// Follows the daemon on a background thread and hands every update to the UI
@@ -367,7 +378,7 @@ fn main() -> Result<(), slint::PlatformError> {
         transfer
     });
     {
-        let weak = window.as_weak();
+        let drops = spawn_drop_worker(window.as_weak(), layout.clone());
         window.on_drop(move |transfer, group, anchor_host, anchor_id, after| {
             let Some(key) = transfer
                 .user_data()
@@ -387,7 +398,14 @@ fn main() -> Result<(), slint::PlatformError> {
             });
             // The dragged row is destroyed by the model change, which arrives
             // from the worker thread after this callback has returned.
-            apply_drop(weak.clone(), layout.clone(), key, group.into(), anchor);
+            let request = DropRequest {
+                key,
+                group: group.into(),
+                anchor,
+            };
+            if drops.send(request).is_err() {
+                error!("the drop worker has stopped");
+            }
         });
     }
 

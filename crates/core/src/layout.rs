@@ -140,6 +140,8 @@ pub enum MoveError {
     UnknownGroup(String),
     #[error("session {0:?} is not in the target group")]
     AnchorNotInGroup(String),
+    #[error("sessions in group {0:?} share an order key; fix layout.toml by hand")]
+    AmbiguousOrder(String),
 }
 
 /// What a reconcile changed.
@@ -272,17 +274,20 @@ impl Layout {
         let stays = current.group == group
             && lower.is_none_or(|lower| lower < current.order.as_str())
             && upper.is_none_or(|upper| current.order.as_str() < upper);
-        let order = if stays {
-            current.order.clone()
-        } else {
-            sort_key::between(lower, upper)
-        };
+        if stays {
+            return Ok(false);
+        }
+        if let (Some(lower), Some(upper)) = (lower, upper)
+            && lower >= upper
+        {
+            return Err(MoveError::AmbiguousOrder(group.to_owned()));
+        }
+        let order = sort_key::between(lower, upper);
         let item = &mut self.items[index];
-        let changed = !stays || !item.manual;
         item.group = group.to_owned();
         item.order = order;
         item.manual = true;
-        Ok(changed)
+        Ok(true)
     }
 
     /// Groups in order, each with the rows of its items in order. A row
@@ -675,6 +680,19 @@ order = "t"
             );
         }
         assert_eq!(layout, settled);
+    }
+
+    #[test]
+    fn a_move_between_neighbours_with_equal_keys_is_refused() {
+        let mut layout = arranged(&["a", "b", "c"]);
+        let same = layout.items()[0].order.clone();
+        layout.items[1].order = same;
+        let before = layout.clone();
+        assert_eq!(
+            layout.move_session(&key("c"), INBOX_ID, Placement::Before(&key("b"))),
+            Err(MoveError::AmbiguousOrder(INBOX_ID.to_owned()))
+        );
+        assert_eq!(layout, before);
     }
 
     #[test]
