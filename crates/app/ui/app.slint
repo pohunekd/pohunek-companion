@@ -7,6 +7,10 @@ export struct SessionRowData {
     // Empty when the session has no Pohunek Work link.
     badge: string,
     badge-role: string,
+    host: string,
+    id: string,
+    // Why the session cannot be attached; empty when it can.
+    attach-refusal: string,
 }
 
 global Theme {
@@ -34,10 +38,16 @@ global Theme {
 
 component SessionRow inherits Rectangle {
     in property <SessionRowData> data;
+    callback clicked();
 
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: Theme.row;
     border-radius: Theme.row-radius;
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
 
     VerticalLayout {
         padding-left: Theme.row-padding;
@@ -96,6 +106,9 @@ export component AppWindow inherits Window {
     in property <string> error;
     // Why logging is unavailable; empty when log output is working.
     in property <string> log-error;
+    // Outcome of the last attach click; empty when it launched.
+    in property <string> attach-error;
+    callback attach(string, string, string);
 
     VerticalLayout {
         padding: Theme.window-padding;
@@ -112,11 +125,18 @@ export component AppWindow inherits Window {
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
+        if root.attach-error != "": Text {
+            text: root.attach-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
         ScrollView {
             VerticalLayout {
                 spacing: Theme.row-spacing;
                 for session in root.sessions: SessionRow {
                     data: session;
+                    clicked => { root.attach(session.host, session.id, session.attach-refusal); }
                 }
             }
         }

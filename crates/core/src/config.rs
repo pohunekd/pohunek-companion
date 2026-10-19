@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::attach::{AttachConfig, AttachTemplate};
+
 const CONFIG_HOME_ENV: &str = "XDG_CONFIG_HOME";
 const HOME_ENV: &str = "HOME";
 const CONFIG_DIR: &str = "pohunek";
@@ -30,15 +32,46 @@ pub enum ConfigError {
     Parse { path: PathBuf, message: String },
     #[error("invalid {path}: `{key}` must be greater than zero (milliseconds)")]
     ZeroValue { path: PathBuf, key: &'static str },
+    #[error("invalid {path}: `pohunek_bin` must not be empty")]
+    EmptyPohunekBin { path: PathBuf },
 }
 
 /// Settings from `companion.toml`. Unknown keys are rejected. A missing file
 /// yields the defaults documented on each field.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     /// `[daemon]` table: how the companion talks to the Pohunek daemon.
     pub daemon: DaemonConfig,
+    /// `attach_command`: argv template that opens a session in a terminal,
+    /// as an array of words (no shell is involved). Optional; when absent,
+    /// clicking a session reports that attach is not configured. `{bin}`
+    /// (the resolved `pohunek_bin`), `{host}` and `{id}` are replaced in each
+    /// word in one left-to-right pass; inserted values are never rescanned,
+    /// and any other `{name}` is rejected at startup. The first word is the
+    /// program: an absolute path, or a bare name resolved on `PATH`.
+    /// Example: `attach_command = ["foot", "--", "{bin}", "attach", "--host",
+    /// "{host}", "{id}"]`.
+    pub attach_command: Option<AttachTemplate>,
+    /// `pohunek_bin`: the `pohunek` executable that `{bin}` expands to, an
+    /// absolute path or a bare name resolved on `PATH`. Optional; default
+    /// `pohunek`. Example: `pohunek_bin = "/opt/pohunek/bin/pohunek"`.
+    pub pohunek_bin: String,
+    /// `attach_observe_ms`: how long a freshly started attach program is
+    /// watched for an early failed exit, in milliseconds, greater than zero.
+    /// Optional; default 1000. Example: `attach_observe_ms = 2000`.
+    pub attach_observe_ms: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            daemon: DaemonConfig::default(),
+            attach_command: None,
+            pohunek_bin: "pohunek".to_owned(),
+            attach_observe_ms: 1000,
+        }
+    }
 }
 
 /// `[daemon]` table.
@@ -75,15 +108,28 @@ impl DaemonConfig {
 }
 
 impl Config {
-    /// Loads `$XDG_CONFIG_HOME/pohunek/companion.toml`, else
-    /// `~/.config/pohunek/companion.toml`. A missing file is valid and gives
-    /// the defaults.
-    pub fn load() -> Result<Self, ConfigError> {
-        let path = config_path(
+    /// Location of `companion.toml`: `$XDG_CONFIG_HOME/pohunek/companion.toml`,
+    /// else `~/.config/pohunek/companion.toml`.
+    pub fn path() -> Result<PathBuf, ConfigError> {
+        config_path(
             std::env::var_os(CONFIG_HOME_ENV),
             std::env::var_os(HOME_ENV),
-        )?;
-        Self::load_from(&path)
+        )
+    }
+
+    /// Loads the file at [`Config::path`]. A missing file is valid and gives
+    /// the defaults.
+    pub fn load() -> Result<Self, ConfigError> {
+        Self::load_from(&Self::path()?)
+    }
+
+    /// The attach settings as the launcher consumes them.
+    pub fn attach(&self) -> AttachConfig {
+        AttachConfig {
+            command: self.attach_command.clone(),
+            pohunek_bin: self.pohunek_bin.clone(),
+            observe: Duration::from_millis(self.attach_observe_ms),
+        }
     }
 
     fn load_from(path: &Path) -> Result<Self, ConfigError> {
@@ -111,16 +157,22 @@ impl Config {
         let zero_key = [
             ("daemon.connect_timeout_ms", self.daemon.connect_timeout_ms),
             ("daemon.request_timeout_ms", self.daemon.request_timeout_ms),
+            ("attach_observe_ms", self.attach_observe_ms),
         ]
         .into_iter()
         .find_map(|(key, value)| (value == 0).then_some(key));
-        match zero_key {
-            Some(key) => Err(ConfigError::ZeroValue {
+        if let Some(key) = zero_key {
+            return Err(ConfigError::ZeroValue {
                 path: path.to_owned(),
                 key,
-            }),
-            None => Ok(()),
+            });
         }
+        if self.pohunek_bin.is_empty() {
+            return Err(ConfigError::EmptyPohunekBin {
+                path: path.to_owned(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -213,6 +265,35 @@ mod tests {
             let msg = parse(text).unwrap_err().to_string();
             assert!(msg.contains("/cfg/companion.toml"), "{msg}");
             assert!(msg.contains("connect_timeout_ms"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn attach_keys_are_read_and_default_to_unset() {
+        let config = parse("").unwrap();
+        assert_eq!(config.attach_command, None);
+        assert_eq!(config.pohunek_bin, "pohunek");
+        let config = parse(
+            "attach_command = [\"foot\", \"{bin}\", \"{id}\"]\npohunek_bin = \"/x/pohunek\"\n\
+             attach_observe_ms = 50\n",
+        )
+        .unwrap();
+        assert!(config.attach_command.is_some());
+        assert_eq!(config.attach().observe, Duration::from_millis(50));
+    }
+
+    #[test]
+    fn invalid_attach_keys_name_the_key() {
+        for (text, key) in [
+            ("attach_command = []\n", "attach_command"),
+            ("attach_command = [\"\"]\n", "attach_command"),
+            ("attach_command = [\"t\", \"{nope}\"]\n", "attach_command"),
+            ("attach_command = \"foot {id}\"\n", "attach_command"),
+            ("pohunek_bin = \"\"\n", "pohunek_bin"),
+            ("attach_observe_ms = 0\n", "attach_observe_ms"),
+        ] {
+            let msg = parse(text).unwrap_err().to_string();
+            assert!(msg.contains(key), "{text}: {msg}");
         }
     }
 

@@ -1,10 +1,14 @@
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
 mod logging;
 
-use pohunek_companion_core::{Config, DaemonConfig, SessionRow, clip_display, fetch_sessions};
+use pohunek_companion_core::{
+    AttachConfig, AttachError, Config, DaemonConfig, SessionKey, SessionRow, attach, clip_display,
+    fetch_sessions,
+};
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 use tracing::{error, info};
 
@@ -61,6 +65,13 @@ fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
                 state: s.state.into(),
                 badge: badge.into(),
                 badge_role: badge_role.into(),
+                host: s.key.host.into(),
+                id: s.key.session_id.into(),
+                attach_refusal: s
+                    .attach_refusal
+                    .map(|reason| reason.to_string())
+                    .unwrap_or_default()
+                    .into(),
             }
         })
         .collect()
@@ -98,6 +109,45 @@ fn load_sessions(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
     });
 }
 
+/// What an attach click needs from startup: the config file location and
+/// either the parsed attach settings or why the config is unusable.
+#[derive(Clone)]
+struct AttachContext {
+    config_path: Result<PathBuf, String>,
+    settings: Result<AttachConfig, String>,
+}
+
+/// Attaches on a background thread (the launcher waits out its observation
+/// window) and shows a failure in the window.
+fn start_attach(
+    window: slint::Weak<AppWindow>,
+    context: AttachContext,
+    key: SessionKey,
+    refusal: String,
+) {
+    std::thread::spawn(move || {
+        let outcome = attach_outcome(&context, &key, &refusal);
+        let applied = window.upgrade_in_event_loop(move |window| {
+            window.set_attach_error(outcome.err().unwrap_or_default().into());
+        });
+        if let Err(err) = applied {
+            error!(error = %err, "deliver attach outcome to the UI");
+        }
+    });
+}
+
+fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> Result<(), String> {
+    if !refusal.is_empty() {
+        return Err(format!("Cannot attach: {refusal}"));
+    }
+    let settings = context.settings.as_ref().map_err(Clone::clone)?;
+    let config_path = context.config_path.as_ref().map_err(Clone::clone)?;
+    attach(settings, config_path, key).map_err(|err| match err {
+        AttachError::NotConfigured { .. } => err.to_string(),
+        other => format!("Cannot attach {}: {other}", key.session_id),
+    })
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let log_error = match logging::init() {
         Ok(path) => {
@@ -116,12 +166,34 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::set_xdg_app_id(APP_ID)?;
     let tray = Tray::new()?;
 
-    match Config::load() {
-        Ok(config) => load_sessions(window.as_weak(), config.daemon),
+    let config_path = Config::path().map_err(|err| err.to_string());
+    let attach_context = match Config::load() {
+        Ok(config) => {
+            let context = AttachContext {
+                config_path,
+                settings: Ok(config.attach()),
+            };
+            load_sessions(window.as_weak(), config.daemon);
+            context
+        }
         Err(err) => {
             error!(error = %err, "load companion.toml");
             window.set_error(err.to_string().into());
+            AttachContext {
+                config_path,
+                settings: Err(err.to_string()),
+            }
         }
+    };
+    {
+        let weak = window.as_weak();
+        window.on_attach(move |host, id, refusal| {
+            let key = SessionKey {
+                host: host.into(),
+                session_id: id.into(),
+            };
+            start_attach(weak.clone(), attach_context.clone(), key, refusal.into());
+        });
     }
 
     let count = Rc::new(RefCell::new(0i32));
