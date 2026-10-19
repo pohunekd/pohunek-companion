@@ -169,7 +169,7 @@ impl PlacementRule {
         if let Some((key, _)) = self
             .conditions()
             .into_iter()
-            .find(|(_, value)| value.as_deref().is_some_and(str::is_empty))
+            .find(|(_, value)| value.as_deref().is_some_and(|v| v.trim().is_empty()))
         {
             return Some(format!("has an empty `{key}`"));
         }
@@ -317,6 +317,7 @@ impl Config {
 
     /// Parses and validates `text`; `path` only labels errors.
     fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
+        unknown_rule_key(text, path)?;
         let config: Self = toml::from_str(text).map_err(|err| ConfigError::Parse {
             path: path.to_owned(),
             message: one_line(&err),
@@ -383,6 +384,41 @@ impl Config {
         }
         Ok(())
     }
+}
+
+const RULE_KEYS: [&str; 6] = [
+    "group",
+    "project",
+    "agent",
+    "work_provider",
+    "work_kind",
+    "work_role",
+];
+
+/// Names the rule index and key of an unknown `[[layout.rules]]` key, which
+/// serde alone reports without the index. Anything else is left to the
+/// regular parse.
+fn unknown_rule_key(text: &str, path: &Path) -> Result<(), ConfigError> {
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return Ok(());
+    };
+    let rules = table
+        .get("layout")
+        .and_then(|layout| layout.get("rules"))
+        .and_then(toml::Value::as_array);
+    for (index, rule) in rules.into_iter().flatten().enumerate() {
+        let unknown = rule
+            .as_table()
+            .and_then(|rule| rule.keys().find(|key| !RULE_KEYS.contains(&key.as_str())));
+        if let Some(key) = unknown {
+            return Err(ConfigError::Rule {
+                path: path.to_owned(),
+                index,
+                problem: format!("has the unknown key `{key}`"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn config_path(
@@ -493,8 +529,8 @@ mod tests {
             ),
             (
                 "group = \"A\"\nproject = \"p\"\nprojct = \"x\"\n",
-                "projct",
-                "unknown field",
+                "layout.rules[1]",
+                "unknown key `projct`",
             ),
         ];
         for (rule, index, needle) in cases {

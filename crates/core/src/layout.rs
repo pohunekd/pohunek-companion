@@ -639,6 +639,7 @@ impl LayoutStore {
         let moved = self.layout.apply_rules(rows, rules);
         for placement in &moved {
             info!(
+                host = %placement.key.host,
                 session = %placement.key.session_id,
                 rule = ?placement.rule,
                 group = %placement.group,
@@ -1101,6 +1102,13 @@ order = "g"
 
     #[test]
     fn rules_need_all_conditions_and_the_first_match_wins() {
+        let by_fields = [rule("Gh", |r| {
+            r.work_provider = Some("github".into());
+            r.work_kind = Some("pr".into());
+        })];
+        let mut probe = Layout::default();
+        placed(&mut probe, &[session("a", None, Some("x"))], &by_fields);
+        assert_eq!(group_of(&probe, "a"), "Gh");
         let rules = [
             rule("Reviews", |r| {
                 r.project = Some("pohunek".into());
