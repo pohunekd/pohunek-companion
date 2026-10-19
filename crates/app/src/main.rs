@@ -10,7 +10,7 @@ mod tray;
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupSection, LayoutStore, LiveUpdate,
     NEEDS_YOU_ID, OwnerState, Placement, PlacementRule, SessionKey, SessionRow, TraySummary, View,
-    attach, clip_display, layout_path, run_live,
+    ViewConfig, attach, clip_display, layout_path, run_live,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{error, info, warn};
@@ -83,6 +83,8 @@ struct LayoutState {
     store: LayoutStore,
     rows: Vec<SessionRow>,
     load_error: Option<String>,
+    /// Longest title of a derived section, from `view.section_title_max_chars`.
+    title_max_chars: usize,
 }
 
 type SharedLayout = Arc<Mutex<LayoutState>>;
@@ -121,7 +123,10 @@ fn spawn_view_change(window: slint::Weak<AppWindow>, layout: SharedLayout, view:
         let mut state = lock(&layout);
         state.store.set_view(view);
         let layout_error = save_layout(&mut state);
-        let sections = state.store.layout().present(&state.rows);
+        let sections = state
+            .store
+            .layout()
+            .present(&state.rows, state.title_max_chars);
         let applied = window.upgrade_in_event_loop(move |window| {
             window.set_view_index(i32::try_from(view.index()).unwrap_or_default());
             window.set_editable(view.is_editable());
@@ -163,7 +168,10 @@ fn spawn_drop_worker(
                 (Some(moved), Some(saved)) => Some(format!("{moved}\n{saved}")),
                 (moved, saved) => moved.or(saved),
             };
-            let sections = state.store.layout().present(&state.rows);
+            let sections = state
+                .store
+                .layout()
+                .present(&state.rows, state.title_max_chars);
             if let Err(err) = window.upgrade_in_event_loop(move |window| {
                 window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
                 window.set_layout_error(layout_error.unwrap_or_default().into());
@@ -218,7 +226,10 @@ fn follow_daemon(
                     state.store.apply_rules(sessions, &rules);
                     let layout_error = save_layout(&mut state);
                     state.rows = sessions.clone();
-                    let sections = state.store.layout().present(&state.rows);
+                    let sections = state
+                        .store
+                        .layout()
+                        .present(&state.rows, state.title_max_chars);
                     guard = Some(state);
                     Some((sections, layout_error))
                 }
@@ -335,6 +346,7 @@ fn main() -> Result<(), slint::PlatformError> {
         store: layout,
         rows: Vec::new(),
         load_error: layout_error.clone(),
+        title_max_chars: ViewConfig::default().section_title_max_chars,
     }));
     window.set_layout_error(layout_error.clone().unwrap_or_default().into());
     window.set_view_names(ModelRc::new(VecModel::from(
@@ -350,6 +362,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let config_path = Config::path().map_err(|err| err.to_string());
     let attach_context = match Config::load() {
         Ok(config) => {
+            lock(&layout).title_max_chars = config.view.section_title_max_chars;
             let context = AttachContext {
                 config_path,
                 settings: Ok(config.attach()),

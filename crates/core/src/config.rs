@@ -67,6 +67,8 @@ pub struct Config {
     pub tray: TrayConfig,
     /// `[layout]` table: where sessions land without a drag.
     pub layout: LayoutConfig,
+    /// `[view]` table: how the sidebar sections are titled.
+    pub view: ViewConfig,
     /// `attach_command`: argv template that opens a session in a terminal,
     /// as an array of words (no shell is involved). Optional; when absent,
     /// clicking a session reports that attach is not configured. `{bin}`
@@ -108,6 +110,7 @@ impl Default for Config {
             daemon: DaemonConfig::default(),
             tray: TrayConfig::default(),
             layout: LayoutConfig::default(),
+            view: ViewConfig::default(),
             attach_command: None,
             attach_terminal: None,
             pohunek_bin: "pohunek".to_owned(),
@@ -181,6 +184,24 @@ impl PlacementRule {
             );
         }
         None
+    }
+}
+
+/// `[view]` table.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ViewConfig {
+    /// `view.section_title_max_chars`: longest section title in the By
+    /// project and By Work item views, in characters, greater than zero;
+    /// longer titles end with an ellipsis. Optional; default 40.
+    pub section_title_max_chars: usize,
+}
+
+impl Default for ViewConfig {
+    fn default() -> Self {
+        Self {
+            section_title_max_chars: 40,
+        }
     }
 }
 
@@ -332,6 +353,10 @@ impl Config {
             ("daemon.request_timeout_ms", self.daemon.request_timeout_ms),
             ("attach_observe_ms", self.attach_observe_ms),
             ("tray.idle_threshold_secs", self.tray.idle_threshold_secs),
+            (
+                "view.section_title_max_chars",
+                u64::try_from(self.view.section_title_max_chars).unwrap_or(u64::MAX),
+            ),
             (
                 "daemon.reconnect_initial_ms",
                 self.daemon.reconnect_initial_ms,
