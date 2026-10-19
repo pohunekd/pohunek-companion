@@ -10,14 +10,16 @@ rust-version = "1.99"
 repository = "https://github.com/pohunekd/pohunek-companion"
 
 [workspace.dependencies]
-# Slint's default features minus backend-qt, so no Qt toolchain is needed to
-# build; winit + femtovg is the backend and renderer the companion targets.
+# Slint's default features minus backend-qt (no Qt toolchain needed), with:
+# - renderer-software: 22 to 30 MB RSS on Linux against 84 to 94 MB with
+#   femtovg, whose GL driver stack dominates; the UI is flat lists and text.
+# - no accessibility: it adds about 1.7 MB to the binary; screen readers are
+#   not a target for this owner-only tool.
 slint = { version = "1.18.1", default-features = false, features = [
     "std",
     "compat-1-2",
     "backend-winit",
-    "renderer-femtovg",
-    "accessibility",
+    "renderer-software",
     "system-tray",
 ] }
 slint-build = "1.18.1"
@@ -51,6 +53,10 @@ debug = "line-tables-only"
 debug = false
 
 [profile.release]
-lto = "thin"
+# Fat LTO and opt-level "s" bring the release binary under the 15 MB target
+# (13.6 MB on Linux, 9.0 MB on macOS); panic = "abort" drops unwinding tables.
+lto = "fat"
+opt-level = "s"
+panic = "abort"
 codegen-units = 1
 strip = true
