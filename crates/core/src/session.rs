@@ -3,6 +3,7 @@ use crate::badge::WorkBadge;
 use crate::owner_state::OwnerState;
 use pohunek_client::LOCAL_HOST;
 use pohunek_client::protocol::SessionInfo;
+use time::OffsetDateTime;
 
 /// Identity of a session across hosts. Only the local daemon is used so far.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -21,6 +22,9 @@ pub struct SessionRow {
     pub state: String,
     /// What the owner should know at a glance.
     pub owner_state: OwnerState,
+    /// When the session started waiting on the owner, if its attention
+    /// notification says so.
+    pub waiting_since: Option<OffsetDateTime>,
     /// Pohunek Work link and role, when the metadata carries a link id.
     pub badge: Option<WorkBadge>,
     /// Why the session cannot be attached; `None` when it can.
@@ -28,7 +32,11 @@ pub struct SessionRow {
 }
 
 impl SessionRow {
-    pub(crate) fn from_local(info: SessionInfo, owner_state: OwnerState) -> Self {
+    pub(crate) fn from_local(
+        info: SessionInfo,
+        owner_state: OwnerState,
+        waiting_since: Option<OffsetDateTime>,
+    ) -> Self {
         let display_name = info.name.unwrap_or_else(|| info.id.0.clone());
         Self {
             key: SessionKey {
@@ -39,6 +47,7 @@ impl SessionRow {
             agent: info.agent,
             state: info.state.as_str().to_owned(),
             owner_state,
+            waiting_since,
             badge: WorkBadge::from_metadata(&info.metadata),
             attach_refusal: AttachRefusal::for_session(info.external, info.state),
         }

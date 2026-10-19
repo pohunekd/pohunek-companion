@@ -209,6 +209,10 @@ No claim is made that the tray or drag and drop work on macOS.
 - `slint::set_xdg_app_id` works only after the first component is created and
   before `show()`; window rules match on `pohunek-companion`
   (`docs/linux-window-rules.md`).
+- A second `Window` component (the "About Slint" window) that is created at
+  startup and shown later never mapped under sway; creating it on first use
+  maps it. The tray menu is a `Menu` with a `for` repeater over a model, which
+  DBusMenu `GetLayout` reflects at runtime.
 - The spike hardcodes its few tunables as named constants, reports errors with
   `eprintln!`, and keeps a few layout literals in the Slint components; real
   code reads tunables from `companion.toml`, logs with `tracing`, and shows
