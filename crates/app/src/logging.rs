@@ -3,7 +3,7 @@
 
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,6 +13,7 @@ const LOG_FILE: &str = "companion.json";
 const DEBUG_DIR: &str = "logs";
 const APP_DIR: &str = "pohunek-companion";
 const DIR_MODE: u32 = 0o700;
+const FILE_MODE: u32 = 0o600;
 const MAX_LEVEL: Level = Level::INFO;
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +71,7 @@ fn open_log_file() -> Result<(File, PathBuf), LogError> {
     let file = OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(FILE_MODE)
         .open(&path)
         .map_err(open_err)?;
     Ok((file, path))

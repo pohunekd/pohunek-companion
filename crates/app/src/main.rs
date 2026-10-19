@@ -73,7 +73,10 @@ fn load_sessions(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
         let outcome = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|err| format!("cannot start the background runtime: {err}"))
+            .map_err(|err| {
+                error!(error = %err, "cannot start the background runtime");
+                format!("cannot start the background runtime: {err}")
+            })
             .and_then(|runtime| {
                 runtime
                     .block_on(fetch_sessions(&daemon))
