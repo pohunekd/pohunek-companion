@@ -55,12 +55,13 @@ The default agent UI check is Slint's embedded MCP server, driven through
 `scripts/ui-agent`. It builds a debug binary with the command-line feature
 `slint/mcp` into `target/ui-agent/` (never a `Cargo.toml` feature, never in
 release builds or packaging) and runs it on the headless software backend: no
-window, no display, and the real daemon. The tray icon is not part of the
+window, no display, and an isolated daemon with synthetic sessions (see
+"Published evidence" below). The tray icon is not part of the
 backend, so a headless run still registers a tray icon on the owner's panel
 while it runs.
 
 ```bash
-scripts/ui-agent start                  # prints http://127.0.0.1:<port>/mcp
+scripts/ui-agent start                  # isolated daemon; prints http://127.0.0.1:<port>/mcp
 scripts/ui-agent screenshot shot.png    # PNG of the window
 scripts/ui-agent tree                   # element tree with ids
 scripts/ui-agent find SessionRow::row-touch
@@ -68,6 +69,27 @@ scripts/ui-agent click SessionRow::row-touch 0
 scripts/ui-agent call TOOL '{"json":"args"}'   # any other Slint MCP tool
 scripts/ui-agent stop                   # always stop it when done
 ```
+
+## Published evidence
+
+The repository is public. Screenshots, logs, and PR or issue text must not
+show the owner's real sessions (names, ids, working directories, Work links).
+
+- `scripts/ui-agent start` (the default) runs the app against an isolated
+  Pohunek daemon: its own `XDG_RUNTIME_DIR`, state, config, data, and cache
+  directories in a temporary directory, and four synthetic `shell` sessions
+  (`alpha-agent`, `beta-review`, `gamma-docs`, `delta-build`, two with fake
+  Work links). `scripts/ui-agent stop` stops the app, the daemon, and its
+  sessions and deletes the directory. Everything published comes from this
+  mode.
+- For a manual `cargo run` that is meant to be published, set the same
+  isolated environment instead; the owner's socket is `$XDG_RUNTIME_DIR/pohunek`.
+- `scripts/ui-agent start --owner-daemon` connects to the owner's real daemon,
+  for diagnosing a problem that only the real data shows. Describe what was
+  checked in words only; never attach or paste its screenshots, element trees,
+  logs, or session lists. Do not click rows or edit anything through it.
+- Raw MCP output (`tree`, `find`, `call`) can contain session names: treat it
+  like a screenshot.
 
 Element ids are `Component::id` from the `.slint` source (for example
 `SessionRow::row-touch`, `SessionRow::name-text`, `AppWindow::session-list`,
@@ -78,14 +100,17 @@ screen, so use it only when headless cannot show the behaviour.
 
 Rules for the MCP route:
 
-- Needs `jq`, `python3`, and `curl` 7.76 or newer on the host.
+- Needs `jq`, `python3`, and `curl` 7.76 or newer on the host, and for the
+  isolated daemon the `pohunek` CLI plus its `pohunekd` (`POHUNEK_CLI` and
+  `POHUNEKD` override the lookup).
 - The server binds 127.0.0.1 without authentication, so any local process can
   drive the app while it runs. Stop it when the check is done.
 - `scripts/ui-agent` runs the app with a temporary `XDG_CONFIG_HOME` whose
   `attach_command` is `["true"]`, so clicking a session row logs an `attach`
   line (`target/ui-agent/logs/companion.json`) instead of opening a terminal.
   Never click a row with the owner's real `attach_command`.
-- It also sets a temporary `XDG_STATE_HOME`, so the run reads and writes its
+- It also sets a temporary `XDG_STATE_HOME` (inside the isolated directory in
+  the default mode), so the run reads and writes its
   own layout file (`scripts/ui-agent layout` prints the path), never the
   owner's `layout.toml`. Edit that file between runs to check restore and
   corrupted-file behaviour. The path override works on macOS too: an absolute
