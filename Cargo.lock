@@ -3503,7 +3503,10 @@ version = "0.1.0"
 dependencies = [
  "pohunek-client",
  "rustix 1.1.5",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
+ "time",
 ]
 
 [[package]]

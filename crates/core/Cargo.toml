@@ -10,7 +10,10 @@ description = "Daemon connection and session model for Pohunek Companion; no UI 
 [dependencies]
 pohunek-client = { workspace = true }
 rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
 
 [lints]
 workspace = true
