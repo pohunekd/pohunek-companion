@@ -341,7 +341,21 @@ No claim is made that the tray or drag and drop work on macOS.
   the first two or three drops (most later presses did not start one), in
   Slint 1.18.1. With a `TouchArea` child, every one of the roughly 20 drags
   attempted started and finished. The cause was not found; keep a child on
-  every `DragArea`.
+  every `DragArea`. Investigation (#9): the failure did not reproduce without
+  the child, so no upstream issue was filed. 12 of 12 drags dropped through
+  `scripts/ui-agent` `drag_element` on the real rows with the `TouchArea`
+  removed, and 60 of 60 in a standalone Slint program (list of `Rectangle`
+  rows with a `DropArea` and an empty `DragArea`, pointer hover moves before
+  each press) with and without the child, using in-process events under
+  `SLINT_BACKEND=headless-software`. Slint's `DragArea`
+  (`i-slint-core-1.18.1/items/drag_n_drop.rs`) needs no child: its
+  press/threshold filter and `StartDrag` do not depend on one. What stays
+  untested is real Wayland pointer input through winit, which the original
+  observation used; if it recurs, capture that input path first. A release
+  that no `DragMove` over a `DropArea` preceded never drops: the window turns
+  it into `Exit` (`i-slint-core-1.18.1/window.rs`, "No DropArea accepted the
+  most recent DragMove"), so a synthetic drag needs a final motion event over
+  the target.
 - The dragged row is destroyed by the model change that the drop causes, so
   the model is changed after the `dropped` callback has returned.
 - `slint::set_xdg_app_id` works only after the first component is created and
