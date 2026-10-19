@@ -77,8 +77,10 @@ component SessionRow inherits Rectangle {
     background: Theme.row;
     border-radius: Theme.row-radius;
 
-    TouchArea {
+    row-touch := TouchArea {
         mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.data.name;
         clicked => { root.clicked(); }
     }
 
@@ -88,7 +90,7 @@ component SessionRow inherits Rectangle {
         padding-top: Theme.row-vertical-padding;
         padding-bottom: Theme.row-vertical-padding;
         alignment: center;
-        Text {
+        name-text := Text {
             text: root.data.name;
             color: Theme.text;
             overflow: elide;
@@ -102,13 +104,13 @@ component SessionRow inherits Rectangle {
                 background: Theme.owner-color(root.data.owner-state);
                 y: (parent.height - self.height) / 2;
             }
-            Text {
+            owner-text := Text {
                 text: root.data.owner-label;
                 color: Theme.owner-color(root.data.owner-state);
                 font-size: Theme.detail-font-size;
                 horizontal-stretch: 0;
             }
-            Text {
+            state-text := Text {
                 text: root.data.agent + " - " + root.data.state;
                 color: Theme.detail;
                 font-size: Theme.detail-font-size;
@@ -165,31 +167,31 @@ export component AppWindow inherits Window {
     VerticalLayout {
         padding: Theme.window-padding;
         spacing: Theme.row-spacing;
-        if root.error != "": Text {
+        if root.error != "": error-text := Text {
             text: root.error;
             color: Theme.error;
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
-        if root.status != "": Text {
+        if root.status != "": status-text := Text {
             text: root.status;
             color: Theme.detail;
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
-        if root.log-error != "": Text {
+        if root.log-error != "": log-error-text := Text {
             text: root.log-error;
             color: Theme.error;
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
-        if root.attach-error != "": Text {
+        if root.attach-error != "": attach-error-text := Text {
             text: root.attach-error;
             color: Theme.error;
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
-        ScrollView {
+        session-list := ScrollView {
             VerticalLayout {
                 spacing: Theme.row-spacing;
                 for session in root.sessions: SessionRow {
