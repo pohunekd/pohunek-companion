@@ -41,7 +41,11 @@ impl Drop for ReaderGuard {
 
 /// Runs for the life of the process: connects, keeps the list current through
 /// `publish`, and reconnects after every failure or closed stream.
-pub async fn run_live(config: &DaemonConfig, mut publish: impl FnMut(LiveUpdate)) {
+pub async fn run_live(
+    config: &DaemonConfig,
+    idle_threshold: Duration,
+    mut publish: impl FnMut(LiveUpdate),
+) {
     let mut cycle: u64 = 0;
     let mut failures: u32 = 0;
     loop {
@@ -50,7 +54,14 @@ pub async fn run_live(config: &DaemonConfig, mut publish: impl FnMut(LiveUpdate)
         info!(cycle, attempt, "connecting to the daemon");
         let mut store = SessionStore::default();
         let mut established_at = None;
-        let error = run_cycle(config, &mut store, &mut established_at, &mut publish).await;
+        let error = run_cycle(
+            config,
+            idle_threshold,
+            &mut store,
+            &mut established_at,
+            &mut publish,
+        )
+        .await;
         let report = store.take_report();
         if let Some(since) = established_at {
             // A connection that dropped soon after it was established keeps
@@ -95,11 +106,12 @@ fn backoff(config: &DaemonConfig, failures: u32) -> Duration {
 /// buffered meanwhile, then stream. Only returns with the reason it ended.
 async fn run_cycle(
     config: &DaemonConfig,
+    idle_threshold: Duration,
     store: &mut SessionStore,
     established_at: &mut Option<Instant>,
     publish: &mut impl FnMut(LiveUpdate),
 ) -> CoreError {
-    match cycle_inner(config, store, established_at, publish).await {
+    match cycle_inner(config, idle_threshold, store, established_at, publish).await {
         Ok(never) => match never {},
         Err(err) => err,
     }
@@ -107,6 +119,7 @@ async fn run_cycle(
 
 async fn cycle_inner(
     config: &DaemonConfig,
+    idle_threshold: Duration,
     store: &mut SessionStore,
     established_at: &mut Option<Instant>,
     publish: &mut impl FnMut(LiveUpdate),
@@ -128,28 +141,34 @@ async fn cycle_inner(
     }
     *established_at = Some(Instant::now());
     info!("daemon connection established");
-    let mut shown = rows(store);
+    let mut shown = rows(store, idle_threshold);
     publish(LiveUpdate::Connected);
     publish(LiveUpdate::Sessions(shown.clone()));
 
     let interval = config.reseed_interval();
     let mut next_reseed = tokio::time::Instant::now() + interval;
     loop {
-        let applied = match timeout_at(next_reseed, events.recv()).await {
-            Ok(message) => {
-                let event = message.ok_or(CoreError::StreamClosed)??;
-                store.apply_event(&event) == Applied::Applied
-            }
-            Err(_elapsed) => {
-                // Events arriving during the fetch wait in the channel and are
-                // applied after the seed, as on connect.
-                let reseeded = reseed(config, &socket, store, &mut events).await?;
-                next_reseed = tokio::time::Instant::now() + interval;
-                reseeded
-            }
+        // The idle timer exists only while some session waits on the idle
+        // threshold; otherwise the loop wakes for the next event or re-seed.
+        let idle_deadline = store.next_idle_deadline(Instant::now(), idle_threshold);
+        let applied = tokio::select! {
+            received = timeout_at(next_reseed, events.recv()) => match received {
+                Ok(message) => {
+                    let event = message.ok_or(CoreError::StreamClosed)??;
+                    store.apply_event(&event) == Applied::Applied
+                }
+                Err(_elapsed) => {
+                    // Events arriving during the fetch wait in the channel and
+                    // are applied after the seed, as on connect.
+                    let reseeded = reseed(config, &socket, store, &mut events).await?;
+                    next_reseed = tokio::time::Instant::now() + interval;
+                    reseeded
+                }
+            },
+            () = idle_deadline_reached(idle_deadline) => true,
         };
         if applied {
-            let current = rows(store);
+            let current = rows(store, idle_threshold);
             if current != shown {
                 shown = current;
                 publish(LiveUpdate::Sessions(shown.clone()));
@@ -211,10 +230,19 @@ async fn read_events(mut subscription: Subscription, sender: mpsc::UnboundedSend
     }
 }
 
-fn rows(store: &SessionStore) -> Vec<SessionRow> {
+/// Completes at `deadline`; never completes without one.
+async fn idle_deadline_reached(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
+fn rows(store: &SessionStore, idle_threshold: Duration) -> Vec<SessionRow> {
+    let now = Instant::now();
     let mut rows: Vec<SessionRow> = store
-        .sessions()
-        .map(|(_, info)| SessionRow::from_local(info.clone()))
+        .sessions_with_state(now, idle_threshold)
+        .map(|(_, info, owner_state)| SessionRow::from_local(info.clone(), owner_state))
         .collect();
     rows.sort_by(|a, b| a.key.session_id.cmp(&b.key.session_id));
     rows
