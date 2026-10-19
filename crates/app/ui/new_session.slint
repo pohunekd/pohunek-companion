@@ -15,17 +15,21 @@ global DialogTheme {
     out property <length> focus-radius: 14px;
     out property <color> focus-border: #4a6fa5;
     out property <color> button-disabled: #3a3d44;
+    out property <color> chip-disabled-text: #5d6068;
 }
 
 // A single-choice chip row that takes keyboard focus: Left and Right move the
 // selection.
 component ChipField inherits FocusScope {
     in property <[string]> model;
+    // Unlaunchable entries are listed after the selectable ones.
+    in property <[bool]> disabled;
     in-out property <int> selected-index: -1;
     callback selected(int);
 
     key-pressed(event) => {
-        if event.text == Key.RightArrow && root.selected-index < root.model.length - 1 {
+        if event.text == Key.RightArrow && root.selected-index < root.model.length - 1
+            && !root.disabled[root.selected-index + 1] {
             root.selected-index += 1;
             root.selected(root.selected-index);
             return accept;
@@ -44,6 +48,8 @@ component ChipField inherits FocusScope {
         border-radius: DialogTheme.focus-radius;
         ChoiceChips {
             model: root.model;
+            disabled: root.disabled;
+            disabled-text-color: DialogTheme.chip-disabled-text;
             selected-index <=> root.selected-index;
             chip-height: Theme.chip-height;
             chip-padding: Theme.chip-padding;
@@ -78,6 +84,12 @@ export component NewSessionWindow inherits Window {
     // Project labels and launchable agent names, in the order offered.
     in property <[string]> project-names;
     in property <[string]> agent-names;
+    // Parallel to `agent-names`: true for an agent that cannot be launched.
+    in property <[bool]> agent-disabled;
+    // One line per unlaunchable agent: `name: reason`.
+    in property <string> agent-notes;
+    // Why Create is disabled; empty when it is allowed.
+    in property <string> blocker;
     in-out property <int> project-index: -1;
     in-out property <int> agent-index: -1;
     in-out property <string> session-name;
@@ -98,12 +110,16 @@ export component NewSessionWindow inherits Window {
     // Why the choices or the create failed; empty when there is nothing to show.
     in property <string> error;
     callback project-changed(int);
+    callback agent-changed(int);
+    // The branch or base branch text changed.
+    callback overrides-edited();
     callback template-chosen(int);
     callback submit();
     callback cancel();
 
     pure function can-submit() -> bool {
-        !root.loading && !root.busy && !root.template-loading && root.project-index >= 0 && root.agent-index >= 0
+        !root.loading && !root.busy && !root.template-loading && root.project-index >= 0
+            && root.agent-index >= 0 && root.blocker == ""
     }
 
     function try-submit() {
@@ -145,7 +161,15 @@ export component NewSessionWindow inherits Window {
                 FieldLabel { text: "Agent"; }
                 agent-field := ChipField {
                     model: root.agent-names;
+                    disabled: root.agent-disabled;
                     selected-index <=> root.agent-index;
+                    selected(index) => { root.agent-changed(index); }
+                }
+                if root.agent-notes != "": agent-notes-text := Text {
+                    text: root.agent-notes;
+                    color: Theme.detail;
+                    font-size: Theme.detail-font-size;
+                    wrap: word-wrap;
                 }
             }
             if root.template-names.length > 1: VerticalLayout {
@@ -192,19 +216,26 @@ export component NewSessionWindow inherits Window {
                 if root.advanced-open: VerticalLayout {
                     spacing: DialogTheme.field-spacing;
                     FieldLabel { text: "Branch (optional)"; }
-                    branch-edit := LineEdit { text <=> root.branch; }
+                    branch-edit := LineEdit {
+                        text <=> root.branch;
+                        edited => { root.overrides-edited(); }
+                    }
                     FieldLabel { text: "Base branch (optional)"; }
-                    base-branch-edit := LineEdit { text <=> root.base-branch; }
+                    base-branch-edit := LineEdit {
+                        text <=> root.base-branch;
+                        edited => { root.overrides-edited(); }
+                    }
                 }
-            }
-            if root.loading: loading-text := Text {
-                text: "Reading projects and agents from the daemon...";
-                color: Theme.detail;
-                font-size: Theme.error-font-size;
             }
             if root.error != "": error-text := Text {
                 text: root.error;
                 color: Theme.error;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
+            if root.blocker != "": blocker-text := Text {
+                text: root.blocker;
+                color: Theme.detail;
                 font-size: Theme.error-font-size;
                 wrap: word-wrap;
             }

@@ -38,9 +38,9 @@ pub use live::{LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
 pub use needs_you::{NEEDS_YOU_ID, with_needs_you};
 pub use new_session::{
-    Choices, CreateError, FormError, Generation, NewSessionForm, ProjectChoice, Recipe,
-    TemplateError, UNCONFIRMED_MESSAGE, build_params, create_session, launchable_agents,
-    load_choices, load_recipe, load_templates, recipe_from_action, template_names,
+    Activity, AgentChoice, Choices, CreateError, FormError, Generation, NewSessionForm,
+    ProjectChoice, Recipe, TemplateError, UNCONFIRMED_MESSAGE, build_params, create_session,
+    load_choices, load_recipe, load_templates, recipe_from_action, submit_blocker, template_names,
 };
 pub use owner_state::{OwnerState, derive};
 pub use pohunek_client::protocol::SessionNewParams;
