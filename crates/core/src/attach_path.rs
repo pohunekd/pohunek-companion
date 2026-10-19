@@ -256,6 +256,9 @@ mod tests {
         );
     }
 
+    const BUSY_RETRY_LIMIT: u32 = 100;
+    const BUSY_RETRY_DELAY: Duration = Duration::from_millis(20);
+
     /// Runs the probe, retrying while a freshly written script is still held
     /// open for writing by a child that a parallel test forked (ETXTBSY).
     fn run_probe_past_busy_script(
@@ -267,8 +270,8 @@ mod tests {
             let result = run_probe(shell, timeout);
             attempts += 1;
             match &result {
-                Err(err) if err.contains("Text file busy") && attempts < 50 => {
-                    std::thread::sleep(Duration::from_millis(20));
+                Err(err) if err.contains("Text file busy") && attempts < BUSY_RETRY_LIMIT => {
+                    std::thread::sleep(BUSY_RETRY_DELAY);
                 }
                 _ => return result,
             }
