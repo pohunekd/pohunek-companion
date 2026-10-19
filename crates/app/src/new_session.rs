@@ -2,12 +2,14 @@
 //! through the daemon. It runs as its own process, without a tray icon or the
 //! session stream.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pohunek_companion_core::{
-    Activity, Choices, Config, CreateError, DaemonConfig, FormError, Generation, NewSessionConfig,
-    NewSessionForm, Recipe, SessionNewParams, build_params, create_session, load_choices,
-    load_recipe, load_templates, submit_blocker,
+    Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, FormError,
+    Generation, LOCAL_HOST, NewSessionConfig, NewSessionForm, Recipe, SessionKey, SessionNewParams,
+    attach, build_params, create_session, load_choices, load_recipe, load_templates,
+    submit_blocker,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -347,12 +349,36 @@ fn load_in_background(
     });
 }
 
+/// How to attach the created session, when the owner asked for it.
+struct AttachAfter {
+    settings: AttachConfig,
+    config_path: Result<PathBuf, String>,
+}
+
+/// Attaches `session`; the error text reports that the session already exists.
+fn attach_created(after: &AttachAfter, session: &str) -> Result<(), String> {
+    let config_path = after.config_path.as_ref().map_err(|err| {
+        format!("Session {session} was created, but it could not be attached: {err}")
+    })?;
+    let key = SessionKey {
+        host: LOCAL_HOST.to_owned(),
+        session_id: session.to_owned(),
+    };
+    attach(&after.settings, config_path, &key).map_err(|err| match err {
+        AttachError::NotConfigured { .. } => {
+            format!("Session {session} was created, but it was not attached: {err}")
+        }
+        other => format!("Session {session} was created, but it could not be attached: {other}"),
+    })
+}
+
 fn submit_in_background(
     window: slint::Weak<NewSessionWindow>,
     templates: Templates,
     daemon: DaemonConfig,
     config: NewSessionConfig,
     params: SessionNewParams,
+    attach_after: Option<AttachAfter>,
 ) {
     std::thread::spawn(move || {
         let outcome = match block_on(create_session(&daemon, &config, params)) {
@@ -365,13 +391,25 @@ fn submit_in_background(
             Ok(id) => info!(session = %id, "create succeeded"),
             Err(err) => warn!(code = err.code(), "create failed"),
         }
-        let delivered = window.upgrade_in_event_loop(move |window| match outcome {
-            Ok(_) => {
+        let attached = match (&outcome, &attach_after) {
+            (Ok(id), Some(after)) => attach_created(after, id),
+            _ => Ok(()),
+        };
+        if let Err(message) = &attached {
+            warn!(error = %message, "attach after create failed");
+        }
+        let delivered = window.upgrade_in_event_loop(move |window| match (outcome, attached) {
+            (Ok(_), Ok(())) => {
                 if let Err(err) = window.hide() {
                     error!(error = %err, "hide the new-session window");
                 }
             }
-            Err(err) => {
+            (Ok(_), Err(message)) => {
+                window.set_busy(false);
+                window.set_created(true);
+                window.set_error(message.into());
+            }
+            (Err(err), _) => {
                 // An unknown outcome or an unconfirmed prompt keeps the window
                 // busy: Create stays disabled so the request is not repeated.
                 window.set_busy(matches!(
@@ -400,6 +438,8 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
         Ok(config) => {
             let templates =
                 Templates::new(config.daemon.clone(), choices.clone(), args.project.clone());
+            window.set_attach_after_create(config.new_session.attach_after_create);
+            let config_path = Config::path().map_err(|err| err.to_string());
             load_in_background(
                 window.as_weak(),
                 config.daemon.clone(),
@@ -454,12 +494,17 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                         window.set_error("".into());
                         window.set_busy(true);
                         templates.refresh_blocker(&window);
+                        let attach_after = window.get_attach_after_create().then(|| AttachAfter {
+                            settings: config.attach(),
+                            config_path: config_path.clone(),
+                        });
                         submit_in_background(
                             weak.clone(),
                             templates.clone(),
                             config.daemon.clone(),
                             config.new_session.clone(),
                             params,
+                            attach_after,
                         );
                     }
                     Err(err) => window.set_error(err.to_string().into()),

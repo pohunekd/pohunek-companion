@@ -206,6 +206,10 @@ pub struct NewSessionConfig {
     /// it is far longer than an ordinary request. A create that exceeds it has
     /// an unknown outcome and is never resent. Optional; default 120000.
     pub create_timeout_ms: u64,
+    /// `new_session.attach_after_create`: initial state of the dialog's
+    /// "Attach after creating" checkbox; when checked, a created session is
+    /// opened with the attach settings. Optional; default true.
+    pub attach_after_create: bool,
 }
 
 impl Default for NewSessionConfig {
@@ -214,6 +218,7 @@ impl Default for NewSessionConfig {
             cols: 80,
             rows: 24,
             create_timeout_ms: 120_000,
+            attach_after_create: true,
         }
     }
 }
@@ -665,6 +670,17 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(msg.contains("reseed_interval_secs"), "{msg}");
+    }
+
+    #[test]
+    fn attach_after_create_defaults_to_true_and_rejects_other_types() {
+        assert!(parse("").unwrap().new_session.attach_after_create);
+        let config = parse("[new_session]\nattach_after_create = false\n").unwrap();
+        assert!(!config.new_session.attach_after_create);
+        let msg = parse("[new_session]\nattach_after_create = \"yes\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("attach_after_create"), "{msg}");
     }
 
     #[test]

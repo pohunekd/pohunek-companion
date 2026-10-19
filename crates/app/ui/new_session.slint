@@ -1,4 +1,4 @@
-import { LineEdit, TextEdit } from "std-widgets.slint";
+import { CheckBox, LineEdit, TextEdit } from "std-widgets.slint";
 import { ChoiceChips } from "choice_chips.slint";
 import { Theme } from "app.slint";
 
@@ -109,6 +109,9 @@ export component NewSessionWindow inherits Window {
     in property <bool> busy;
     // Why the choices or the create failed; empty when there is nothing to show.
     in property <string> error;
+    // The session exists but could not be attached; Create is not offered again.
+    in property <bool> created;
+    in-out property <bool> attach-after-create: true;
     callback project-changed(int);
     callback agent-changed(int);
     // The branch or base branch text changed.
@@ -118,8 +121,8 @@ export component NewSessionWindow inherits Window {
     callback cancel();
 
     pure function can-submit() -> bool {
-        !root.loading && !root.busy && !root.template-loading && root.project-index >= 0
-            && root.agent-index >= 0 && root.blocker == ""
+        !root.loading && !root.busy && !root.created && !root.template-loading
+            && root.project-index >= 0 && root.agent-index >= 0 && root.blocker == ""
     }
 
     function try-submit() {
@@ -227,6 +230,11 @@ export component NewSessionWindow inherits Window {
                     }
                 }
             }
+            attach-checkbox := CheckBox {
+                text: "Attach after creating";
+                checked <=> root.attach-after-create;
+                enabled: !root.busy && !root.created;
+            }
             if root.error != "": error-text := Text {
                 text: root.error;
                 color: Theme.error;
@@ -248,7 +256,7 @@ export component NewSessionWindow inherits Window {
                     border-radius: DialogTheme.button-radius;
                     background: cancel-touch.has-hover ? Theme.chip-hover-background : Theme.chip-background;
                     Text {
-                        text: "Cancel";
+                        text: root.created ? "Close" : "Cancel";
                         color: Theme.text;
                     }
                     cancel-touch := TouchArea {
