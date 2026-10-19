@@ -74,6 +74,10 @@ die() {
     exit 1
 }
 
+case $session_parallelism in
+    '' | *[!0-9]* | 0*) die "UI_AGENT_PARALLELISM must be a positive number" ;;
+esac
+
 need() {
     command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"
 }
@@ -221,9 +225,9 @@ start_isolated_daemon() {
         { stop >/dev/null 2>&1 || true; die "the isolated daemon did not start; see $iso/daemon.log"; }
     for project in "${synthetic_projects[@]}"; do
         mkdir -p "$iso/work/$project" &&
-            git -C "$iso/work/$project" init --quiet &&
-            git -C "$iso/work/$project" -c user.name=ui-agent -c user.email=ui-agent@example.invalid \
-                commit --quiet --allow-empty -m "Initial commit" ||
+            GIT_CONFIG_GLOBAL=/dev/null git -C "$iso/work/$project" init --quiet &&
+            GIT_CONFIG_GLOBAL=/dev/null git -C "$iso/work/$project" -c user.name=ui-agent -c user.email=ui-agent@example.invalid \
+                -c commit.gpgsign=false -c core.hooksPath=/dev/null commit --quiet --allow-empty -m "Initial commit" ||
             { stop >/dev/null 2>&1 || true; die "cannot create the git repository for $project"; }
         env "${envs[@]}" "$cli" project add "$iso/work/$project" --name "$project" >/dev/null 2>"$iso/project-add.log" ||
             { local err; err=$(cat "$iso/project-add.log"); stop >/dev/null 2>&1 || true; die "cannot register project $project: $err"; }
@@ -289,7 +293,7 @@ stop_isolated_daemon() {
     mapfile -t envs < <(isolated_env "$iso")
     if [ -S "$iso/run/pohunek/daemon.sock" ]; then
         env "${envs[@]}" "$cli" session list --json 2>/dev/null | jq -r '.. | objects | select(has("id")) | .id' 2>/dev/null |
-            xargs -r -P "$session_parallelism" -I{} env "${envs[@]}" "$cli" session rm {} >/dev/null 2>&1 || true
+            xargs -r -P "$session_parallelism" -I{} env "${envs[@]}" "$cli" session rm {} >/dev/null 2>>"$iso/session-rm.log" || true
     fi
     kill_isolated "$iso" TERM
     for i in $(seq 1 50); do
@@ -322,7 +326,7 @@ start() {
             --sessions)
                 sessions=${2:?--sessions needs a value}
                 case $sessions in
-                    '' | *[!0-9]*) die "--sessions must be a non-negative number" ;;
+                    '' | *[!0-9]* | 0?*) die "--sessions must be a number without leading zeros" ;;
                 esac
                 shift 2
                 ;;
