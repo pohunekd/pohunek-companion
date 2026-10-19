@@ -13,7 +13,9 @@ A narrow, always-available sidebar for the owner of a Pohunek daemon:
   members, nesting) shown on the sessions;
 - a tray icon that summarises which sessions need the owner and which sit idle,
   with a menu to jump to them;
-- opening a session attaches to it in the owner's terminal.
+- opening a session attaches to it in the owner's terminal;
+- a standalone dialog creates a session in a chosen project (see Creating a
+  session).
 
 Non-goals: an embedded terminal, managing issues or PRs, editing herds or work
 links, a replacement for the Pohunek web control center.
@@ -147,6 +149,30 @@ Storage and reconciliation:
 The icon shows the most urgent state and the count of sessions needing the
 owner; the menu lists them and attaches on click. The tray is a passive summary:
 desktop notifications stay with Pohunek's own notification command.
+
+## Creating a session
+
+Creating a session is the companion's only mutation of daemon state. It runs
+from `pohunek-companion new-session [--project <id>]`, a subcommand of the
+same binary that runs as its own process: `slint::set_xdg_app_id` is per
+process, so the dialog sets the app id `pohunek-companion-new-session` and a
+compositor rule can float it apart from the sidebar. It creates no tray icon
+and does not follow the session stream.
+
+- Choices come from `project.list` (projects) and `host.inspect` (agents). An
+  agent is offered when its runtime is `available` and `supported` is not
+  `false`.
+- The form becomes one `session.new` (`Client::session_new`): the chosen
+  project and agent, the trimmed name and prompt (empty means omitted), and
+  `cols`/`rows` from `[new_session]` in `companion.toml`. The daemon picks the
+  working directory from the project.
+- `session.new` has no idempotency key, so the request is sent once and never
+  resent. A typed daemon error is shown with the daemon's message and the form
+  stays editable. A failure before the request left (socket unavailable, no
+  connection) is shown as is. Any other failure, a timeout included, leaves
+  the outcome unknown: the dialog says so, and Create stays disabled until the
+  window is reopened, after the owner checked the sidebar.
+- Log lines carry the session id and the error code, never the name or prompt.
 
 ## Window placement
 

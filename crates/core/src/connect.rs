@@ -9,7 +9,7 @@ use pohunek_client::protocol::{
 use pohunek_client::{Client, ClientError, ClientOptions, OriginSource, Subscription};
 use tracing::{error, info};
 
-use crate::config::DaemonConfig;
+use crate::config::{DaemonConfig, NewSessionConfig};
 use crate::error::CoreError;
 use crate::socket::local_socket_path;
 
@@ -40,11 +40,26 @@ pub(crate) fn resolve_socket() -> Result<PathBuf, CoreError> {
 
 /// The origin is omitted so a companion started inside a Pohunek session does
 /// not tag its requests with that session's identity.
-async fn connect(socket: &Path, config: &DaemonConfig) -> Result<Client, CoreError> {
+pub(crate) async fn connect(socket: &Path, config: &DaemonConfig) -> Result<Client, CoreError> {
     let options = ClientOptions::default()
         .with_origin_source(OriginSource::Omitted)
         .with_connect_timeout(config.connect_timeout())
         .with_request_timeout(config.request_timeout());
+    Ok(Client::connect_local_with_options(socket, options).await?)
+}
+
+/// Client whose options govern the dedicated connection `session_new` opens:
+/// its request timeout is the creation timeout, because creation runs project
+/// hooks and waits for the agent.
+pub(crate) async fn connect_for_create(
+    socket: &Path,
+    daemon: &DaemonConfig,
+    config: &NewSessionConfig,
+) -> Result<Client, CoreError> {
+    let options = ClientOptions::default()
+        .with_origin_source(OriginSource::Omitted)
+        .with_connect_timeout(daemon.connect_timeout())
+        .with_request_timeout(config.create_timeout());
     Ok(Client::connect_local_with_options(socket, options).await?)
 }
 

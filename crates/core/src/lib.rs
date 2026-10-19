@@ -13,6 +13,7 @@ mod layout;
 mod live;
 mod model;
 mod needs_you;
+mod new_session;
 mod owner_state;
 mod session;
 mod socket;
@@ -24,7 +25,8 @@ pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attac
 pub use attach_macos::AttachTerminal;
 pub use badge::{WorkBadge, WorkFacts, clip_display};
 pub use config::{
-    Config, ConfigError, DaemonConfig, LayoutConfig, PlacementRule, TrayConfig, ViewConfig,
+    Config, ConfigError, DaemonConfig, LayoutConfig, NewSessionConfig, PlacementRule, TrayConfig,
+    ViewConfig,
 };
 pub use error::CoreError;
 pub use filter::{SessionFilter, filter_sections};
@@ -35,7 +37,12 @@ pub use layout::{
 pub use live::{LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
 pub use needs_you::{NEEDS_YOU_ID, with_needs_you};
+pub use new_session::{
+    Choices, CreateError, FormError, NewSessionForm, ProjectChoice, UNCONFIRMED_MESSAGE,
+    build_params, create_session, launchable_agents, load_choices,
+};
 pub use owner_state::{OwnerState, derive};
+pub use pohunek_client::protocol::SessionNewParams;
 pub use session::{ProjectRef, SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
 pub use tray_summary::{TrayEntry, TraySummary};
