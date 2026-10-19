@@ -92,6 +92,10 @@ fn differs_materially(old: &SessionInfo, new: &SessionInfo) -> bool {
     aligned
         .native_last_activity_at
         .clone_from(&old.native_last_activity_at);
+    // Events omit the label that a seed carries.
+    if old.project_label.is_none() {
+        aligned.project_label = None;
+    }
     *old != aligned
 }
 
@@ -140,6 +144,8 @@ pub struct SessionStore {
     host: String,
     sessions: HashMap<SessionKey, Tracked>,
     attention: HashMap<NotificationId, NotificationRecord>,
+    /// Project label last seen in a seed per `project_id`; events omit it.
+    project_labels: HashMap<String, String>,
     report: ReconcileReport,
 }
 
@@ -155,6 +161,7 @@ impl SessionStore {
             host: host.into(),
             sessions: HashMap::new(),
             attention: HashMap::new(),
+            project_labels: HashMap::new(),
             report: ReconcileReport::default(),
         }
     }
@@ -169,6 +176,11 @@ impl SessionStore {
         self.sessions
             .iter()
             .map(|(key, tracked)| (key, &tracked.info))
+    }
+
+    /// The project label last seen in a seed for `project_id`.
+    pub fn project_label(&self, project_id: &str) -> Option<&str> {
+        self.project_labels.get(project_id).map(String::as_str)
     }
 
     /// Open attention notifications (`agent_blocked`, `approval_required`).
@@ -269,6 +281,12 @@ impl SessionStore {
         notifications: impl IntoIterator<Item = NotificationRecord>,
         now: Instant,
     ) -> SeedChange {
+        let sessions: Vec<SessionInfo> = sessions.into_iter().collect();
+        for info in &sessions {
+            if let (Some(id), Some(label)) = (&info.project_id, &info.project_label) {
+                self.project_labels.insert(id.clone(), label.clone());
+            }
+        }
         let previous = std::mem::take(&mut self.sessions);
         let previous_attention = std::mem::take(&mut self.attention);
         self.sessions = sessions
@@ -937,6 +955,22 @@ mod tests {
         let report = store.take_report();
         assert_eq!(report.ignored.values().sum::<u32>(), 2);
         assert!(store.report().ignored.is_empty());
+    }
+
+    #[test]
+    fn project_label_survives_events_that_omit_it() {
+        let mut seeded = session_json("s-1", 1, "2026-01-01T00:00:00Z");
+        seeded["project_id"] = json!("p-1");
+        seeded["project_label"] = json!("pohunek");
+        let mut store = SessionStore::default();
+        store.apply_seed([serde_json::from_value(seeded).expect("seed")], []);
+        let mut updated = session_json("s-1", 1, "2026-01-01T00:00:05Z");
+        updated["project_id"] = json!("p-1");
+        let outcome = store.apply_event(&event("session_updated", json!({"session": updated})));
+        assert_eq!(outcome, Applied::Applied);
+        assert_eq!(store.project_label("p-1"), Some("pohunek"));
+        let info = store.session(&SessionId("s-1".to_owned())).unwrap();
+        assert_eq!(info.project_label, None);
     }
 
     #[test]
