@@ -2,6 +2,8 @@
 //! dependency: the app crate maps these values to its views.
 
 mod attach;
+mod attach_macos;
+mod attach_path;
 mod badge;
 mod config;
 mod connect;
@@ -12,6 +14,7 @@ mod session;
 mod socket;
 
 pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attach};
+pub use attach_macos::AttachTerminal;
 pub use badge::{WorkBadge, clip_display};
 pub use config::{Config, ConfigError, DaemonConfig};
 pub use error::CoreError;
