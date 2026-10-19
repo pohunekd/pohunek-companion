@@ -6,10 +6,10 @@ mod logging;
 mod tray;
 
 use pohunek_companion_core::{
-    AttachConfig, AttachError, Config, DaemonConfig, LiveUpdate, OwnerState, SessionKey,
-    SessionRow, TraySummary, attach, clip_display, run_live,
+    AttachConfig, AttachError, Config, DaemonConfig, GroupSection, LayoutStore, LiveUpdate,
+    OwnerState, SessionKey, SessionRow, TraySummary, attach, clip_display, layout_path, run_live,
 };
-use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{error, info, warn};
 
 slint::include_modules!();
@@ -59,35 +59,16 @@ fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
         .collect()
 }
 
-/// Brings `model` to `rows` touching only what differs: unchanged rows are not
-/// rewritten, removed ones are dropped, new ones inserted in place.
-fn sync_rows(model: &VecModel<SessionRowData>, rows: Vec<SessionRowData>) {
-    let mut i = model.row_count();
-    while i > 0 {
-        i -= 1;
-        if let Some(row) = model.row_data(i)
-            && !rows.iter().any(|new| new.id == row.id)
-        {
-            model.remove(i);
-        }
-    }
-    for (i, new) in rows.iter().enumerate() {
-        match model.row_data(i) {
-            Some(current) if current.id == new.id => {
-                if current != *new {
-                    model.set_row_data(i, new.clone());
-                }
-            }
-            _ => {
-                let later = (i + 1..model.row_count())
-                    .find(|&j| model.row_data(j).is_some_and(|row| row.id == new.id));
-                if let Some(j) = later {
-                    model.remove(j);
-                }
-                model.insert(i, new.clone());
-            }
-        }
-    }
+fn group_data(sections: Vec<GroupSection>) -> Vec<GroupData> {
+    sections
+        .into_iter()
+        .map(|section| GroupData {
+            id: section.id.into(),
+            name: section.name.into(),
+            count: i32::try_from(section.rows.len()).unwrap_or(i32::MAX),
+            rows: ModelRc::new(VecModel::from(session_rows(section.rows))),
+        })
+        .collect()
 }
 
 /// Follows the daemon on a background thread and hands every update to the UI
@@ -97,6 +78,8 @@ fn follow_daemon(
     tray: slint::Weak<Tray>,
     daemon: DaemonConfig,
     idle_threshold: Duration,
+    mut layout: LayoutStore,
+    load_error: Option<String>,
 ) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -120,21 +103,36 @@ fn follow_daemon(
                 LiveUpdate::Sessions(sessions) => Some(TraySummary::from_rows(sessions)),
                 _ => None,
             };
+            // Reconciled and saved here so the UI thread never waits on disk.
+            let arranged = match &update {
+                LiveUpdate::Sessions(sessions) => {
+                    let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
+                    layout.reconcile(&keys);
+                    let layout_error = layout
+                        .save_if_changed()
+                        .err()
+                        .map(|err| {
+                            error!(error = %err, "save the layout");
+                            err.to_string()
+                        })
+                        .or_else(|| load_error.clone());
+                    Some((layout.layout().arrange(sessions), layout_error))
+                }
+                _ => None,
+            };
             let tray = tray.clone();
             let applied = window.upgrade_in_event_loop(move |window| match update {
                 LiveUpdate::Connected => {
                     window.set_error("".into());
                     window.set_status("".into());
                 }
-                LiveUpdate::Sessions(sessions) => {
+                LiveUpdate::Sessions(_) => {
                     if let (Some(tray), Some(summary)) = (tray.upgrade(), summary) {
                         tray::apply(&tray, &summary);
                     }
-                    let rows = session_rows(sessions);
-                    let model = window.get_sessions();
-                    match model.as_any().downcast_ref::<VecModel<SessionRowData>>() {
-                        Some(model) => sync_rows(model, rows),
-                        None => window.set_sessions(ModelRc::new(VecModel::from(rows))),
+                    if let Some((sections, layout_error)) = arranged {
+                        window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
+                        window.set_layout_error(layout_error.unwrap_or_default().into());
                     }
                 }
                 LiveUpdate::Reconnecting { attempt, reason } => {
@@ -220,6 +218,16 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::set_xdg_app_id(APP_ID)?;
     let tray = Tray::new()?;
 
+    let (layout, layout_error) = match layout_path() {
+        Ok(path) => LayoutStore::open(path),
+        Err(err) => {
+            error!(error = %err, "locate the layout file");
+            (LayoutStore::unsaved(), Some(err))
+        }
+    };
+    let layout_error = layout_error.map(|err| err.to_string());
+    window.set_layout_error(layout_error.clone().unwrap_or_default().into());
+
     let config_path = Config::path().map_err(|err| err.to_string());
     let attach_context = match Config::load() {
         Ok(config) => {
@@ -232,6 +240,8 @@ fn main() -> Result<(), slint::PlatformError> {
                 tray.as_weak(),
                 config.daemon,
                 config.tray.idle_threshold(),
+                layout,
+                layout_error,
             );
             context
         }

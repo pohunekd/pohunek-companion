@@ -17,6 +17,13 @@ export struct SessionRowData {
     attach-refusal: string,
 }
 
+export struct GroupData {
+    id: string,
+    name: string,
+    count: int,
+    rows: [SessionRowData],
+}
+
 export global Theme {
     out property <length> row-height: 36px;
     out property <length> row-radius: 4px;
@@ -26,6 +33,10 @@ export global Theme {
     out property <length> window-padding: 8px;
     out property <length> detail-font-size: 11px;
     out property <length> error-font-size: 13px;
+    out property <length> group-header-height: 24px;
+    out property <length> group-spacing: 8px;
+    out property <length> group-font-size: 12px;
+    out property <color> group-text: #b5bac1;
     out property <length> badge-row-height: 16px;
     out property <length> badge-font-size: 10px;
     out property <length> badge-padding: 4px;
@@ -147,17 +158,49 @@ component SessionRow inherits Rectangle {
     }
 }
 
+component GroupHeader inherits Rectangle {
+    in property <string> name;
+    in property <int> count;
+
+    height: Theme.group-header-height;
+
+    HorizontalLayout {
+        padding-left: Theme.row-padding;
+        padding-right: Theme.row-padding;
+        spacing: Theme.badge-spacing;
+        alignment: start;
+        name-text := Text {
+            text: root.name;
+            color: Theme.group-text;
+            font-size: Theme.group-font-size;
+            font-weight: 700;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        count-text := Text {
+            text: root.count;
+            color: Theme.detail;
+            font-size: Theme.group-font-size;
+            horizontal-stretch: 0;
+            vertical-alignment: center;
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Pohunek Companion";
     preferred-width: 320px;
     preferred-height: 800px;
     background: Theme.background;
 
-    in property <[SessionRowData]> sessions;
+    // The owner's groups in order, each with its sessions in order.
+    in property <[GroupData]> groups;
     // Typed connection or protocol error; empty when the list is valid.
     in property <string> error;
     // Daemon connection status; empty while connected.
     in property <string> status;
+    // Why the layout file could not be used or saved; empty when it works.
+    in property <string> layout-error;
     // Why logging is unavailable; empty when log output is working.
     in property <string> log-error;
     // Outcome of the last attach click; empty when it launched.
@@ -179,6 +222,12 @@ export component AppWindow inherits Window {
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
+        if root.layout-error != "": layout-error-text := Text {
+            text: root.layout-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
         if root.log-error != "": log-error-text := Text {
             text: root.log-error;
             color: Theme.error;
@@ -193,10 +242,17 @@ export component AppWindow inherits Window {
         }
         session-list := ScrollView {
             VerticalLayout {
-                spacing: Theme.row-spacing;
-                for session in root.sessions: SessionRow {
-                    data: session;
-                    clicked => { root.attach(session.host, session.id, session.attach-refusal); }
+                spacing: Theme.group-spacing;
+                for group in root.groups: VerticalLayout {
+                    spacing: Theme.row-spacing;
+                    GroupHeader {
+                        name: group.name;
+                        count: group.count;
+                    }
+                    for session in group.rows: SessionRow {
+                        data: session;
+                        clicked => { root.attach(session.host, session.id, session.attach-refusal); }
+                    }
                 }
             }
         }
