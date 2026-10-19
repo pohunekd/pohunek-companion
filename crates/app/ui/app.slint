@@ -467,7 +467,23 @@ export component AppWindow inherits Window {
     in-out property <string> editing-group;
     // The text typed into that group's name editor.
     in-out property <string> edit-text;
+    // The text of the filter field; empty shows every session.
+    in-out property <string> filter-text;
+    // A filter is active and no session matches it.
+    in property <bool> filter-empty;
+    // The filter text changed by typing or clearing.
+    callback filter-changed(string);
 
+    // Ctrl+F (Cmd+F on macOS) focuses the filter field from anywhere.
+    window-keys := FocusScope {
+      init => { self.focus(); }
+      capture-key-pressed(event) => {
+        if (event.modifiers.control || event.modifiers.meta) && event.text == "f" {
+            filter-edit.focus();
+            return accept;
+        }
+        reject
+      }
     VerticalLayout {
         padding: Theme.window-padding;
         spacing: Theme.row-spacing;
@@ -485,6 +501,43 @@ export component AppWindow inherits Window {
             text-color: Theme.detail;
             selected-text-color: Theme.text;
             selected(index) => { root.view-selected(index); }
+        }
+        filter-scope := FocusScope {
+            height: Theme.new-group-height;
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape && root.filter-text != "" {
+                    root.filter-text = "";
+                    root.filter-changed("");
+                    return accept;
+                }
+                reject
+            }
+            filter-edit := LineEdit {
+                width: parent.width;
+                placeholder-text: "Filter sessions (Ctrl+F)";
+                font-size: Theme.group-font-size;
+                accessible-label: "Filter sessions";
+                text <=> root.filter-text;
+                edited(value) => { root.filter-changed(value); }
+            }
+            if root.filter-text != "": filter-clear := TouchArea {
+                x: parent.width - self.width - Theme.row-padding;
+                width: Theme.new-group-height;
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: "Clear filter";
+                clicked => {
+                    root.filter-text = "";
+                    root.filter-changed("");
+                }
+                Text {
+                    text: "×";
+                    color: Theme.detail;
+                    font-size: Theme.group-font-size;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
         }
         if root.error != "": error-text := Text {
             text: root.error;
@@ -563,6 +616,12 @@ export component AppWindow inherits Window {
                     root.pending-id = "";
                 }
             }
+        }
+        if root.filter-empty: no-match-text := Text {
+            text: "No sessions match";
+            color: Theme.detail;
+            font-size: Theme.error-font-size;
+            horizontal-alignment: center;
         }
         session-list := ScrollView {
             VerticalLayout {
@@ -654,6 +713,7 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
     }
 }
 

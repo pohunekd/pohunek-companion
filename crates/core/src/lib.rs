@@ -8,6 +8,7 @@ mod badge;
 mod config;
 mod connect;
 mod error;
+mod filter;
 mod layout;
 mod live;
 mod model;
@@ -26,6 +27,7 @@ pub use config::{
     Config, ConfigError, DaemonConfig, LayoutConfig, PlacementRule, TrayConfig, ViewConfig,
 };
 pub use error::CoreError;
+pub use filter::{SessionFilter, filter_sections};
 pub use layout::{
     CreateAndMoveError, GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError,
     LayoutStore, MoveError, Placement, Reconciled, RulePlacement, layout_path, state_dir,
