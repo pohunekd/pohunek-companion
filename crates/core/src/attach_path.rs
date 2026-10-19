@@ -256,6 +256,28 @@ mod tests {
         );
     }
 
+    const BUSY_RETRY_LIMIT: u32 = 100;
+    const BUSY_RETRY_DELAY: Duration = Duration::from_millis(20);
+
+    /// Runs the probe, retrying while a freshly written script is still held
+    /// open for writing by a child that a parallel test forked (ETXTBSY).
+    fn run_probe_past_busy_script(
+        shell: &Path,
+        timeout: Duration,
+    ) -> Result<Option<OsString>, String> {
+        let mut attempts = 0;
+        loop {
+            let result = run_probe(shell, timeout);
+            attempts += 1;
+            match &result {
+                Err(err) if err.contains("Text file busy") && attempts < BUSY_RETRY_LIMIT => {
+                    std::thread::sleep(BUSY_RETRY_DELAY);
+                }
+                _ => return result,
+            }
+        }
+    }
+
     #[test]
     fn probe_runs_a_shell_and_times_out_a_hung_one() {
         let path = run_probe(Path::new("/bin/sh"), Duration::from_secs(5)).unwrap();
@@ -273,10 +295,10 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&noisy, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let got = run_probe(&noisy, Duration::from_secs(5)).unwrap();
+        let got = run_probe_past_busy_script(&noisy, Duration::from_secs(5)).unwrap();
         assert_eq!(got, Some("/x:/y".into()));
         let started = Instant::now();
-        let err = run_probe(&hung, Duration::from_millis(100)).unwrap_err();
+        let err = run_probe_past_busy_script(&hung, Duration::from_millis(100)).unwrap_err();
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(err.contains("did not answer"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(5));
