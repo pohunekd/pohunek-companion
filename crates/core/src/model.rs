@@ -241,9 +241,10 @@ impl SessionStore {
     }
 
     /// Replaces all state with the `session.list` and `notification.list`
-    /// results. Revision baselines start empty, so the first matching
-    /// `agent_state` event after a seed applies. Returns what differs from
-    /// the state that was replaced.
+    /// results. A session keeps its `agent_state` baseline while its runtime
+    /// identity is unchanged, because the seed carries no activity revision
+    /// and a buffered older event must not replace newer activity. Returns
+    /// what differs from the state that was replaced.
     pub fn apply_seed(
         &mut self,
         sessions: impl IntoIterator<Item = SessionInfo>,
@@ -265,6 +266,10 @@ impl SessionStore {
             .map(|info| {
                 let key = self.key(&info.id);
                 let mut tracked = Tracked::new(info, now);
+                tracked.baseline = previous
+                    .get(&key)
+                    .and_then(|old| old.baseline.clone())
+                    .filter(|baseline| runs_on(&tracked.info, &baseline.runtime));
                 // A re-seed must not restart the idle clock of a session that
                 // has stayed idle.
                 if let (Some(since), Some(old)) = (
@@ -416,11 +421,13 @@ impl SessionStore {
             .get_mut(&key)
             .ok_or(IgnoreReason::UnknownSession)?;
         let runtime = runtime.ok_or(IgnoreReason::MissingRuntime)?;
-        let matches = tracked.info.runtime.as_ref().is_some_and(|stored| {
-            stored.worker_instance_id.as_deref() == Some(runtime.worker_instance_id())
-                && stored.runtime_generation == runtime.runtime_generation()
-        });
-        if matches {
+        if runs_on(
+            &tracked.info,
+            &(
+                runtime.worker_instance_id().to_owned(),
+                runtime.runtime_generation().get(),
+            ),
+        ) {
             Ok(tracked)
         } else {
             Err(IgnoreReason::RuntimeMismatch)
@@ -480,14 +487,18 @@ impl SessionStore {
     }
 
     fn apply_background_state(&mut self, payload: BackgroundStateEvent, now: Instant) -> Applied {
-        match self.runtime_scoped(&payload.session_id, payload.runtime.as_ref()) {
-            Ok(tracked) => {
-                tracked.info.background = payload.background;
-                tracked.refresh_idle(now);
-                Applied::Applied
-            }
-            Err(reason) => Applied::Ignored(reason),
+        let tracked = match self.runtime_scoped(&payload.session_id, payload.runtime.as_ref()) {
+            Ok(tracked) => tracked,
+            Err(reason) => return Applied::Ignored(reason),
+        };
+        if let (Some(stored), Some(incoming)) = (&tracked.info.background, &payload.background)
+            && stored.revision >= incoming.revision
+        {
+            return Applied::Ignored(IgnoreReason::StaleRevision);
         }
+        tracked.info.background = payload.background;
+        tracked.refresh_idle(now);
+        Applied::Applied
     }
 
     /// Keeps a record in the attention set while it is an open attention
@@ -507,6 +518,15 @@ impl SessionStore {
             self.attention.remove(&record.id);
         }
     }
+}
+
+/// Whether the session's snapshot names the given worker instance and runtime
+/// generation.
+fn runs_on(info: &SessionInfo, runtime: &(String, u64)) -> bool {
+    info.runtime.as_ref().is_some_and(|stored| {
+        stored.worker_instance_id.as_deref() == Some(runtime.0.as_str())
+            && stored.runtime_generation.get() == runtime.1
+    })
 }
 
 fn decode<T: DeserializeOwned>(event: &Event, apply: impl FnOnce(T) -> Applied) -> Applied {
@@ -682,15 +702,53 @@ mod tests {
     }
 
     #[test]
-    fn first_matching_agent_state_after_a_seed_applies() {
+    fn a_reseed_keeps_the_activity_baseline_of_an_unchanged_runtime() {
         let mut store = store_with(session("s-1", 1, "2026-01-01T00:00:00Z"));
         store.apply_event(&agent_state("s-1", 1, "e", "100", "working"));
         store.apply_seed([session("s-1", 1, "2026-01-01T00:00:01Z")], []);
         assert_eq!(
             store.apply_event(&agent_state("s-1", 1, "e", "3", "idle")),
+            Applied::Ignored(IgnoreReason::StaleRevision)
+        );
+        assert_eq!(
+            store.apply_event(&agent_state("s-1", 1, "e", "101", "idle")),
             Applied::Applied
         );
-        assert_eq!(activity(&store, "s-1"), Some(AgentActivity::Idle));
+    }
+
+    #[test]
+    fn a_reseed_drops_the_activity_baseline_when_the_runtime_changed() {
+        let mut store = store_with(session("s-1", 1, "2026-01-01T00:00:00Z"));
+        store.apply_event(&agent_state("s-1", 1, "e", "100", "working"));
+        store.apply_seed([session("s-1", 2, "2026-01-01T00:00:01Z")], []);
+        assert_eq!(
+            store.apply_event(&agent_state("s-1", 2, "e", "1", "idle")),
+            Applied::Applied
+        );
+    }
+
+    #[test]
+    fn background_state_not_newer_than_the_seeded_snapshot_is_ignored() {
+        let mut seeded = session_json("s-1", 1, "2026-01-01T00:00:00Z");
+        seeded["background"] = json!({"revision": "5", "observed_at_ms": 1, "items": []});
+        let mut store = store_with(serde_json::from_value(seeded).expect("session"));
+        let background = |revision: &str| {
+            event(
+                "background_state",
+                json!({
+                    "session_id": "s-1",
+                    "background": {"revision": revision, "observed_at_ms": 2, "items": []},
+                    "runtime": runtime(1),
+                }),
+            )
+        };
+        for revision in ["5", "4"] {
+            assert_eq!(
+                store.apply_event(&background(revision)),
+                Applied::Ignored(IgnoreReason::StaleRevision)
+            );
+        }
+        assert_eq!(store.apply_event(&background("6")), Applied::Applied);
     }
 
     #[test]
