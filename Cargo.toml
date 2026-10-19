@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/app"]
+members = ["crates/app", "crates/core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,13 @@ slint = { version = "1.18.1", default-features = false, features = [
     "system-tray",
 ] }
 slint-build = "1.18.1"
+
+pohunek-companion-core = { path = "crates/core" }
+# Pinned to a Pohunek release tag; the only Pohunek crate the companion uses.
+pohunek-client = { git = "https://github.com/zajca/pohunek", tag = "v0.35.2" }
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt"] }
 
 [workspace.lints.rust]
 # `deny`, not `forbid`: Slint-generated code carries its own allow attributes.

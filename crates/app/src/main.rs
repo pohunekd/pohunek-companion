@@ -1,25 +1,17 @@
-mod reorder;
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use pohunek_companion_core::{SessionRow, fetch_sessions};
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 slint::include_modules!();
 
 // Spike-only tunables; the real app reads them from companion.toml.
 const APP_ID: &str = "pohunek-companion";
-const ROWS_PER_GROUP: usize = 15;
 const TRAY_TICK: Duration = Duration::from_secs(2);
 const TRAY_ICON_SIZE: u32 = 32;
 const TRAY_STATES: i32 = 4;
-
-/// Drag payload carried in the `data-transfer` value: the stable row id.
-#[derive(Clone, Copy)]
-struct RowRef {
-    id: i32,
-}
 
 fn tray_icon(count: i32) -> Image {
     let color = match count {
@@ -47,38 +39,44 @@ fn tray_icon(count: i32) -> Image {
     Image::from_rgba8(buffer)
 }
 
-fn rows(group: &str, id_base: usize) -> Vec<RowData> {
-    (0..ROWS_PER_GROUP)
-        .map(|i| RowData {
-            id: (id_base + i) as i32,
-            title: format!("{group} session {i}").into(),
+fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
+    sessions
+        .into_iter()
+        .map(|s| SessionRowData {
+            name: s.display_name.into(),
+            agent: s.agent.into(),
+            state: s.state.into(),
         })
         .collect()
 }
 
-fn apply_move(
-    groups: &RefCell<Vec<Vec<RowData>>>,
-    models: &[Rc<VecModel<RowData>>],
-    id: i32,
-    to_group: usize,
-    slot: usize,
-) {
-    let mut groups = groups.borrow_mut();
-    let Some((from_group, from_index)) = groups
-        .iter()
-        .enumerate()
-        .find_map(|(g, rows)| rows.iter().position(|r| r.id == id).map(|i| (g, i)))
-    else {
-        eprintln!("dropped row {id} not found");
-        return;
-    };
-    let Some(landed) = reorder::move_item(&mut groups, from_group, from_index, to_group, slot)
-    else {
-        eprintln!("drop target out of range: group {to_group}, slot {slot}");
-        return;
-    };
-    let row = models[from_group].remove(from_index);
-    models[to_group].insert(landed, row);
+/// Fetches the session list on a background thread and hands the outcome to
+/// the UI thread; the UI thread never waits on the daemon.
+fn load_sessions(window: slint::Weak<AppWindow>) {
+    std::thread::spawn(move || {
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| format!("cannot start the background runtime: {err}"))
+            .and_then(|runtime| {
+                runtime
+                    .block_on(fetch_sessions())
+                    .map_err(|err| err.to_string())
+            });
+        let applied = window.upgrade_in_event_loop(move |window| match outcome {
+            Ok(sessions) => {
+                window.set_error("".into());
+                window.set_sessions(ModelRc::new(VecModel::from(session_rows(sessions))));
+            }
+            Err(message) => {
+                window.set_sessions(ModelRc::default());
+                window.set_error(message.into());
+            }
+        });
+        if let Err(err) = applied {
+            eprintln!("deliver session list: {err}");
+        }
+    });
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -88,67 +86,19 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::set_xdg_app_id(APP_ID)?;
     let tray = Tray::new()?;
 
-    let groups = Rc::new(RefCell::new(vec![
-        rows("Inbox", 0),
-        rows("Review", ROWS_PER_GROUP),
-    ]));
-    let models: Rc<Vec<Rc<VecModel<RowData>>>> = Rc::new(
-        groups
-            .borrow()
-            .iter()
-            .map(|g| Rc::new(VecModel::from(g.clone())))
-            .collect(),
-    );
-    window.set_group_a(ModelRc::from(models[0].clone()));
-    window.set_group_b(ModelRc::from(models[1].clone()));
-
-    window.on_payload(|row| {
-        let mut transfer = slint::DataTransfer::default();
-        let reference = RowRef { id: row.id };
-        transfer.set_user_data(Rc::new(reference));
-        transfer
-    });
-
-    {
-        let groups = groups.clone();
-        let models = models.clone();
-        window.on_drop(move |transfer, to_group, slot| {
-            let Some(reference) = transfer
-                .user_data()
-                .and_then(|data| data.downcast_ref::<RowRef>().copied())
-            else {
-                eprintln!("drop without a row payload");
-                return;
-            };
-            // The dragged row is destroyed by the model change, so the change
-            // runs after the drop callback has returned.
-            let groups = groups.clone();
-            let models = models.clone();
-            slint::Timer::single_shot(Duration::ZERO, move || {
-                apply_move(
-                    &groups,
-                    &models,
-                    reference.id,
-                    to_group as usize,
-                    slot as usize,
-                );
-            });
-        });
-    }
+    load_sessions(window.as_weak());
 
     let count = Rc::new(RefCell::new(0i32));
     let refresh_tray = {
         let tray = tray.as_weak();
-        let window = window.as_weak();
         move |count: i32| {
-            let (Some(tray), Some(window)) = (tray.upgrade(), window.upgrade()) else {
+            let Some(tray) = tray.upgrade() else {
                 return;
             };
             tray.set_tray_icon(tray_icon(count));
             tray.set_tray_tooltip(format!("{count} sessions need you").into());
             tray.set_needs_label(format!("Needs you: {count}").into());
             tray.set_ticks_label("Bump counter".into());
-            window.set_status(format!("Tray count: {count}").into());
         }
     };
     refresh_tray(0);
