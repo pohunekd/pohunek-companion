@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
@@ -32,7 +33,7 @@ fn owner_state_kind(state: OwnerState) -> OwnerStateKind {
     }
 }
 
-fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
+fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRowData> {
     sessions
         .into_iter()
         .map(|s| {
@@ -43,7 +44,10 @@ fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
                 ),
                 None => Default::default(),
             };
+            let (owner_group, manual) = placed.get(&s.key).cloned().unwrap_or_default();
             SessionRowData {
+                owner_group: owner_group.into(),
+                manual,
                 name: s.display_name.into(),
                 agent: s.agent.into(),
                 state: s.state.into(),
@@ -63,7 +67,60 @@ fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
         .collect()
 }
 
-fn group_data(sections: Vec<GroupSection>) -> Vec<GroupData> {
+/// Each session's owner group id and whether the owner placed it by hand.
+type Placements = HashMap<SessionKey, (String, bool)>;
+
+/// What the window shows of the layout: the sections of the selected view,
+/// each session's placement, and the owner groups in display order as
+/// (id, name).
+struct Arranged {
+    sections: Vec<GroupSection>,
+    placed: Placements,
+    owner_groups: Vec<(String, String)>,
+}
+
+fn arrange(state: &LayoutState) -> Arranged {
+    let layout = state.store.layout();
+    Arranged {
+        sections: layout.present(&state.rows, state.title_max_chars),
+        placed: layout
+            .items()
+            .iter()
+            .map(|item| {
+                let key = SessionKey {
+                    host: item.host.clone(),
+                    session_id: item.session_id.clone(),
+                };
+                (key, (item.group.clone(), item.manual))
+            })
+            .collect(),
+        owner_groups: layout
+            .ordered_groups()
+            .into_iter()
+            .map(|group| (group.id.clone(), group.name.clone()))
+            .collect(),
+    }
+}
+
+fn show_arranged(window: &AppWindow, arranged: Arranged) {
+    let Arranged {
+        sections,
+        placed,
+        owner_groups,
+    } = arranged;
+    window.set_groups(ModelRc::new(VecModel::from(group_data(sections, &placed))));
+    window.set_owner_groups(ModelRc::new(VecModel::from(
+        owner_groups
+            .into_iter()
+            .map(|(id, name)| OwnerGroupData {
+                id: id.into(),
+                name: name.into(),
+            })
+            .collect::<Vec<_>>(),
+    )));
+}
+
+fn group_data(sections: Vec<GroupSection>, placed: &Placements) -> Vec<GroupData> {
     sections
         .into_iter()
         .map(|section| GroupData {
@@ -73,7 +130,7 @@ fn group_data(sections: Vec<GroupSection>) -> Vec<GroupData> {
             id: section.id.into(),
             name: section.name.into(),
             count: i32::try_from(section.rows.len()).unwrap_or(i32::MAX),
-            rows: ModelRc::new(VecModel::from(session_rows(section.rows))),
+            rows: ModelRc::new(VecModel::from(session_rows(section.rows, placed))),
         })
         .collect()
 }
@@ -150,14 +207,11 @@ fn spawn_view_change(window: slint::Weak<AppWindow>, layout: SharedLayout, view:
         let mut state = lock(&layout);
         state.store.set_view(view);
         let layout_error = save_layout(&mut state);
-        let sections = state
-            .store
-            .layout()
-            .present(&state.rows, state.title_max_chars);
+        let arranged = arrange(&state);
         let applied = window.upgrade_in_event_loop(move |window| {
             window.set_view_index(i32::try_from(view.index()).unwrap_or_default());
             window.set_editable(view.is_editable());
-            window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
+            show_arranged(&window, arranged);
             window.set_layout_error(layout_error.unwrap_or_default().into());
         });
         drop(state);
@@ -287,12 +341,9 @@ fn spawn_layout_worker(
                 (Some(moved), Some(saved)) => Some(format!("{moved}\n{saved}")),
                 (moved, saved) => moved.or(saved),
             };
-            let sections = state
-                .store
-                .layout()
-                .present(&state.rows, state.title_max_chars);
+            let arranged = arrange(&state);
             if let Err(err) = window.upgrade_in_event_loop(move |window| {
-                window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
+                show_arranged(&window, arranged);
                 window.set_layout_error(layout_error.unwrap_or_default().into());
                 window.set_group_error(group_error.unwrap_or_default().into());
             }) {
@@ -346,12 +397,9 @@ fn follow_daemon(
                     state.store.apply_rules(sessions, &rules);
                     let layout_error = save_layout(&mut state);
                     state.rows = sessions.clone();
-                    let sections = state
-                        .store
-                        .layout()
-                        .present(&state.rows, state.title_max_chars);
+                    let arranged = arrange(&state);
                     guard = Some(state);
-                    Some((sections, layout_error))
+                    Some((arranged, layout_error))
                 }
                 _ => None,
             };
@@ -365,8 +413,8 @@ fn follow_daemon(
                     if let (Some(tray), Some(summary)) = (tray.upgrade(), summary) {
                         tray::apply(&tray, &summary);
                     }
-                    if let Some((sections, layout_error)) = arranged {
-                        window.set_groups(ModelRc::new(VecModel::from(group_data(sections))));
+                    if let Some((arranged, layout_error)) = arranged {
+                        show_arranged(&window, arranged);
                         window.set_layout_error(layout_error.unwrap_or_default().into());
                     }
                 }
@@ -651,9 +699,24 @@ fn main() -> Result<(), slint::PlatformError> {
                 })
             }
         });
+        window.on_move_to_group({
+            let send = send.clone();
+            move |host, id, group| {
+                info!(host = %host, session = %id, group = %group, "move to group from the context menu");
+                send(LayoutRequest::Drop {
+                    key: SessionKey {
+                        host: host.into(),
+                        session_id: id.into(),
+                    },
+                    group: group.into(),
+                    anchor: None,
+                })
+            }
+        });
         window.on_return_to_rule({
             let send = send.clone();
             move |host, id| {
+                info!(host = %host, session = %id, "return to rule placement from the context menu");
                 send(LayoutRequest::ReturnToRule(SessionKey {
                     host: host.into(),
                     session_id: id.into(),
