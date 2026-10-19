@@ -406,6 +406,7 @@ impl Layout {
             id: id.clone(),
             name: name.to_owned(),
             order,
+            collapsed: false,
         });
         id
     }
