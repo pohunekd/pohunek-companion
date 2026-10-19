@@ -2,6 +2,7 @@
 //! dependency: the app crate maps these values to its views.
 
 mod badge;
+mod config;
 mod connect;
 mod error;
 mod model;
@@ -9,6 +10,7 @@ mod session;
 mod socket;
 
 pub use badge::{WorkBadge, clip_display};
+pub use config::{Config, ConfigError, DaemonConfig};
 pub use connect::fetch_sessions;
 pub use error::CoreError;
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
