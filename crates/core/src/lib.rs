@@ -17,6 +17,7 @@ mod session;
 mod socket;
 mod sort_key;
 mod tray_summary;
+mod view;
 
 pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attach};
 pub use attach_macos::AttachTerminal;
@@ -34,3 +35,4 @@ pub use owner_state::{OwnerState, derive};
 pub use session::{ProjectRef, SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
 pub use tray_summary::{TrayEntry, TraySummary};
+pub use view::{View, by_state};
