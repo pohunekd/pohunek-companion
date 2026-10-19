@@ -1,9 +1,13 @@
 import { ScrollView } from "std-widgets.slint";
 
+export enum OwnerStateKind { needs-owner, working, idle, ended, no-agent-state }
+
 export struct SessionRowData {
     name: string,
     agent: string,
     state: string,
+    owner-state: OwnerStateKind,
+    owner-label: string,
     // Empty when the session has no Pohunek Work link.
     badge: string,
     badge-role: string,
@@ -34,6 +38,29 @@ global Theme {
     out property <color> error: #e04040;
     out property <color> badge-background: #3a3d44;
     out property <color> badge-text: #c9d1d9;
+    out property <length> owner-dot-size: 8px;
+    out property <length> owner-spacing: 5px;
+    out property <color> owner-needs-owner: #e0a030;
+    out property <color> owner-working: #4caf6e;
+    out property <color> owner-idle: #5b8def;
+    out property <color> owner-ended: #6c757d;
+    out property <color> owner-no-agent-state: #4a4d54;
+
+    pure public function owner-color(kind: OwnerStateKind) -> color {
+        if kind == OwnerStateKind.needs-owner {
+            return owner-needs-owner;
+        }
+        if kind == OwnerStateKind.working {
+            return owner-working;
+        }
+        if kind == OwnerStateKind.idle {
+            return owner-idle;
+        }
+        if kind == OwnerStateKind.ended {
+            return owner-ended;
+        }
+        return owner-no-agent-state;
+    }
 }
 
 component SessionRow inherits Rectangle {
@@ -60,11 +87,28 @@ component SessionRow inherits Rectangle {
             color: Theme.text;
             overflow: elide;
         }
-        Text {
-            text: root.data.agent + " - " + root.data.state;
-            color: Theme.detail;
-            font-size: Theme.detail-font-size;
-            overflow: elide;
+        HorizontalLayout {
+            spacing: Theme.owner-spacing;
+            Rectangle {
+                width: Theme.owner-dot-size;
+                height: Theme.owner-dot-size;
+                border-radius: Theme.owner-dot-size / 2;
+                background: Theme.owner-color(root.data.owner-state);
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: root.data.owner-label;
+                color: Theme.owner-color(root.data.owner-state);
+                font-size: Theme.detail-font-size;
+                horizontal-stretch: 0;
+            }
+            Text {
+                text: root.data.agent + " - " + root.data.state;
+                color: Theme.detail;
+                font-size: Theme.detail-font-size;
+                horizontal-alignment: left;
+                overflow: elide;
+            }
         }
         if root.data.badge != "": HorizontalLayout {
             spacing: Theme.badge-spacing;

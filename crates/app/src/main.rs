@@ -6,8 +6,8 @@ use std::time::Duration;
 mod logging;
 
 use pohunek_companion_core::{
-    AttachConfig, AttachError, Config, DaemonConfig, LiveUpdate, SessionKey, SessionRow, attach,
-    clip_display, run_live,
+    AttachConfig, AttachError, Config, DaemonConfig, LiveUpdate, OwnerState, SessionKey,
+    SessionRow, attach, clip_display, run_live,
 };
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 use tracing::{error, info};
@@ -48,6 +48,16 @@ fn tray_icon(count: i32) -> Image {
     Image::from_rgba8(buffer)
 }
 
+fn owner_state_kind(state: OwnerState) -> OwnerStateKind {
+    match state {
+        OwnerState::NeedsOwner => OwnerStateKind::NeedsOwner,
+        OwnerState::Working => OwnerStateKind::Working,
+        OwnerState::Idle => OwnerStateKind::Idle,
+        OwnerState::Ended => OwnerStateKind::Ended,
+        OwnerState::NoAgentState => OwnerStateKind::NoAgentState,
+    }
+}
+
 fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
     sessions
         .into_iter()
@@ -63,6 +73,8 @@ fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
                 name: s.display_name.into(),
                 agent: s.agent.into(),
                 state: s.state.into(),
+                owner_state: owner_state_kind(s.owner_state),
+                owner_label: s.owner_state.label().into(),
                 badge: badge.into(),
                 badge_role: badge_role.into(),
                 host: s.key.host.into(),
@@ -110,7 +122,7 @@ fn sync_rows(model: &VecModel<SessionRowData>, rows: Vec<SessionRowData>) {
 
 /// Follows the daemon on a background thread and hands every update to the UI
 /// thread; the UI thread never waits on the daemon.
-fn follow_daemon(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
+fn follow_daemon(window: slint::Weak<AppWindow>, daemon: DaemonConfig, idle_threshold: Duration) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -128,7 +140,7 @@ fn follow_daemon(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
                 return;
             }
         };
-        runtime.block_on(run_live(&daemon, |update| {
+        runtime.block_on(run_live(&daemon, idle_threshold, |update| {
             let applied = window.upgrade_in_event_loop(move |window| match update {
                 LiveUpdate::Connected => {
                     window.set_error("".into());
@@ -217,7 +229,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 config_path,
                 settings: Ok(config.attach()),
             };
-            follow_daemon(window.as_weak(), config.daemon);
+            follow_daemon(
+                window.as_weak(),
+                config.daemon,
+                config.tray.idle_threshold(),
+            );
             context
         }
         Err(err) => {
