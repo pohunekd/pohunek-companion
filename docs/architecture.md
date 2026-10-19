@@ -56,6 +56,11 @@ All facts come from the public protocol (Pohunek `docs/public-api.md`):
 - Seed with `session.list` and `notification.list`; keep current with one
   `subscribe` connection. On connect, reconnect, or a lagging stream, re-seed
   and reconcile, as the protocol requires.
+- Until the daemon signals a lagging subscriber (Pohunek #1314), the companion
+  re-seeds every `daemon.reseed_interval_secs` while connected, buffering
+  events during the fetch and applying them after the seed, as on reconnect. A
+  re-seed that corrects anything is logged at `warn`. The lag signal (#19)
+  replaces or complements this fallback once it ships.
 - `agent_state`, `subagent_state`, and `background_state` events are applied
   only when their runtime identity matches the session snapshot and their
   revision is newer.
