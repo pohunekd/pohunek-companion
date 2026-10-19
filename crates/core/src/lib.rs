@@ -22,7 +22,9 @@ mod view;
 pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attach};
 pub use attach_macos::AttachTerminal;
 pub use badge::{WorkBadge, WorkFacts, clip_display};
-pub use config::{Config, ConfigError, DaemonConfig, LayoutConfig, PlacementRule, TrayConfig};
+pub use config::{
+    Config, ConfigError, DaemonConfig, LayoutConfig, PlacementRule, TrayConfig, ViewConfig,
+};
 pub use error::CoreError;
 pub use layout::{
     GroupSection, INBOX_ID, LayoutError, LayoutStore, MoveError, Placement, Reconciled,
@@ -35,4 +37,4 @@ pub use owner_state::{OwnerState, derive};
 pub use session::{ProjectRef, SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
 pub use tray_summary::{TrayEntry, TraySummary};
-pub use view::{View, by_state};
+pub use view::{NO_PROJECT_ID, NO_WORK_ID, View, by_project, by_state, by_work_item};

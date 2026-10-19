@@ -226,9 +226,10 @@ impl Layout {
             .unwrap_or_default()
     }
 
-    /// Sections of the selected view for display.
-    pub fn present(&self, rows: &[SessionRow]) -> Vec<GroupSection> {
-        self.view().sections(self.arrange(rows))
+    /// Sections of the selected view for display; derived section titles are
+    /// clipped to `title_max_chars`.
+    pub fn present(&self, rows: &[SessionRow], title_max_chars: usize) -> Vec<GroupSection> {
+        self.view().sections(self.arrange(rows), title_max_chars)
     }
 
     pub fn groups(&self) -> &[Group] {
