@@ -101,7 +101,8 @@ pub struct DaemonConfig {
     /// consecutive failure. Optional; default 500.
     pub reconnect_initial_ms: u64,
     /// `daemon.reconnect_max_ms`: upper bound of the reconnect wait, in
-    /// milliseconds, greater than zero. Optional; default 30000.
+    /// milliseconds, greater than zero. A connection must stay up this long
+    /// before the wait starts over at `reconnect_initial_ms`. Optional; default 30000.
     pub reconnect_max_ms: u64,
     /// `daemon.notification_page_size`: records requested per
     /// `notification.list` page while seeding, greater than zero. The page

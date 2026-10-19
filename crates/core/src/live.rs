@@ -1,7 +1,7 @@
 //! Keeps a [`SessionStore`] current against the local daemon: subscribe,
 //! seed, stream events, and reconnect with exponential backoff.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pohunek_client::Subscription;
 use pohunek_client::protocol::Event;
@@ -48,11 +48,16 @@ pub async fn run_live(config: &DaemonConfig, mut publish: impl FnMut(LiveUpdate)
         let attempt = failures + 1;
         info!(cycle, attempt, "connecting to the daemon");
         let mut store = SessionStore::default();
-        let mut established = false;
-        let error = run_cycle(config, &mut store, &mut established, &mut publish).await;
+        let mut established_at = None;
+        let error = run_cycle(config, &mut store, &mut established_at, &mut publish).await;
         let report = store.take_report();
-        if established {
-            failures = 0;
+        if let Some(since) = established_at {
+            // A connection that dropped soon after it was established keeps
+            // the backoff growing, so a flapping daemon is not hit at the
+            // initial interval forever.
+            if since.elapsed() >= config.reconnect_max() {
+                failures = 0;
+            }
             warn!(cycle, attempt, outcome = "disconnected", error = %error, report = ?report,
                 "daemon connection lost");
         } else {
@@ -90,10 +95,10 @@ fn backoff(config: &DaemonConfig, failures: u32) -> Duration {
 async fn run_cycle(
     config: &DaemonConfig,
     store: &mut SessionStore,
-    established: &mut bool,
+    established_at: &mut Option<Instant>,
     publish: &mut impl FnMut(LiveUpdate),
 ) -> CoreError {
-    match cycle_inner(config, store, established, publish).await {
+    match cycle_inner(config, store, established_at, publish).await {
         Ok(never) => match never {},
         Err(err) => err,
     }
@@ -102,7 +107,7 @@ async fn run_cycle(
 async fn cycle_inner(
     config: &DaemonConfig,
     store: &mut SessionStore,
-    established: &mut bool,
+    established_at: &mut Option<Instant>,
     publish: &mut impl FnMut(LiveUpdate),
 ) -> Result<std::convert::Infallible, CoreError> {
     let socket = resolve_socket()?;
@@ -120,7 +125,7 @@ async fn cycle_inner(
     while let Ok(message) = events.try_recv() {
         store.apply_event(&message?);
     }
-    *established = true;
+    *established_at = Some(Instant::now());
     info!("daemon connection established");
     let mut shown = rows(store);
     publish(LiveUpdate::Connected);
