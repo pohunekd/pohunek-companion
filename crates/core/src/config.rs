@@ -132,6 +132,11 @@ pub struct DaemonConfig {
     /// size is halved when the daemon reports the page as too large.
     /// Optional; default 200.
     pub notification_page_size: u32,
+    /// `daemon.reseed_interval_secs`: while connected, how often the session
+    /// list and attention notifications are re-read from the daemon and
+    /// reconciled, in seconds, greater than zero. Bounds how long a dropped
+    /// event can leave the list stale. Optional; default 60.
+    pub reseed_interval_secs: u64,
 }
 
 impl Default for DaemonConfig {
@@ -142,6 +147,7 @@ impl Default for DaemonConfig {
             reconnect_initial_ms: 500,
             reconnect_max_ms: 30_000,
             notification_page_size: 200,
+            reseed_interval_secs: 60,
         }
     }
 }
@@ -161,6 +167,10 @@ impl DaemonConfig {
 
     pub fn reconnect_max(&self) -> Duration {
         Duration::from_millis(self.reconnect_max_ms)
+    }
+
+    pub fn reseed_interval(&self) -> Duration {
+        Duration::from_secs(self.reseed_interval_secs)
     }
 }
 
@@ -229,6 +239,10 @@ impl Config {
             ),
             ("login_shell_timeout_ms", self.login_shell_timeout_ms),
             ("attach_script_max_age_s", self.attach_script_max_age_s),
+            (
+                "daemon.reseed_interval_secs",
+                self.daemon.reseed_interval_secs,
+            ),
         ]
         .into_iter()
         .find_map(|(key, value)| (value == 0).then_some(key));
@@ -345,6 +359,7 @@ mod tests {
             "reconnect_initial_ms",
             "reconnect_max_ms",
             "notification_page_size",
+            "reseed_interval_secs",
         ] {
             let msg = parse(&format!("[daemon]\n{key} = 0\n"))
                 .unwrap_err()
@@ -356,6 +371,20 @@ mod tests {
             .to_string();
         assert!(msg.contains("must not exceed"), "{msg}");
         assert!(parse("[daemon]\nreconnect_initial_ms = 1000\nreconnect_max_ms = 1000\n").is_ok());
+    }
+
+    #[test]
+    fn reseed_interval_is_read_and_must_be_positive() {
+        assert_eq!(
+            parse("").unwrap().daemon.reseed_interval(),
+            Duration::from_secs(60)
+        );
+        let config = parse("[daemon]\nreseed_interval_secs = 5\n").unwrap();
+        assert_eq!(config.daemon.reseed_interval(), Duration::from_secs(5));
+        let msg = parse("[daemon]\nreseed_interval_secs = -1\n")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("reseed_interval_secs"), "{msg}");
     }
 
     #[test]

@@ -7,6 +7,7 @@ use pohunek_client::Subscription;
 use pohunek_client::protocol::Event;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::timeout_at;
 use tracing::{info, warn};
 
 use crate::config::DaemonConfig;
@@ -131,9 +132,23 @@ async fn cycle_inner(
     publish(LiveUpdate::Connected);
     publish(LiveUpdate::Sessions(shown.clone()));
 
+    let interval = config.reseed_interval();
+    let mut next_reseed = tokio::time::Instant::now() + interval;
     loop {
-        let event = events.recv().await.ok_or(CoreError::StreamClosed)??;
-        if store.apply_event(&event) == Applied::Applied {
+        let applied = match timeout_at(next_reseed, events.recv()).await {
+            Ok(message) => {
+                let event = message.ok_or(CoreError::StreamClosed)??;
+                store.apply_event(&event) == Applied::Applied
+            }
+            Err(_elapsed) => {
+                // Events arriving during the fetch wait in the channel and are
+                // applied after the seed, as on connect.
+                let reseeded = reseed(config, &socket, store, &mut events).await?;
+                next_reseed = tokio::time::Instant::now() + interval;
+                reseeded
+            }
+        };
+        if applied {
             let current = rows(store);
             if current != shown {
                 shown = current;
@@ -141,6 +156,43 @@ async fn cycle_inner(
             }
         }
     }
+}
+
+/// Re-reads the seed and reconciles the store with it, then applies the events
+/// buffered meanwhile. A failed fetch is logged and leaves the store and the
+/// subscription untouched. Returns whether the store may have changed; an
+/// error means the event stream failed.
+async fn reseed(
+    config: &DaemonConfig,
+    socket: &std::path::Path,
+    store: &mut SessionStore,
+    events: &mut mpsc::UnboundedReceiver<EventMessage>,
+) -> Result<bool, CoreError> {
+    let seed = match fetch_seed(socket, config).await {
+        Ok(seed) => seed,
+        Err(err) => {
+            warn!(error = %err, "periodic re-seed failed, retrying at the next interval");
+            return Ok(false);
+        }
+    };
+    let sessions = seed.sessions.len();
+    let change = store.apply_seed(seed.sessions, seed.notifications);
+    while let Ok(message) = events.try_recv() {
+        store.apply_event(&message?);
+    }
+    if change.is_empty() {
+        info!(sessions, "periodic re-seed found no difference");
+    } else {
+        warn!(
+            sessions,
+            added = change.added,
+            removed = change.removed,
+            changed = change.changed,
+            attention = change.attention,
+            "periodic re-seed corrected the session list"
+        );
+    }
+    Ok(true)
 }
 
 /// Forwards the subscription's events; the final message is the reason the
