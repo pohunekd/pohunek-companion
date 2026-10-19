@@ -67,6 +67,12 @@ pub enum CreateError {
     /// The outcome is unknown; the request must not be repeated.
     #[error("{UNCONFIRMED_MESSAGE}")]
     Unconfirmed,
+    /// The session exists but the daemon did not confirm delivering the
+    /// initial prompt; creating again would duplicate the session.
+    #[error(
+        "The session was created, but the daemon did not confirm delivering the prompt; check the sidebar."
+    )]
+    PromptUnconfirmed,
 }
 
 impl CreateError {
@@ -76,6 +82,7 @@ impl CreateError {
             Self::Refused { code, .. } => code,
             Self::NotSent(_) => "not_sent",
             Self::Unconfirmed => "unconfirmed",
+            Self::PromptUnconfirmed => "prompt_unconfirmed",
         }
     }
 }
@@ -171,8 +178,9 @@ pub async fn load_choices(daemon: &DaemonConfig) -> Result<Choices, CoreError> {
 }
 
 /// Sends exactly one `session.new` and returns the new session's id. Never
-/// retries: any failure after the request may have left the daemon is
-/// reported as [`CreateError::Unconfirmed`].
+/// retries: a failure that may have happened after the request left is
+/// reported as [`CreateError::Unconfirmed`]. A prompt the daemon did not
+/// confirm as delivered is [`CreateError::PromptUnconfirmed`].
 pub async fn create_session(
     daemon: &DaemonConfig,
     config: &NewSessionConfig,
@@ -182,7 +190,11 @@ pub async fn create_session(
     let mut client = connect_for_create(&socket, daemon, config)
         .await
         .map_err(|err| CreateError::NotSent(err.to_string()))?;
+    let sent_input = params.input.is_some();
     match client.session_new(params).await {
+        Ok(result) if sent_input && result.applied_input != Some(true) => {
+            Err(CreateError::PromptUnconfirmed)
+        }
         Ok(result) => Ok(result.session.id.0),
         Err(err) => {
             let classified = classify(err);
@@ -200,7 +212,12 @@ fn classify(err: ClientError) -> CreateError {
             code: err.code,
             message: err.msg,
         },
-        err @ ClientError::DaemonUnreachable { .. } => CreateError::NotSent(err.to_string()),
+        err @ (ClientError::DaemonUnreachable { .. }
+        | ClientError::ClientFileDescriptorsExhausted { .. }
+        | ClientError::SystemFileDescriptorsExhausted { .. }
+        | ClientError::Envelope(_)
+        | ClientError::IncompleteOriginEnvironment
+        | ClientError::InvalidOriginEnvironment) => CreateError::NotSent(err.to_string()),
         _ => CreateError::Unconfirmed,
     }
 }

@@ -48,8 +48,9 @@ pub(crate) async fn connect(socket: &Path, config: &DaemonConfig) -> Result<Clie
     Ok(Client::connect_local_with_options(socket, options).await?)
 }
 
-/// Connection for one `session.new`: its request timeout is the creation
-/// timeout, because creation runs project hooks and waits for the agent.
+/// Client whose options govern the dedicated connection `session_new` opens:
+/// its request timeout is the creation timeout, because creation runs project
+/// hooks and waits for the agent.
 pub(crate) async fn connect_for_create(
     socket: &Path,
     daemon: &DaemonConfig,

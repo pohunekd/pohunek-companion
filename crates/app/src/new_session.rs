@@ -136,9 +136,12 @@ fn submit_in_background(
                 }
             }
             Err(err) => {
-                // An unknown outcome keeps the window busy: Create stays
-                // disabled so the request cannot be repeated from here.
-                window.set_busy(matches!(err, CreateError::Unconfirmed));
+                // An unknown outcome or an unconfirmed prompt keeps the window
+                // busy: Create stays disabled so the request is not repeated.
+                window.set_busy(matches!(
+                    err,
+                    CreateError::Unconfirmed | CreateError::PromptUnconfirmed
+                ));
                 window.set_error(err.to_string().into());
             }
         });
