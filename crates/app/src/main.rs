@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
+mod launch;
 mod logging;
 mod new_session;
 mod tray;
@@ -565,9 +566,8 @@ fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> R
     })
 }
 
-const NEW_SESSION_COMMAND: &str = "new-session";
-
 fn main() -> Result<(), slint::PlatformError> {
+    use launch::NEW_SESSION_COMMAND;
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => run_sidebar(),
@@ -877,6 +877,34 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
             };
             if let Err(err) = shown.and_then(|window| window.show()) {
                 error!(error = %err, "show the about window");
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        tray.on_new_session(move || {
+            let outcome = launch::spawn_new_session();
+            if let Err(message) = &outcome {
+                error!(error = %message, "start the new-session dialog from the tray");
+            }
+            let Some(window) = weak.upgrade() else { return };
+            let failed = outcome.is_err();
+            window.set_launch_error(outcome.err().unwrap_or_default().into());
+            // The sidebar may be hidden; reveal it so the failure is seen.
+            if failed && let Err(err) = window.show() {
+                error!(error = %err, "show window after a failed dialog start");
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        window.on_new_session(move || {
+            let outcome = launch::spawn_new_session();
+            if let Err(message) = &outcome {
+                error!(error = %message, "start the new-session dialog from the sidebar");
+            }
+            if let Some(window) = weak.upgrade() {
+                window.set_launch_error(outcome.err().unwrap_or_default().into());
             }
         });
     }

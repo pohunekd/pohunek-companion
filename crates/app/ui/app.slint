@@ -415,6 +415,10 @@ export component AppWindow inherits Window {
     in property <string> log-error;
     // Outcome of the last attach click; empty when it launched.
     in property <string> attach-error;
+    // Why the new-session dialog could not be started; empty when it started.
+    in property <string> launch-error;
+    // Opens the new-session dialog as its own window.
+    callback new-session();
     // Labels of the selectable views, in order.
     in property <[string]> view-names;
     in-out property <int> view-index;
@@ -590,6 +594,26 @@ export component AppWindow inherits Window {
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
+        if root.launch-error != "": launch-error-text := Text {
+            text: root.launch-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        new-session-touch := TouchArea {
+            height: Theme.new-group-height;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "New session";
+            clicked => { root.new-session(); }
+            Text {
+                x: Theme.row-padding;
+                text: "+ New session";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
+                font-size: Theme.group-font-size;
+                vertical-alignment: center;
+            }
+        }
         if root.group-error != "": group-error-text := Text {
             text: root.group-error;
             color: Theme.error;
@@ -762,6 +786,7 @@ export component Tray inherits SystemTrayIcon {
     callback attach-entry(string, string, string);
     callback show-window();
     callback show-about();
+    callback new-session();
     callback quit();
 
     icon: root.tray-icon;
@@ -777,6 +802,10 @@ export component Tray inherits SystemTrayIcon {
             activated => { root.attach-entry(entry.host, entry.id, entry.attach-refusal); }
         }
         MenuSeparator {}
+        MenuItem {
+            title: "New session...";
+            activated => { root.new-session(); }
+        }
         MenuItem {
             title: "Show window";
             activated => { root.show-window(); }

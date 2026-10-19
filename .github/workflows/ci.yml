@@ -45,6 +45,7 @@ jobs:
               - 'crates/**/*macos*'
               - 'crates/**/tray*'
               - 'crates/**/attach*'
+              - 'crates/**/launch*'
               - 'packaging/macos/**'
 
   linux:
