@@ -76,9 +76,10 @@ jobs:
   macos:
     name: macos
     needs: changes
-    # `needs` on a skipped `changes` job (push, dispatch) still lets this run.
+    # `!cancelled()` lets this run when `changes` is skipped (push, dispatch)
+    # but not after a newer push cancelled the run.
     if: >-
-      always() &&
+      !cancelled() &&
       (github.event_name != 'pull_request' || needs.changes.outputs.platform == 'true')
     runs-on: macos-15
     timeout-minutes: 30
