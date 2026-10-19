@@ -22,11 +22,11 @@ mod view;
 pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attach};
 pub use attach_macos::AttachTerminal;
 pub use badge::{WorkBadge, WorkFacts, clip_display};
-pub use config::{Config, ConfigError, DaemonConfig, TrayConfig};
+pub use config::{Config, ConfigError, DaemonConfig, LayoutConfig, PlacementRule, TrayConfig};
 pub use error::CoreError;
 pub use layout::{
     GroupSection, INBOX_ID, LayoutError, LayoutStore, MoveError, Placement, Reconciled,
-    layout_path, state_dir,
+    RulePlacement, layout_path, state_dir,
 };
 pub use live::{LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};

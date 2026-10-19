@@ -104,6 +104,10 @@ start() {
     # own layout.toml and never the owner's.
     mkdir -p "$state/config/pohunek"
     echo 'attach_command = ["true"]' >"$state/config/pohunek/companion.toml"
+    # UI_AGENT_CONFIG_EXTRA: extra companion.toml text, e.g. placement rules.
+    if [[ -n ${UI_AGENT_CONFIG_EXTRA:-} ]]; then
+        printf '%s\n' "$UI_AGENT_CONFIG_EXTRA" >>"$state/config/pohunek/companion.toml"
+    fi
 
     local -a envs=(
         SLINT_EMIT_DEBUG_INFO=1

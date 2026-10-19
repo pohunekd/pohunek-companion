@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::config::PlacementRule;
 use crate::session::{SessionKey, SessionRow};
 use crate::sort_key;
 use crate::view::View;
@@ -156,6 +157,45 @@ pub struct Reconciled {
     pub pruned: Vec<SessionKey>,
 }
 
+/// A session a placement pass moved: the rule that selected its group, or
+/// `None` when it returned to Inbox, and the group id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RulePlacement {
+    pub key: SessionKey,
+    pub rule: Option<usize>,
+    pub group: String,
+}
+
+/// Whether every condition of `rule` holds for `row`.
+fn rule_matches(rule: &PlacementRule, row: &SessionRow) -> bool {
+    let work = row.work.as_ref();
+    let checks = [
+        (
+            &rule.project,
+            row.project
+                .as_ref()
+                .map(|p| (p.label.as_str(), p.id.as_str())),
+        ),
+        (&rule.agent, Some((row.agent.as_str(), row.agent.as_str()))),
+        (
+            &rule.work_provider,
+            work.and_then(|w| w.provider.as_deref()).map(|v| (v, v)),
+        ),
+        (
+            &rule.work_kind,
+            work.and_then(|w| w.kind.as_deref()).map(|v| (v, v)),
+        ),
+        (
+            &rule.work_role,
+            work.and_then(|w| w.role.as_deref()).map(|v| (v, v)),
+        ),
+    ];
+    checks.into_iter().all(|(wanted, actual)| match wanted {
+        None => true,
+        Some(wanted) => actual.is_some_and(|(a, b)| a == wanted || b == wanted),
+    })
+}
+
 impl Default for Layout {
     /// Inbox only.
     fn default() -> Self {
@@ -235,6 +275,87 @@ impl Layout {
             result.added.push(key.clone());
         }
         result
+    }
+
+    /// Places every session the owner never dragged: the first rule in
+    /// `rules` that matches selects the group (created when missing), else
+    /// the session belongs in Inbox. A session already in its group keeps its
+    /// position; any other is appended to the end of the group. Sessions
+    /// without a placement are skipped; [`reconcile`](Self::reconcile) adds
+    /// them first.
+    pub fn apply_rules(
+        &mut self,
+        rows: &[SessionRow],
+        rules: &[PlacementRule],
+    ) -> Vec<RulePlacement> {
+        let mut moved = Vec::new();
+        for row in rows {
+            let Some(index) = self.items.iter().position(|item| item.key() == row.key) else {
+                continue;
+            };
+            if self.items[index].manual {
+                continue;
+            }
+            let rule = rules.iter().position(|rule| rule_matches(rule, row));
+            let group = match rule {
+                Some(rule) => self.group_for_name(&rules[rule].group),
+                None => INBOX_ID.to_owned(),
+            };
+            if self.items[index].group == group {
+                continue;
+            }
+            let last = self
+                .group_items(&group)
+                .last()
+                .map(|item| item.order.clone());
+            let item = &mut self.items[index];
+            item.order = sort_key::between(last.as_deref(), None);
+            item.group = group.clone();
+            moved.push(RulePlacement {
+                key: row.key.clone(),
+                rule,
+                group,
+            });
+        }
+        moved
+    }
+
+    /// Id of the group named `name` (ignoring case); appended after the last
+    /// group when no group has that name.
+    fn group_for_name(&mut self, name: &str) -> String {
+        let name = name.trim();
+        if let Some(group) = self
+            .groups
+            .iter()
+            .find(|group| group.name.to_lowercase() == name.to_lowercase())
+        {
+            return group.id.clone();
+        }
+        let slug: String = name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let base = format!("rule-{}", slug.trim_matches('-'));
+        let mut id = base.clone();
+        let mut n = 1;
+        while self.groups.iter().any(|group| group.id == id) {
+            n += 1;
+            id = format!("{base}-{n}");
+        }
+        let last = self.groups.iter().map(|g| g.order.as_str()).max();
+        let order = sort_key::between(last, None);
+        self.groups.push(Group {
+            id: id.clone(),
+            name: name.to_owned(),
+            order,
+        });
+        id
     }
 
     /// Items of `group` in display order.
@@ -506,6 +627,25 @@ impl LayoutStore {
             info!(view = view.id(), "view selected");
         }
         self.layout.view = Some(view.id().to_owned());
+    }
+
+    /// Applies the placement rules (see [`Layout::apply_rules`]) and logs
+    /// each placement with the session key, rule index, and group id.
+    pub fn apply_rules(
+        &mut self,
+        rows: &[SessionRow],
+        rules: &[PlacementRule],
+    ) -> Vec<RulePlacement> {
+        let moved = self.layout.apply_rules(rows, rules);
+        for placement in &moved {
+            info!(
+                session = %placement.key.session_id,
+                rule = ?placement.rule,
+                group = %placement.group,
+                "session placed by rule"
+            );
+        }
+        moved
     }
 
     /// Moves a session (see [`Layout::move_session`]) and logs it with keys
@@ -900,5 +1040,151 @@ order = "g"
         assert!(!store.save_if_changed().expect("skips"));
         assert_eq!(fs::read_to_string(&path).expect("read"), damaged);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn rule(group: &str, patch: impl FnOnce(&mut PlacementRule)) -> PlacementRule {
+        let mut rule = PlacementRule {
+            group: group.to_owned(),
+            project: None,
+            agent: None,
+            work_provider: None,
+            work_kind: None,
+            work_role: None,
+        };
+        patch(&mut rule);
+        rule
+    }
+
+    fn session(id: &str, project: Option<&str>, role: Option<&str>) -> SessionRow {
+        SessionRow {
+            key: key(id),
+            display_name: id.to_owned(),
+            agent: "claude".to_owned(),
+            state: "running".to_owned(),
+            owner_state: crate::owner_state::OwnerState::Working,
+            waiting_since: None,
+            badge: None,
+            project: project.map(|p| crate::session::ProjectRef {
+                id: format!("id-{p}"),
+                label: p.to_owned(),
+            }),
+            work: role.map(|r| crate::badge::WorkFacts {
+                provider: Some("github".to_owned()),
+                kind: Some("pr".to_owned()),
+                id: None,
+                role: Some(r.to_owned()),
+            }),
+            attach_refusal: None,
+        }
+    }
+
+    fn placed(layout: &mut Layout, rows: &[SessionRow], rules: &[PlacementRule]) {
+        let keys: Vec<SessionKey> = rows.iter().map(|r| r.key.clone()).collect();
+        layout.reconcile(&keys);
+        layout.apply_rules(rows, rules);
+    }
+
+    fn group_of(layout: &Layout, id: &str) -> String {
+        let item = layout
+            .items()
+            .iter()
+            .find(|i| i.session_id == id)
+            .expect("item");
+        layout
+            .groups()
+            .iter()
+            .find(|g| g.id == item.group)
+            .expect("group")
+            .name
+            .clone()
+    }
+
+    #[test]
+    fn rules_need_all_conditions_and_the_first_match_wins() {
+        let rules = [
+            rule("Reviews", |r| {
+                r.project = Some("pohunek".into());
+                r.work_role = Some("reviewer".into());
+            }),
+            rule("Pohunek", |r| r.project = Some("id-pohunek".into())),
+            rule("Other", |r| r.agent = Some("claude".into())),
+        ];
+        let rows = [
+            session("a", Some("pohunek"), Some("reviewer")),
+            session("b", Some("pohunek"), Some("implementer")),
+            session("c", Some("else"), None),
+            session("d", None, Some("reviewer")),
+        ];
+        let mut layout = Layout::default();
+        placed(&mut layout, &rows, &rules);
+        assert_eq!(group_of(&layout, "a"), "Reviews");
+        assert_eq!(group_of(&layout, "b"), "Pohunek");
+        assert_eq!(group_of(&layout, "c"), "Other");
+        let ids: HashSet<&str> = layout.groups().iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids.len(), 4, "each missing group is created once");
+        let inbox = [rule("X", |r| r.work_kind = Some("issue".into()))];
+        let mut layout = Layout::default();
+        placed(&mut layout, &rows, &inbox);
+        assert!(
+            rows.iter()
+                .all(|r| group_of(&layout, &r.key.session_id) == "Inbox")
+        );
+    }
+
+    #[test]
+    fn metadata_changes_move_unplaced_sessions_and_append_to_the_group_end() {
+        let rules = [rule("Reviews", |r| r.work_role = Some("reviewer".into()))];
+        let mut layout = Layout::default();
+        placed(
+            &mut layout,
+            &[
+                session("a", None, None),
+                session("b", None, Some("reviewer")),
+            ],
+            &rules,
+        );
+        assert_eq!(group_of(&layout, "a"), "Inbox");
+        let reviews = layout
+            .groups()
+            .iter()
+            .find(|g| g.name == "Reviews")
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(order_of(&layout, &reviews), ["b"]);
+
+        let rows = [
+            session("a", None, Some("reviewer")),
+            session("b", None, Some("reviewer")),
+        ];
+        placed(&mut layout, &rows, &rules);
+        assert_eq!(order_of(&layout, &reviews), ["b", "a"]);
+        assert!(
+            layout.apply_rules(&rows, &rules).is_empty(),
+            "positions are kept"
+        );
+
+        let rows = [
+            session("a", None, None),
+            session("b", None, Some("reviewer")),
+        ];
+        placed(&mut layout, &rows, &rules);
+        assert_eq!(group_of(&layout, "a"), "Inbox");
+    }
+
+    #[test]
+    fn a_dragged_session_is_not_moved_by_rules_and_group_names_ignore_case() {
+        let rules = [rule("work", |r| r.agent = Some("claude".into()))];
+        let rows = [session("a", None, None), session("b", None, None)];
+        let mut layout: Layout = toml::from_str(THREE_GROUPS).expect("parses");
+        placed(&mut layout, &rows, &rules);
+        assert_eq!(order_of(&layout, "work"), ["a", "b"]);
+
+        layout
+            .move_session(&key("a"), "empty", Placement::End)
+            .expect("move");
+        layout.apply_rules(&rows, &rules);
+        assert_eq!(group_of(&layout, "a"), "Empty");
+        assert_eq!(layout.groups().len(), 3);
     }
 }

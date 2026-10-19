@@ -39,6 +39,12 @@ pub enum ConfigError {
     AttachConflict { path: PathBuf },
     #[error("invalid {path}: `pohunek_bin` must not be empty")]
     EmptyPohunekBin { path: PathBuf },
+    #[error("invalid {path}: `layout.rules[{index}]` {problem}")]
+    Rule {
+        path: PathBuf,
+        index: usize,
+        problem: String,
+    },
     #[error(
         "invalid {path}: `daemon.reconnect_initial_ms` ({initial}) must not exceed \
          `daemon.reconnect_max_ms` ({max})"
@@ -59,6 +65,8 @@ pub struct Config {
     pub daemon: DaemonConfig,
     /// `[tray]` table: how sessions are classified for the owner.
     pub tray: TrayConfig,
+    /// `[layout]` table: where sessions land without a drag.
+    pub layout: LayoutConfig,
     /// `attach_command`: argv template that opens a session in a terminal,
     /// as an array of words (no shell is involved). Optional; when absent,
     /// clicking a session reports that attach is not configured. `{bin}`
@@ -99,6 +107,7 @@ impl Default for Config {
         Self {
             daemon: DaemonConfig::default(),
             tray: TrayConfig::default(),
+            layout: LayoutConfig::default(),
             attach_command: None,
             attach_terminal: None,
             pohunek_bin: "pohunek".to_owned(),
@@ -106,6 +115,72 @@ impl Default for Config {
             login_shell_timeout_ms: 2000,
             attach_script_max_age_s: 3600,
         }
+    }
+}
+
+/// `[layout]` table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LayoutConfig {
+    /// `[[layout.rules]]`: ordered placement rules. The first rule whose
+    /// conditions all match a session selects its group; a session the owner
+    /// dragged is never moved by a rule. Optional; default none.
+    pub rules: Vec<PlacementRule>,
+}
+
+/// One `[[layout.rules]]` entry: a target group and the conditions a session
+/// must all meet, each an exact string comparison. At least one condition is
+/// required.
+/// Example: `group = "Reviews"`, `work_role = "reviewer"`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementRule {
+    /// `group`: name of the target group (matched ignoring case; created
+    /// when missing). Required, not empty.
+    pub group: String,
+    /// `project`: the session's project label or project id.
+    pub project: Option<String>,
+    /// `agent`: the session's agent.
+    pub agent: Option<String>,
+    /// `work_provider`: the Pohunek Work link provider.
+    pub work_provider: Option<String>,
+    /// `work_kind`: the Pohunek Work link kind.
+    pub work_kind: Option<String>,
+    /// `work_role`: the session's `work.role`.
+    pub work_role: Option<String>,
+}
+
+impl PlacementRule {
+    fn conditions(&self) -> [(&'static str, &Option<String>); 5] {
+        [
+            ("project", &self.project),
+            ("agent", &self.agent),
+            ("work_provider", &self.work_provider),
+            ("work_kind", &self.work_kind),
+            ("work_role", &self.work_role),
+        ]
+    }
+
+    /// Why the rule is unusable, naming the key.
+    fn problem(&self) -> Option<String> {
+        if self.group.trim().is_empty() {
+            return Some("needs a non-empty `group`".to_owned());
+        }
+        if let Some((key, _)) = self
+            .conditions()
+            .into_iter()
+            .find(|(_, value)| value.as_deref().is_some_and(str::is_empty))
+        {
+            return Some(format!("has an empty `{key}`"));
+        }
+        if self.conditions().iter().all(|(_, value)| value.is_none()) {
+            return Some(
+                "needs at least one of `project`, `agent`, `work_provider`, `work_kind`, \
+                 `work_role`"
+                    .to_owned(),
+            );
+        }
+        None
     }
 }
 
@@ -285,6 +360,15 @@ impl Config {
                 path: path.to_owned(),
             });
         }
+        for (index, rule) in self.layout.rules.iter().enumerate() {
+            if let Some(problem) = rule.problem() {
+                return Err(ConfigError::Rule {
+                    path: path.to_owned(),
+                    index,
+                    problem,
+                });
+            }
+        }
         if self.pohunek_bin.is_empty() {
             return Err(ConfigError::EmptyPohunekBin {
                 path: path.to_owned(),
@@ -371,6 +455,56 @@ mod tests {
             .to_string();
         assert!(msg.contains("/cfg/companion.toml"), "{msg}");
         assert!(msg.contains("conect_timeout_ms"), "{msg}");
+    }
+
+    #[test]
+    fn rules_parse_in_file_order() {
+        let config = parse(
+            "[[layout.rules]]\ngroup = \"A\"\nproject = \"p\"\n\
+             [[layout.rules]]\ngroup = \"B\"\nwork_role = \"reviewer\"\nagent = \"claude\"\n",
+        )
+        .unwrap();
+        let groups: Vec<&str> = config
+            .layout
+            .rules
+            .iter()
+            .map(|r| r.group.as_str())
+            .collect();
+        assert_eq!(groups, ["A", "B"]);
+        assert_eq!(
+            config.layout.rules[1].work_role.as_deref(),
+            Some("reviewer")
+        );
+    }
+
+    #[test]
+    fn invalid_rules_name_the_rule_and_key() {
+        let cases = [
+            ("group = \"A\"\n", "layout.rules[1]", "at least one"),
+            (
+                "group = \" \"\nproject = \"p\"\n",
+                "layout.rules[1]",
+                "`group`",
+            ),
+            (
+                "group = \"A\"\nagent = \"\"\n",
+                "layout.rules[1]",
+                "empty `agent`",
+            ),
+            (
+                "group = \"A\"\nproject = \"p\"\nprojct = \"x\"\n",
+                "projct",
+                "unknown field",
+            ),
+        ];
+        for (rule, index, needle) in cases {
+            let text = format!(
+                "[[layout.rules]]\ngroup = \"ok\"\nproject = \"p\"\n[[layout.rules]]\n{rule}"
+            );
+            let msg = parse(&text).unwrap_err().to_string();
+            assert!(msg.contains("/cfg/companion.toml"), "{msg}");
+            assert!(msg.contains(index) && msg.contains(needle), "{msg}");
+        }
     }
 
     #[test]

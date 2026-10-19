@@ -9,8 +9,8 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupSection, LayoutStore, LiveUpdate,
-    NEEDS_YOU_ID, OwnerState, Placement, SessionKey, SessionRow, TraySummary, View, attach,
-    clip_display, layout_path, run_live,
+    NEEDS_YOU_ID, OwnerState, Placement, PlacementRule, SessionKey, SessionRow, TraySummary, View,
+    attach, clip_display, layout_path, run_live,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{error, info, warn};
@@ -182,6 +182,7 @@ fn follow_daemon(
     tray: slint::Weak<Tray>,
     daemon: DaemonConfig,
     idle_threshold: Duration,
+    rules: Vec<PlacementRule>,
     layout: SharedLayout,
 ) {
     std::thread::spawn(move || {
@@ -214,6 +215,7 @@ fn follow_daemon(
                     let mut state = lock(&layout);
                     let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
                     state.store.reconcile(&keys);
+                    state.store.apply_rules(sessions, &rules);
                     let layout_error = save_layout(&mut state);
                     state.rows = sessions.clone();
                     let sections = state.store.layout().present(&state.rows);
@@ -357,6 +359,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 tray.as_weak(),
                 config.daemon,
                 config.tray.idle_threshold(),
+                config.layout.rules,
                 layout.clone(),
             );
             context
