@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use pohunek_companion_core::{SessionRow, clip_display, fetch_sessions};
+use pohunek_companion_core::{Config, DaemonConfig, SessionRow, clip_display, fetch_sessions};
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 slint::include_modules!();
@@ -65,7 +65,7 @@ fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
 
 /// Fetches the session list on a background thread and hands the outcome to
 /// the UI thread; the UI thread never waits on the daemon.
-fn load_sessions(window: slint::Weak<AppWindow>) {
+fn load_sessions(window: slint::Weak<AppWindow>, daemon: DaemonConfig) {
     std::thread::spawn(move || {
         let outcome = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -73,7 +73,7 @@ fn load_sessions(window: slint::Weak<AppWindow>) {
             .map_err(|err| format!("cannot start the background runtime: {err}"))
             .and_then(|runtime| {
                 runtime
-                    .block_on(fetch_sessions())
+                    .block_on(fetch_sessions(&daemon))
                     .map_err(|err| err.to_string())
             });
         let applied = window.upgrade_in_event_loop(move |window| match outcome {
@@ -99,7 +99,13 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::set_xdg_app_id(APP_ID)?;
     let tray = Tray::new()?;
 
-    load_sessions(window.as_weak());
+    match Config::load() {
+        Ok(config) => load_sessions(window.as_weak(), config.daemon),
+        Err(err) => {
+            eprintln!("{err}");
+            window.set_error(err.to_string().into());
+        }
+    }
 
     let count = Rc::new(RefCell::new(0i32));
     let refresh_tray = {
