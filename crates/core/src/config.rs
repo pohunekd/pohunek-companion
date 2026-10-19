@@ -57,6 +57,8 @@ pub enum ConfigError {
 pub struct Config {
     /// `[daemon]` table: how the companion talks to the Pohunek daemon.
     pub daemon: DaemonConfig,
+    /// `[tray]` table: how sessions are classified for the owner.
+    pub tray: TrayConfig,
     /// `attach_command`: argv template that opens a session in a terminal,
     /// as an array of words (no shell is involved). Optional; when absent,
     /// clicking a session reports that attach is not configured. `{bin}`
@@ -96,6 +98,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             daemon: DaemonConfig::default(),
+            tray: TrayConfig::default(),
             attach_command: None,
             attach_terminal: None,
             pohunek_bin: "pohunek".to_owned(),
@@ -103,6 +106,30 @@ impl Default for Config {
             login_shell_timeout_ms: 2000,
             attach_script_max_age_s: 3600,
         }
+    }
+}
+
+/// `[tray]` table.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TrayConfig {
+    /// `tray.idle_threshold_secs`: how long an idle session with no subagent
+    /// or background work must stay so before it counts as Idle rather than
+    /// Working, in seconds, greater than zero. Optional; default 300.
+    pub idle_threshold_secs: u64,
+}
+
+impl Default for TrayConfig {
+    fn default() -> Self {
+        Self {
+            idle_threshold_secs: 300,
+        }
+    }
+}
+
+impl TrayConfig {
+    pub fn idle_threshold(&self) -> Duration {
+        Duration::from_secs(self.idle_threshold_secs)
     }
 }
 
@@ -228,6 +255,7 @@ impl Config {
             ("daemon.connect_timeout_ms", self.daemon.connect_timeout_ms),
             ("daemon.request_timeout_ms", self.daemon.request_timeout_ms),
             ("attach_observe_ms", self.attach_observe_ms),
+            ("tray.idle_threshold_secs", self.tray.idle_threshold_secs),
             (
                 "daemon.reconnect_initial_ms",
                 self.daemon.reconnect_initial_ms,
@@ -351,6 +379,20 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(msg.contains("daemon.request_timeout_ms"), "{msg}");
+    }
+
+    #[test]
+    fn idle_threshold_is_read_and_must_be_positive() {
+        assert_eq!(
+            parse("").unwrap().tray.idle_threshold(),
+            Duration::from_secs(300)
+        );
+        let config = parse("[tray]\nidle_threshold_secs = 45\n").unwrap();
+        assert_eq!(config.tray.idle_threshold(), Duration::from_secs(45));
+        let msg = parse("[tray]\nidle_threshold_secs = 0\n")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("tray.idle_threshold_secs"), "{msg}");
     }
 
     #[test]

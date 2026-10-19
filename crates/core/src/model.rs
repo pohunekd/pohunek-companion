@@ -5,6 +5,7 @@
 //! no I/O and has no UI dependency.
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::{Duration, Instant};
 
 use pohunek_client::LOCAL_HOST;
 use pohunek_client::protocol::{
@@ -17,6 +18,7 @@ use serde::de::DeserializeOwned;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use crate::owner_state::{OwnerState, derive, is_idle_without_work};
 use crate::session::SessionKey;
 
 /// Why an event left the store unchanged.
@@ -105,6 +107,31 @@ struct ActivityBaseline {
 struct Tracked {
     info: SessionInfo,
     baseline: Option<ActivityBaseline>,
+    /// When the idle-without-work condition was first observed; `None` while
+    /// the condition does not hold.
+    idle_since: Option<Instant>,
+}
+
+impl Tracked {
+    fn new(info: SessionInfo, now: Instant) -> Self {
+        let mut tracked = Self {
+            info,
+            baseline: None,
+            idle_since: None,
+        };
+        tracked.refresh_idle(now);
+        tracked
+    }
+
+    /// Starts the idle clock when the condition becomes true, keeps it while
+    /// it stays true, and clears it when it ends.
+    fn refresh_idle(&mut self, now: Instant) {
+        if is_idle_without_work(&self.info) {
+            self.idle_since.get_or_insert(now);
+        } else {
+            self.idle_since = None;
+        }
+    }
 }
 
 /// Current sessions and open attention notifications of one daemon.
@@ -149,6 +176,61 @@ impl SessionStore {
         self.attention.values()
     }
 
+    /// Every session with its owner state at `now`.
+    pub fn sessions_with_state(
+        &self,
+        now: Instant,
+        idle_threshold: Duration,
+    ) -> impl Iterator<Item = (&SessionKey, &SessionInfo, OwnerState)> {
+        self.sessions.iter().map(move |(key, tracked)| {
+            let state = self.derive_state(tracked, now, idle_threshold);
+            (key, &tracked.info, state)
+        })
+    }
+
+    /// Owner state of one session at `now`; `None` for an unknown session.
+    pub fn owner_state(
+        &self,
+        id: &SessionId,
+        now: Instant,
+        idle_threshold: Duration,
+    ) -> Option<OwnerState> {
+        self.sessions
+            .get(&self.key(id))
+            .map(|tracked| self.derive_state(tracked, now, idle_threshold))
+    }
+
+    fn derive_state(
+        &self,
+        tracked: &Tracked,
+        now: Instant,
+        idle_threshold: Duration,
+    ) -> OwnerState {
+        let open_attention = self
+            .attention
+            .values()
+            .any(|record| record.session_id.as_ref() == Some(&tracked.info.id));
+        derive(
+            &tracked.info,
+            open_attention,
+            tracked.idle_since,
+            now,
+            idle_threshold,
+        )
+    }
+
+    /// The earliest future instant at which a session still inside its idle
+    /// threshold turns Idle; `None` when no session is waiting on the
+    /// threshold, so no timer is needed.
+    pub fn next_idle_deadline(&self, now: Instant, idle_threshold: Duration) -> Option<Instant> {
+        self.sessions
+            .values()
+            .filter_map(|tracked| tracked.idle_since)
+            .filter_map(|since| since.checked_add(idle_threshold))
+            .filter(|deadline| *deadline > now)
+            .min()
+    }
+
     pub fn report(&self) -> &ReconcileReport {
         &self.report
     }
@@ -167,18 +249,31 @@ impl SessionStore {
         sessions: impl IntoIterator<Item = SessionInfo>,
         notifications: impl IntoIterator<Item = NotificationRecord>,
     ) -> SeedChange {
+        self.apply_seed_at(sessions, notifications, Instant::now())
+    }
+
+    fn apply_seed_at(
+        &mut self,
+        sessions: impl IntoIterator<Item = SessionInfo>,
+        notifications: impl IntoIterator<Item = NotificationRecord>,
+        now: Instant,
+    ) -> SeedChange {
         let previous = std::mem::take(&mut self.sessions);
         let previous_attention = std::mem::take(&mut self.attention);
         self.sessions = sessions
             .into_iter()
             .map(|info| {
-                (
-                    self.key(&info.id),
-                    Tracked {
-                        info,
-                        baseline: None,
-                    },
-                )
+                let key = self.key(&info.id);
+                let mut tracked = Tracked::new(info, now);
+                // A re-seed must not restart the idle clock of a session that
+                // has stayed idle.
+                if let (Some(since), Some(old)) = (
+                    &mut tracked.idle_since,
+                    previous.get(&key).and_then(|old| old.idle_since),
+                ) {
+                    *since = old;
+                }
+                (key, tracked)
             })
             .collect();
         for record in notifications {
@@ -212,7 +307,11 @@ impl SessionStore {
 
     /// Applies one subscription event and records the outcome in the report.
     pub fn apply_event(&mut self, event: &Event) -> Applied {
-        let outcome = self.dispatch(event);
+        self.apply_event_at(event, Instant::now())
+    }
+
+    fn apply_event_at(&mut self, event: &Event, now: Instant) -> Applied {
+        let outcome = self.dispatch(event, now);
         let name = event.event().to_owned();
         match outcome {
             Applied::Applied => *self.report.applied.entry(name).or_default() += 1,
@@ -223,21 +322,21 @@ impl SessionStore {
         outcome
     }
 
-    fn dispatch(&mut self, event: &Event) -> Applied {
+    fn dispatch(&mut self, event: &Event, now: Instant) -> Applied {
         match event.event() {
             event::SESSION_CREATED => decode(event, |payload: SessionEvent| {
-                self.insert_snapshot(payload.session)
+                self.insert_snapshot(payload.session, now)
             }),
             event::SESSION_UPDATED
             | event::SESSION_STOPPED
             | event::SESSION_RUNTIME_RECONNECTED
             | event::SESSION_RUNTIME_LOST
             | event::SESSION_RUNTIME_CONFLICT => decode(event, |payload: SessionEvent| {
-                self.replace_snapshot(payload.session)
+                self.replace_snapshot(payload.session, now)
             }),
             event::SESSION_NATIVE_RECOVERED => {
                 decode(event, |payload: SessionNativeRecoveredEvent| {
-                    self.replace_snapshot(payload.session)
+                    self.replace_snapshot(payload.session, now)
                 })
             }
             event::SESSION_REMOVED => decode(event, |payload: SessionEvent| {
@@ -246,10 +345,12 @@ impl SessionStore {
                     None => Applied::Ignored(IgnoreReason::UnknownSession),
                 }
             }),
-            event::AGENT_STATE => decode(event, |payload| self.apply_agent_state(payload)),
-            event::SUBAGENT_STATE => decode(event, |payload| self.apply_subagent_state(payload)),
+            event::AGENT_STATE => decode(event, |payload| self.apply_agent_state(payload, now)),
+            event::SUBAGENT_STATE => {
+                decode(event, |payload| self.apply_subagent_state(payload, now))
+            }
             event::BACKGROUND_STATE => {
-                decode(event, |payload| self.apply_background_state(payload))
+                decode(event, |payload| self.apply_background_state(payload, now))
             }
             event::NOTIFICATION_CREATED => decode(event, |payload: NotificationCreatedEvent| {
                 self.track_attention(payload.record);
@@ -276,23 +377,18 @@ impl SessionStore {
 
     /// Stores the snapshot of a created session; an existing entry is
     /// handled like any other snapshot.
-    fn insert_snapshot(&mut self, info: SessionInfo) -> Applied {
+    fn insert_snapshot(&mut self, info: SessionInfo, now: Instant) -> Applied {
         if self.sessions.contains_key(&self.key(&info.id)) {
-            return self.replace_snapshot(info);
+            return self.replace_snapshot(info, now);
         }
-        self.sessions.insert(
-            self.key(&info.id),
-            Tracked {
-                info,
-                baseline: None,
-            },
-        );
+        self.sessions
+            .insert(self.key(&info.id), Tracked::new(info, now));
         Applied::Applied
     }
 
     /// Replaces a known session's snapshot unless it is older than the stored
     /// one.
-    fn replace_snapshot(&mut self, info: SessionInfo) -> Applied {
+    fn replace_snapshot(&mut self, info: SessionInfo, now: Instant) -> Applied {
         let key = self.key(&info.id);
         let Some(stored) = self.sessions.get_mut(&key) else {
             return Applied::Ignored(IgnoreReason::UnknownSession);
@@ -303,6 +399,7 @@ impl SessionStore {
             None => self.report.unordered_snapshots += 1,
         }
         stored.info = info;
+        stored.refresh_idle(now);
         Applied::Applied
     }
 
@@ -330,7 +427,7 @@ impl SessionStore {
         }
     }
 
-    fn apply_agent_state(&mut self, payload: AgentStateEvent) -> Applied {
+    fn apply_agent_state(&mut self, payload: AgentStateEvent, now: Instant) -> Applied {
         let tracked = match self.runtime_scoped(&payload.session_id, payload.runtime.as_ref()) {
             Ok(tracked) => tracked,
             Err(reason) => return Applied::Ignored(reason),
@@ -356,10 +453,11 @@ impl SessionStore {
         }
         tracked.info.activity = Some(payload.activity);
         tracked.baseline = Some(next);
+        tracked.refresh_idle(now);
         Applied::Applied
     }
 
-    fn apply_subagent_state(&mut self, payload: SubagentStateEvent) -> Applied {
+    fn apply_subagent_state(&mut self, payload: SubagentStateEvent, now: Instant) -> Applied {
         let tracked = match self.runtime_scoped(&payload.session_id, payload.runtime.as_ref()) {
             Ok(tracked) => tracked,
             Err(reason) => return Applied::Ignored(reason),
@@ -377,13 +475,15 @@ impl SessionStore {
             Some(stored) => *stored = incoming,
             None => tracked.info.subagents.push(incoming),
         }
+        tracked.refresh_idle(now);
         Applied::Applied
     }
 
-    fn apply_background_state(&mut self, payload: BackgroundStateEvent) -> Applied {
+    fn apply_background_state(&mut self, payload: BackgroundStateEvent, now: Instant) -> Applied {
         match self.runtime_scoped(&payload.session_id, payload.runtime.as_ref()) {
             Ok(tracked) => {
                 tracked.info.background = payload.background;
+                tracked.refresh_idle(now);
                 Applied::Applied
             }
             Err(reason) => Applied::Ignored(reason),
@@ -798,5 +898,52 @@ mod tests {
             [],
         );
         assert_eq!((next.added, next.removed, next.changed), (1, 1, 1));
+    }
+
+    #[test]
+    fn idle_clock_starts_once_and_resets_when_the_condition_ends() {
+        let threshold = Duration::from_secs(60);
+        let t0 = Instant::now();
+        let mut store = SessionStore::default();
+        let id = SessionId("s-1".to_owned());
+        let mut seeded = session_json("s-1", 1, "2026-01-01T00:00:00Z");
+        seeded["activity"] = json!("idle");
+        store.apply_seed_at(
+            [serde_json::from_value(seeded).expect("idle session")],
+            [],
+            t0,
+        );
+        let at = |secs| t0 + Duration::from_secs(secs);
+        assert_eq!(store.next_idle_deadline(at(1), threshold), Some(at(60)));
+        assert_eq!(
+            store.owner_state(&id, at(59), threshold),
+            Some(OwnerState::Working)
+        );
+        assert_eq!(
+            store.owner_state(&id, at(60), threshold),
+            Some(OwnerState::Idle)
+        );
+        assert_eq!(store.next_idle_deadline(at(60), threshold), None);
+
+        // A re-seed of a still-idle session keeps the original idle clock.
+        let mut reseeded = session_json("s-1", 1, "2026-01-01T00:00:30Z");
+        reseeded["activity"] = json!("idle");
+        store.apply_seed_at(
+            [serde_json::from_value(reseeded).expect("idle session")],
+            [],
+            at(30),
+        );
+        assert_eq!(
+            store.owner_state(&id, at(60), threshold),
+            Some(OwnerState::Idle)
+        );
+
+        // A running subagent ends the condition; finishing it restarts the clock.
+        let running = subagent_state("s-1", 1, subagent("1", "running"));
+        store.apply_event_at(&running, at(70));
+        assert_eq!(store.next_idle_deadline(at(71), threshold), None);
+        let done = subagent_state("s-1", 1, subagent("2", "completed"));
+        store.apply_event_at(&done, at(100));
+        assert_eq!(store.next_idle_deadline(at(101), threshold), Some(at(160)));
     }
 }
