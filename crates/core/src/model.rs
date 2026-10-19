@@ -176,6 +176,16 @@ impl SessionStore {
         self.attention.values()
     }
 
+    /// When the longest-open attention notification of a session was created;
+    /// `None` without one or when no timestamp parses.
+    pub fn waiting_since(&self, id: &SessionId) -> Option<OffsetDateTime> {
+        self.attention
+            .values()
+            .filter(|record| record.session_id.as_ref() == Some(id))
+            .filter_map(|record| OffsetDateTime::parse(&record.created_at, &Rfc3339).ok())
+            .min()
+    }
+
     /// Every session with its owner state at `now`.
     pub fn sessions_with_state(
         &self,

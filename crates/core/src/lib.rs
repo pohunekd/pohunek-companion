@@ -13,6 +13,7 @@ mod model;
 mod owner_state;
 mod session;
 mod socket;
+mod tray_summary;
 
 pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attach};
 pub use attach_macos::AttachTerminal;
@@ -24,3 +25,4 @@ pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
 pub use owner_state::{OwnerState, derive};
 pub use session::{SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
+pub use tray_summary::{TrayEntry, TraySummary};
