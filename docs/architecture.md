@@ -24,10 +24,12 @@ CPU.
 ## Stack
 
 - Rust, toolchain pinned in `rust-toolchain.toml`.
-- Slint (winit backend, femtovg renderer) for UI, drag and drop
-  (`DragArea`/`DropArea`), and the tray (`SystemTrayIcon`: StatusNotifierItem
-  on Linux, `NSStatusItem` on macOS). The Slint Royalty-free License requires
-  attribution: the app shows an "About Slint" entry.
+- Slint (winit backend, software renderer, no `accessibility` feature) for UI,
+  drag and drop (`DragArea`/`DropArea`), and the tray (`SystemTrayIcon`:
+  StatusNotifierItem on Linux, `NSStatusItem` on macOS). The Slint
+  Royalty-free License requires attribution: the app shows an "About Slint"
+  entry. Release profile: fat LTO, `opt-level = "s"`, `panic = "abort"`. See
+  "Renderer and release profile" for the measurements behind the choice.
 - `pohunek-client`, pinned to a Pohunek git tag, as the only protocol
   dependency.
 
@@ -179,6 +181,69 @@ stack dominates RSS) but a 20 MB RSS at 20 s after start was seen with the softw
 (5-minute idle not measured), which drew the spike UI correctly in the nested
 compositor. M1 picks the renderer and the release
 profile; this is a configuration decision, not a reason to leave Slint.
+
+### Renderer and release profile (#8)
+
+Decision: **software renderer, no `accessibility`, fat LTO,
+`opt-level = "s"`, `panic = "abort"`** (`Cargo.toml` carries the reason for
+each). The M1 UI is flat lists of text and badges; femtovg's GL driver stack
+is what costs RAM on Linux, and the software renderer drew everything the
+current UI uses. Dropping `accessibility` means no screen-reader support; the
+companion is an owner-only tool and this is a deliberate omission. With
+`panic = "abort"` a panic on any thread ends the process instead of only that
+thread.
+
+Measured on the real M1 UI (release builds of `main` at 03be559 with only the
+profile and feature changes). Linux ran in a nested headless sway against the
+owner's busy daemon (79 sessions) and against an isolated daemon with no
+sessions; RSS and CPU were sampled 300 s after start, CPU over the next 60 s.
+
+| Variant (Linux) | Binary | RSS, busy daemon | CPU, busy | RSS, quiet daemon | CPU, quiet |
+| --- | --- | --- | --- | --- | --- |
+| femtovg, no `accessibility`, thin LTO, `s`, abort | 15.3 MB | 94.0 MB | 0.32 % | 83.9 MB | 0.00 % |
+| **software, no `accessibility`, fat LTO, `s`, abort** | **13.6 MB** | **29.6 MB** | **0.20 %** | **21.6 MB** | **0.00 %** |
+
+The same software build with thin LTO is 15.5 MB, which misses the 15 MB
+target; `opt-level = "z"` with fat LTO gives 12.7 MB but trades speed for 0.8
+MB the target does not need. Clean `cargo build --release` takes 63 s on
+Linux (24 cores).
+
+| Variant (macOS arm64, host zajcaair) | Binary | RSS | Physical footprint | CPU |
+| --- | --- | --- | --- | --- |
+| femtovg, fat LTO, `s`, abort | 9.0 MB | 94 MB | 44 MB | about 0.05 % |
+| **software, fat LTO, `s`, abort** | **9.0 MB** | **112 MB** | **40 MB** | **about 0.06 %** |
+
+Both targets hold on Linux. On macOS the binary target holds, but RSS cannot
+meet 60 MB with either renderer: it counts the shared AppKit and system
+frameworks the process maps (the spike's thin-LTO femtovg build read 99 MB).
+The software renderer reads 18 MB higher RSS than femtovg there (112 against 94
+MB) but a 4 MB lower footprint, which is the figure that reflects the
+process's own memory.
+The target is amended there to the physical footprint (`footprint <pid>`),
+which is 40 MB. The clean release build took 94.5 s on that 8 GB host, 4.5 s
+over the 90 s target (the spike's thin LTO build took 80.2 s); fat LTO is the
+price of the size target. The macOS window and tray were not observable from
+the remote session (see D2), so the macOS figures describe a running process
+whose UI nobody saw; they are not a claim that it renders.
+
+Linux, software renderer, checked in a nested headless sway:
+
+- The sidebar draws its rows, status dots, and text correctly
+  (`docs/renderer-profile/sidebar-software-renderer.png`).
+- Tray: the StatusNotifierItem registers, its `ToolTip` followed the daemon
+  (`0 need you, 0 idle, 3 working` after three sessions appeared) and the
+  DBusMenu layout has the labels "No sessions need you", "Show window",
+  "About Slint", and "Quit".
+- Drag and drop: the sidebar has none yet (M2), so the M0 spike
+  (`6d83a1a`) was built with the same renderer and driven by a wlroots
+  virtual pointer in the nested sway. The drop indicator shows during the drag
+  (`dnd-software-renderer-mid-drag.png`) and a drop moves the row to the
+  indicated place across groups (`dnd-software-renderer-after-drop.png`).
+  Behaviour is identical with femtovg. In both, a release that follows the
+  last motion event without one more motion event over the drop target did not
+  drop in 4 of 4 and 3 of 3 attempts; with a final motion event before the
+  release 6 of 6 dropped. A real mouse always sends motion, so this is a note
+  for #9 and for any scripted check, not a renderer problem.
 
 ### D2: macOS (host zajcaair, run from a remote shell session)
 
