@@ -4,33 +4,46 @@ export struct SessionRowData {
     name: string,
     agent: string,
     state: string,
+    // Empty when the session has no Pohunek Work link.
+    badge: string,
+    badge-role: string,
 }
 
 global Theme {
     out property <length> row-height: 36px;
     out property <length> row-radius: 4px;
     out property <length> row-padding: 8px;
+    out property <length> row-vertical-padding: 3px;
     out property <length> row-spacing: 2px;
     out property <length> window-padding: 8px;
     out property <length> detail-font-size: 11px;
     out property <length> error-font-size: 13px;
+    out property <length> badge-row-height: 16px;
+    out property <length> badge-font-size: 10px;
+    out property <length> badge-padding: 4px;
+    out property <length> badge-radius: 3px;
+    out property <length> badge-spacing: 4px;
     out property <color> background: #1e1f22;
     out property <color> row: #2b2d31;
     out property <color> text: #e6e6e6;
     out property <color> detail: #8a8f98;
     out property <color> error: #e04040;
+    out property <color> badge-background: #3a3d44;
+    out property <color> badge-text: #c9d1d9;
 }
 
 component SessionRow inherits Rectangle {
     in property <SessionRowData> data;
 
-    height: Theme.row-height;
+    height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: Theme.row;
     border-radius: Theme.row-radius;
 
     VerticalLayout {
         padding-left: Theme.row-padding;
         padding-right: Theme.row-padding;
+        padding-top: Theme.row-vertical-padding;
+        padding-bottom: Theme.row-vertical-padding;
         alignment: center;
         Text {
             text: root.data.name;
@@ -42,6 +55,32 @@ component SessionRow inherits Rectangle {
             color: Theme.detail;
             font-size: Theme.detail-font-size;
             overflow: elide;
+        }
+        if root.data.badge != "": HorizontalLayout {
+            spacing: Theme.badge-spacing;
+            Rectangle {
+                background: Theme.badge-background;
+                border-radius: Theme.badge-radius;
+                horizontal-stretch: 0;
+                HorizontalLayout {
+                    padding-left: Theme.badge-padding;
+                    padding-right: Theme.badge-padding;
+                    Text {
+                        text: root.data.badge;
+                        color: Theme.badge-text;
+                        font-size: Theme.badge-font-size;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if root.data.badge-role != "": Text {
+                text: root.data.badge-role;
+                color: Theme.detail;
+                font-size: Theme.badge-font-size;
+                overflow: elide;
+                vertical-alignment: center;
+            }
         }
     }
 }

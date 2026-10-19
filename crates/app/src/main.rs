@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use pohunek_companion_core::{SessionRow, fetch_sessions};
+use pohunek_companion_core::{SessionRow, clip_display, fetch_sessions};
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 slint::include_modules!();
@@ -12,6 +12,8 @@ const APP_ID: &str = "pohunek-companion";
 const TRAY_TICK: Duration = Duration::from_secs(2);
 const TRAY_ICON_SIZE: u32 = 32;
 const TRAY_STATES: i32 = 4;
+/// Longest badge link or role text shown in a row.
+const BADGE_MAX_CHARS: usize = 32;
 
 fn tray_icon(count: i32) -> Image {
     let color = match count {
@@ -42,10 +44,21 @@ fn tray_icon(count: i32) -> Image {
 fn session_rows(sessions: Vec<SessionRow>) -> Vec<SessionRowData> {
     sessions
         .into_iter()
-        .map(|s| SessionRowData {
-            name: s.display_name.into(),
-            agent: s.agent.into(),
-            state: s.state.into(),
+        .map(|s| {
+            let (badge, badge_role) = match s.badge {
+                Some(b) => (
+                    clip_display(&b.link, BADGE_MAX_CHARS),
+                    clip_display(&b.role.unwrap_or_default(), BADGE_MAX_CHARS),
+                ),
+                None => Default::default(),
+            };
+            SessionRowData {
+                name: s.display_name.into(),
+                agent: s.agent.into(),
+                state: s.state.into(),
+                badge: badge.into(),
+                badge_role: badge_role.into(),
+            }
         })
         .collect()
 }
