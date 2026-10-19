@@ -24,8 +24,8 @@
 # XDG_RUNTIME_DIR, state, config, data, and cache directories under one
 # temporary directory, registers synthetic git projects, creates the synthetic
 # sessions, and `stop` stops the daemon and deletes that directory.
-# `--sessions N` adds N generated sessions to the four fixed ones. `--owner-daemon` connects to the owner's
-# real daemon instead; its output must never be published (see
+# `--sessions N` adds N generated sessions to the four fixed ones.
+# `--owner-daemon` connects to the owner's real daemon instead; its output must never be published (see
 # .agents/instructions/verification.md).
 #
 # Overrides: POHUNEK_CLI (the pohunek CLI, default `pohunek` on PATH) and
@@ -191,7 +191,7 @@ create_synthetic_session() {
     env "${envs[@]}" "$cli" "${args[@]}" >/dev/null
 }
 
-# Starts the isolated daemon, its projects, and $2 generated sessions on top of
+# Starts the isolated daemon, its projects, and $1 generated sessions on top of
 # the fixed ones; prints the directory.
 start_isolated_daemon() {
     need "$cli"
