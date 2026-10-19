@@ -356,12 +356,15 @@ start() {
     # A temporary config whose attach command is harmless (a click on a
     # session row runs `true` instead of opening a terminal on the owner's
     # desktop) and a temporary state directory, so the run reads and writes its
-    # own layout.toml and never the owner's.
-    mkdir -p "$state/config/pohunek"
-    echo 'attach_command = ["true"]' >"$state/config/pohunek/companion.toml"
+    # own layout.toml and never the owner's. In isolated mode the app reads the
+    # config under the isolated directory.
+    local config_dir="$state/config/pohunek"
+    [ -z "$iso" ] || config_dir="$iso/config/pohunek"
+    mkdir -p "$config_dir"
+    echo 'attach_command = ["true"]' >"$config_dir/companion.toml"
     # UI_AGENT_CONFIG_EXTRA: extra companion.toml text, e.g. placement rules.
     if [[ -n ${UI_AGENT_CONFIG_EXTRA:-} ]]; then
-        printf '%s\n' "$UI_AGENT_CONFIG_EXTRA" >>"$state/config/pohunek/companion.toml"
+        printf '%s\n' "$UI_AGENT_CONFIG_EXTRA" >>"$config_dir/companion.toml"
     fi
 
     local -a envs=(
@@ -372,8 +375,6 @@ start() {
     )
     if [ -n "$iso" ]; then
         # The companion's config and layout live in the isolated directory too.
-        mkdir -p "$iso/config/pohunek"
-        echo 'attach_command = ["true"]' >"$iso/config/pohunek/companion.toml"
         mapfile -t envs < <(isolated_env "$iso")
         envs+=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port")
     fi
