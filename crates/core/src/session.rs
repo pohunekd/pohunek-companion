@@ -1,3 +1,4 @@
+use crate::badge::WorkBadge;
 use pohunek_client::LOCAL_HOST;
 use pohunek_client::protocol::SessionInfo;
 
@@ -16,6 +17,8 @@ pub struct SessionRow {
     pub display_name: String,
     pub agent: String,
     pub state: String,
+    /// Pohunek Work link and role, when the metadata carries a link id.
+    pub badge: Option<WorkBadge>,
 }
 
 impl SessionRow {
@@ -29,6 +32,7 @@ impl SessionRow {
             display_name,
             agent: info.agent,
             state: info.state.as_str().to_owned(),
+            badge: WorkBadge::from_metadata(&info.metadata),
         }
     }
 }
