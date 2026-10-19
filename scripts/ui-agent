@@ -7,7 +7,7 @@
 # is never part of Cargo.toml features, so normal and release builds do not
 # contain the server.
 #
-#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [-- APP_ARGS...]
+#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
 #   scripts/ui-agent restart                         stop and start only the app
 #   scripts/ui-agent stop                            stop the instance
@@ -22,9 +22,10 @@
 #
 # Isolated mode (the default) runs `pohunekd --dev-subprocess` with its own
 # XDG_RUNTIME_DIR, state, config, data, and cache directories under one
-# temporary directory, creates the synthetic sessions, and `stop` stops the
-# daemon and deletes that directory. `--owner-daemon` connects to the owner's
-# real daemon instead; its output must never be published (see
+# temporary directory, registers synthetic git projects, creates the synthetic
+# sessions, and `stop` stops the daemon and deletes that directory.
+# `--sessions N` adds N generated sessions to the four fixed ones.
+# `--owner-daemon` connects to the owner's real daemon instead; its output must never be published (see
 # .agents/instructions/verification.md).
 #
 # Overrides: POHUNEK_CLI (the pohunek CLI, default `pohunek` on PATH) and
@@ -60,6 +61,7 @@ endpoint_file=$state/endpoint
 iso_file=$state/isolated-dir
 daemon_pidfile=$state/daemon-pid
 iso_prefix=ph-ui-agent
+session_parallelism=${UI_AGENT_PARALLELISM:-8}
 cli=${POHUNEK_CLI:-pohunek}
 app_log=$state/stdout.log
 # What `restart` replays: the app's environment (one KEY=value per line) and
@@ -71,6 +73,10 @@ die() {
     echo "ui-agent: $*" >&2
     exit 1
 }
+
+case $session_parallelism in
+    '' | *[!0-9]* | 0*) die "UI_AGENT_PARALLELISM must be a positive number" ;;
+esac
 
 need() {
     command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"
@@ -102,13 +108,33 @@ endpoint() {
     cat "$endpoint_file"
 }
 
-# Synthetic sessions of the isolated daemon: name, then optional Work metadata.
+# Synthetic projects of the isolated daemon: git repositories under $iso/work.
+synthetic_projects=(proj-alpha proj-beta proj-gamma)
+
+# Synthetic sessions of the isolated daemon: name, project (empty for none),
+# then optional Work metadata, separated by `|`.
 synthetic_sessions=(
-    "alpha-agent|work.link.provider=github work.link.kind=pr work.link.id=12 work.role=implementer"
-    "beta-review|work.link.provider=github work.link.kind=issue work.link.id=34 work.role=reviewer"
-    "gamma-docs|"
-    "delta-build|"
+    "alpha-agent|proj-alpha|work.link.provider=github work.link.kind=pr work.link.id=12 work.role=implementer"
+    "beta-review|proj-beta|work.link.provider=github work.link.kind=issue work.link.id=34 work.role=reviewer"
+    "gamma-docs|proj-gamma|"
+    "delta-build||"
 )
+
+# Word lists for the generated session names `<word>-<word>-<n>`.
+name_first=(amber brisk calm dusty eager fuzzy gentle hazy ivory jolly keen lucid mellow noble opal plain quiet rustic sleek tidy)
+name_second=(agent build docs review deploy lint parser render sync test index cache)
+
+# Prints the `name|project|meta` line of generated session number $1: projects
+# rotate with one slot left empty, and every fifth session carries a Work link.
+generated_session() {
+    local n=$1 project="" meta=""
+    local slot=$((n % (${#synthetic_projects[@]} + 1)))
+    [ "$slot" -lt "${#synthetic_projects[@]}" ] && project=${synthetic_projects[$slot]}
+    if [ $((n % 5)) -eq 0 ]; then
+        meta="work.link.provider=github work.link.kind=issue work.link.id=$((100 + n)) work.role=implementer"
+    fi
+    echo "${name_first[n % ${#name_first[@]}]}-${name_second[(n / ${#name_first[@]} + n) % ${#name_second[@]}]}-$n|$project|$meta"
+}
 
 find_daemon_bin() {
     if [ -n "${POHUNEKD:-}" ]; then
@@ -150,10 +176,32 @@ remove_iso_dir() {
     rm -f "$iso_file"
 }
 
-# Starts the isolated daemon and its synthetic sessions; prints the directory.
+# Creates one synthetic session from a `name|project|meta` line.
+create_synthetic_session() {
+    local iso=$1 line=$2 name project meta kv
+    local -a envs
+    mapfile -t envs < <(isolated_env "$iso")
+    name=${line%%|*}
+    line=${line#*|}
+    project=${line%%|*}
+    meta=${line#*|}
+    local -a args=(session new --agent shell --name "$name" --json)
+    if [ -n "$project" ]; then
+        args+=(--project "$project")
+    else
+        args+=(--cwd "$iso/work")
+    fi
+    for kv in $meta; do args+=(--meta "$kv"); done
+    env "${envs[@]}" "$cli" "${args[@]}" >/dev/null
+}
+
+# Starts the isolated daemon, its projects, and $1 generated sessions on top of
+# the fixed ones; prints the directory.
 start_isolated_daemon() {
     need "$cli"
-    local iso bin_dir daemon_bin i line name meta
+    need git
+    local extra=$1
+    local iso bin_dir daemon_bin i line project
     daemon_bin=$(find_daemon_bin) || exit 1
     iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
     echo "$iso" >"$iso_file"
@@ -175,13 +223,32 @@ start_isolated_daemon() {
     done
     env "${envs[@]}" "$cli" health >/dev/null 2>&1 ||
         { stop >/dev/null 2>&1 || true; die "the isolated daemon did not start; see $iso/daemon.log"; }
-    for line in "${synthetic_sessions[@]}"; do
-        name=${line%%|*}
-        meta=${line#*|}
-        local -a args=(session new --agent shell --name "$name" --cwd "$iso/work" --json)
-        for kv in $meta; do args+=(--meta "$kv"); done
-        env "${envs[@]}" "$cli" "${args[@]}" >/dev/null || { stop >/dev/null 2>&1 || true; die "cannot create session $name"; }
+    for project in "${synthetic_projects[@]}"; do
+        mkdir -p "$iso/work/$project" &&
+            GIT_CONFIG_GLOBAL=/dev/null git -C "$iso/work/$project" init --quiet &&
+            GIT_CONFIG_GLOBAL=/dev/null git -C "$iso/work/$project" -c user.name=ui-agent -c user.email=ui-agent@example.invalid \
+                -c commit.gpgsign=false -c core.hooksPath=/dev/null commit --quiet --allow-empty -m "Initial commit" ||
+            { stop >/dev/null 2>&1 || true; die "cannot create the git repository for $project"; }
+        env "${envs[@]}" "$cli" project add "$iso/work/$project" --name "$project" >/dev/null 2>"$iso/project-add.log" ||
+            { local err; err=$(cat "$iso/project-add.log"); stop >/dev/null 2>&1 || true; die "cannot register project $project: $err"; }
     done
+    local -a lines=("${synthetic_sessions[@]}")
+    for ((i = 0; i < extra; i++)); do lines+=("$(generated_session "$i")"); done
+    # Sessions are created in parallel batches; a failed creation is fatal.
+    local running=0 failed=0
+    for line in "${lines[@]}"; do
+        create_synthetic_session "$iso" "$line" 2>>"$iso/session-new.log" &
+        running=$((running + 1))
+        if [ "$running" -ge "$session_parallelism" ]; then
+            wait -n || failed=1
+            running=$((running - 1))
+        fi
+    done
+    while [ "$running" -gt 0 ]; do
+        wait -n || failed=1
+        running=$((running - 1))
+    done
+    [ "$failed" -eq 0 ] || { local err; err=$(head -c 400 "$iso/session-new.log"); stop >/dev/null 2>&1 || true; die "cannot create a synthetic session: $err"; }
     echo "$iso"
 }
 
@@ -210,7 +277,7 @@ daemon_alive() {
 # Stops the isolated daemon: its sessions first, then the daemon itself.
 stop_isolated_daemon() {
     [ -f "$iso_file" ] || return 0
-    local iso id i
+    local iso i
     iso=$(cat "$iso_file")
     case $iso in
         */../* | */..) iso="" ;;
@@ -225,9 +292,8 @@ stop_isolated_daemon() {
     local -a envs
     mapfile -t envs < <(isolated_env "$iso")
     if [ -S "$iso/run/pohunek/daemon.sock" ]; then
-        for id in $(env "${envs[@]}" "$cli" session list --json 2>/dev/null | jq -r '.. | objects | select(has("id")) | .id' 2>/dev/null); do
-            env "${envs[@]}" "$cli" session rm "$id" >/dev/null 2>&1 || true
-        done
+        env "${envs[@]}" "$cli" session list --json 2>/dev/null | jq -r '.. | objects | select(has("id")) | .id' 2>/dev/null |
+            xargs -r -P "$session_parallelism" -I{} env "${envs[@]}" "$cli" session rm {} >/dev/null 2>>"$iso/session-rm.log" || true
     fi
     kill_isolated "$iso" TERM
     for i in $(seq 1 50); do
@@ -243,7 +309,7 @@ stop_isolated_daemon() {
 }
 
 start() {
-    local port="" windowed=0 isolated=1
+    local port="" windowed=0 isolated=1 sessions=0
     local -a app_args=()
     while [ $# -gt 0 ]; do
         case $1 in
@@ -257,10 +323,18 @@ start() {
                 ;;
             --windowed) windowed=1; shift ;;
             --owner-daemon) isolated=0; shift ;;
+            --sessions)
+                sessions=${2:?--sessions needs a value}
+                case $sessions in
+                    '' | *[!0-9]* | 0?*) die "--sessions must be a number without leading zeros" ;;
+                esac
+                shift 2
+                ;;
             --) shift; app_args=("$@"); break ;;
             *) die "unknown start option: $1" ;;
         esac
     done
+    [ "$isolated" -eq 1 ] || [ "$sessions" -eq 0 ] || die "--sessions needs the isolated daemon"
     need python3
     need curl
     need jq
@@ -276,7 +350,7 @@ start() {
 
     local iso=""
     if [ "$isolated" -eq 1 ]; then
-        iso=$(start_isolated_daemon)
+        iso=$(start_isolated_daemon "$sessions")
     fi
 
     # A temporary config whose attach command is harmless (a click on a

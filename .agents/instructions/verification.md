@@ -62,6 +62,7 @@ while it runs.
 
 ```bash
 scripts/ui-agent start                  # isolated daemon; prints http://127.0.0.1:<port>/mcp
+scripts/ui-agent start --sessions 120   # plus 120 generated sessions (124 in total)
 scripts/ui-agent screenshot shot.png    # PNG of the window
 scripts/ui-agent tree                   # element tree with ids
 scripts/ui-agent find SessionRow::row-touch
@@ -87,7 +88,13 @@ show the owner's real sessions (names, ids, working directories, Work links).
   Pohunek daemon: its own `XDG_RUNTIME_DIR`, state, config, data, and cache
   directories in a temporary directory, and four synthetic `shell` sessions
   (`alpha-agent`, `beta-review`, `gamma-docs`, `delta-build`, two with fake
-  Work links). `scripts/ui-agent stop` stops the app, the daemon, and its
+  Work links) spread across three synthetic git projects (`proj-alpha`,
+  `proj-beta`, `proj-gamma`, registered with `pohunek project add`;
+  `delta-build` has no project). `scripts/ui-agent start --sessions N` adds N
+  generated `shell` sessions (`<word>-<word>-<n>`, rotating over the projects
+  with every fourth left without one, every fifth with a fake Work link), for
+  example `--sessions 120` for 124 sessions in total; it needs the isolated
+  daemon. `scripts/ui-agent stop` stops the app, the daemon, and its
   sessions and deletes the directory. Everything published comes from this
   mode.
 - For a manual `cargo run` that is meant to be published, set the same
