@@ -126,6 +126,13 @@ Storage and reconciliation:
   sort key only and sets `manual = true` on it, which placement rules must
   respect. The drop is addressed by session key, so a daemon update during a
   drag cannot lose it.
+- Group operations rewrite one group entry: create appends after the last
+  group, rename and collapse change that group's fields, a header drag
+  rewrites its sort key, and delete appends the group's sessions to the end of
+  Inbox in their display order with their `manual` flag kept. Names are
+  trimmed, non-empty, and unique ignoring case (placement rules select a group
+  by name); Inbox cannot be renamed or deleted. A collapsed group keeps its
+  sessions that need the owner in the Needs-you section.
 - Drag never changes daemon state: no herd add/remove, no work relinking.
 
 ## Tray states

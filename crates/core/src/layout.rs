@@ -78,6 +78,9 @@ pub struct Group {
     pub name: String,
     /// Fractional sort key among groups.
     pub order: String,
+    /// The header shows with the session count and the rows are hidden.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub collapsed: bool,
 }
 
 /// A session's place: its group and its sort key within that group.
@@ -125,6 +128,7 @@ pub struct Layout {
 pub struct GroupSection {
     pub id: String,
     pub name: String,
+    pub collapsed: bool,
     pub rows: Vec<SessionRow>,
 }
 
@@ -148,6 +152,43 @@ pub enum MoveError {
     AnchorNotInGroup(String),
     #[error("sessions in group {0:?} share an order key; fix layout.toml by hand")]
     AmbiguousOrder(String),
+}
+
+/// Where a moved group lands among the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupPlacement<'a> {
+    /// Before the group with this id.
+    Before(&'a str),
+    /// After the group with this id.
+    After(&'a str),
+}
+
+/// Why a group operation was refused; the layout is left unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum GroupError {
+    #[error("a group name cannot be empty")]
+    EmptyName,
+    #[error("a group named {0:?} already exists")]
+    DuplicateName(String),
+    #[error("group {0:?} is not in the layout")]
+    UnknownGroup(String),
+    #[error("the Inbox group cannot be renamed or deleted")]
+    InboxFixed,
+    #[error("groups share an order key; fix layout.toml by hand")]
+    AmbiguousOrder,
+}
+
+impl GroupError {
+    /// A label for logs: names the refusal without the group name it carries.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::EmptyName => "empty name",
+            Self::DuplicateName(_) => "duplicate name",
+            Self::UnknownGroup(_) => "unknown group",
+            Self::InboxFixed => "inbox is fixed",
+            Self::AmbiguousOrder => "ambiguous order",
+        }
+    }
 }
 
 /// What a reconcile changed.
@@ -213,7 +254,17 @@ fn inbox_group(order: String) -> Group {
         id: INBOX_ID.to_owned(),
         name: INBOX_NAME.to_owned(),
         order,
+        collapsed: false,
     }
+}
+
+/// The name as stored: trimmed and non-empty.
+fn clean_name(name: &str) -> Result<&str, GroupError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GroupError::EmptyName);
+    }
+    Ok(name)
 }
 
 impl Layout {
@@ -355,6 +406,7 @@ impl Layout {
             id: id.clone(),
             name: name.to_owned(),
             order,
+            collapsed: false,
         });
         id
     }
@@ -438,20 +490,154 @@ impl Layout {
         !std::mem::replace(&mut self.items[index].manual, true)
     }
 
+    fn group_index(&self, id: &str) -> Result<usize, GroupError> {
+        self.groups
+            .iter()
+            .position(|group| group.id == id)
+            .ok_or_else(|| GroupError::UnknownGroup(id.to_owned()))
+    }
+
+    /// Refuses a name another group (other than `except`) has, ignoring case:
+    /// placement rules address groups by name.
+    fn check_unique(&self, name: &str, except: Option<&str>) -> Result<(), GroupError> {
+        let folded = name.to_lowercase();
+        if self
+            .groups
+            .iter()
+            .any(|g| Some(g.id.as_str()) != except && g.name.to_lowercase() == folded)
+        {
+            return Err(GroupError::DuplicateName(name.to_owned()));
+        }
+        Ok(())
+    }
+
+    /// Groups in display order.
+    fn ordered_groups(&self) -> Vec<&Group> {
+        let mut groups: Vec<&Group> = self.groups.iter().collect();
+        groups.sort_by(|a, b| (&a.order, &a.id).cmp(&(&b.order, &b.id)));
+        groups
+    }
+
+    /// Appends a group after the last one and returns its id.
+    pub fn create_group(&mut self, name: &str) -> Result<String, GroupError> {
+        let name = clean_name(name)?;
+        self.check_unique(name, None)?;
+        let id = (self.groups.len()..)
+            .map(|n| format!("g{n}"))
+            .find(|id| self.groups.iter().all(|g| g.id != *id))
+            .expect("an unused group id exists");
+        let last = self.ordered_groups().last().map(|g| g.order.clone());
+        self.groups.push(Group {
+            id: id.clone(),
+            name: name.to_owned(),
+            order: sort_key::between(last.as_deref(), None),
+            collapsed: false,
+        });
+        Ok(id)
+    }
+
+    /// Renames a group; Inbox keeps its name. Returns whether the name changed.
+    pub fn rename_group(&mut self, id: &str, name: &str) -> Result<bool, GroupError> {
+        let index = self.group_index(id)?;
+        if id == INBOX_ID {
+            return Err(GroupError::InboxFixed);
+        }
+        let name = clean_name(name)?;
+        self.check_unique(name, Some(id))?;
+        if self.groups[index].name == name {
+            return Ok(false);
+        }
+        self.groups[index].name = name.to_owned();
+        Ok(true)
+    }
+
+    /// Returns whether the collapsed state changed.
+    pub fn set_collapsed(&mut self, id: &str, collapsed: bool) -> Result<bool, GroupError> {
+        let index = self.group_index(id)?;
+        let group = &mut self.groups[index];
+        let changed = group.collapsed != collapsed;
+        group.collapsed = collapsed;
+        Ok(changed)
+    }
+
+    /// Moves a group before or after another; only that group's sort key
+    /// changes. Returns whether anything changed.
+    pub fn move_group(
+        &mut self,
+        id: &str,
+        placement: GroupPlacement<'_>,
+    ) -> Result<bool, GroupError> {
+        let index = self.group_index(id)?;
+        let (GroupPlacement::Before(anchor) | GroupPlacement::After(anchor)) = placement;
+        self.group_index(anchor)?;
+        if anchor == id {
+            return Ok(false);
+        }
+        let others: Vec<&Group> = self
+            .ordered_groups()
+            .into_iter()
+            .filter(|g| g.id != id)
+            .collect();
+        let at = others
+            .iter()
+            .position(|g| g.id == anchor)
+            .ok_or_else(|| GroupError::UnknownGroup(anchor.to_owned()))?;
+        let slot = at + usize::from(matches!(placement, GroupPlacement::After(_)));
+        let lower = slot.checked_sub(1).map(|i| others[i].order.as_str());
+        let upper = others.get(slot).map(|g| g.order.as_str());
+        let current = self.groups[index].order.as_str();
+        if lower.is_none_or(|lower| lower < current) && upper.is_none_or(|upper| current < upper) {
+            return Ok(false);
+        }
+        if let (Some(lower), Some(upper)) = (lower, upper)
+            && lower >= upper
+        {
+            return Err(GroupError::AmbiguousOrder);
+        }
+        let order = sort_key::between(lower, upper);
+        self.groups[index].order = order;
+        Ok(true)
+    }
+
+    /// Deletes a group and appends its sessions to the end of Inbox in their
+    /// display order, keeping their manual flag. Returns the moved sessions.
+    pub fn delete_group(&mut self, id: &str) -> Result<Vec<SessionKey>, GroupError> {
+        let index = self.group_index(id)?;
+        if id == INBOX_ID {
+            return Err(GroupError::InboxFixed);
+        }
+        let moving: Vec<SessionKey> = self.group_items(id).iter().map(|i| i.key()).collect();
+        let mut last = self
+            .items
+            .iter()
+            .filter(|item| item.group == INBOX_ID)
+            .map(|item| item.order.clone())
+            .max();
+        for key in &moving {
+            let order = sort_key::between(last.as_deref(), None);
+            last = Some(order.clone());
+            if let Some(item) = self.items.iter_mut().find(|item| item.key() == *key) {
+                item.group = INBOX_ID.to_owned();
+                item.order = order;
+            }
+        }
+        self.groups.remove(index);
+        Ok(moving)
+    }
+
     /// Groups in order, each with the rows of its items in order. A row
     /// without a placement is left out until the next reconcile.
     pub fn arrange(&self, rows: &[SessionRow]) -> Vec<GroupSection> {
         let by_key: HashMap<&SessionKey, &SessionRow> =
             rows.iter().map(|row| (&row.key, row)).collect();
-        let mut groups: Vec<&Group> = self.groups.iter().collect();
-        groups.sort_by(|a, b| (&a.order, &a.id).cmp(&(&b.order, &b.id)));
-        groups
+        self.ordered_groups()
             .into_iter()
             .map(|group| {
                 let items = self.group_items(&group.id);
                 GroupSection {
                     id: group.id.clone(),
                     name: group.name.clone(),
+                    collapsed: group.collapsed,
                     rows: items
                         .into_iter()
                         .filter_map(|item| by_key.get(&item.key()).map(|row| (*row).clone()))
@@ -670,6 +856,50 @@ impl LayoutStore {
             info!(session = %key.session_id, group, placement = ?placement_log(placement), "session moved");
         }
         Ok(changed)
+    }
+
+    /// Creates a group and returns its id. Group operations on the store log
+    /// the group id and the operation, never the name; each change reaches
+    /// the file at the next [`save_if_changed`](Self::save_if_changed).
+    pub fn create_group(&mut self, name: &str) -> Result<String, GroupError> {
+        let id = self.layout.create_group(name)?;
+        info!(group = %id, operation = "create", "group changed");
+        Ok(id)
+    }
+
+    pub fn rename_group(&mut self, id: &str, name: &str) -> Result<bool, GroupError> {
+        let changed = self.layout.rename_group(id, name)?;
+        if changed {
+            info!(group = %id, operation = "rename", "group changed");
+        }
+        Ok(changed)
+    }
+
+    pub fn set_collapsed(&mut self, id: &str, collapsed: bool) -> Result<bool, GroupError> {
+        let changed = self.layout.set_collapsed(id, collapsed)?;
+        if changed {
+            let operation = if collapsed { "collapse" } else { "expand" };
+            info!(group = %id, operation, "group changed");
+        }
+        Ok(changed)
+    }
+
+    pub fn move_group(
+        &mut self,
+        id: &str,
+        placement: GroupPlacement<'_>,
+    ) -> Result<bool, GroupError> {
+        let changed = self.layout.move_group(id, placement)?;
+        if changed {
+            info!(group = %id, operation = "move", "group changed");
+        }
+        Ok(changed)
+    }
+
+    pub fn delete_group(&mut self, id: &str) -> Result<Vec<SessionKey>, GroupError> {
+        let moved = self.layout.delete_group(id)?;
+        info!(group = %id, operation = "delete", sessions = moved.len(), "group changed");
+        Ok(moved)
     }
 
     /// Writes the layout when it differs from the file; returns whether it
@@ -896,6 +1126,137 @@ order = "t"
             Err(MoveError::AnchorNotInGroup("b".to_owned()))
         );
         assert_eq!(layout, before);
+    }
+
+    fn group_ids(layout: &Layout) -> Vec<String> {
+        layout.arrange(&[]).into_iter().map(|s| s.id).collect()
+    }
+
+    #[test]
+    fn deleting_a_group_appends_its_sessions_to_inbox_in_order_keeping_the_manual_flag() {
+        let mut layout = arranged(&["a", "b", "c", "d"]);
+        for id in ["c", "a", "d"] {
+            layout
+                .move_session(&key(id), "work", Placement::End)
+                .expect("moves");
+        }
+        assert_eq!(order_of(&layout, "work"), ["c", "a", "d"]);
+        let moved = layout.delete_group("work").expect("deletes");
+        assert_eq!(moved, keys(&["c", "a", "d"]));
+        assert_eq!(order_of(&layout, INBOX_ID), ["b", "c", "a", "d"]);
+        assert_eq!(group_ids(&layout), [INBOX_ID, "empty"]);
+        assert!(layout.items().iter().filter(|i| i.manual).count() == 3);
+    }
+
+    #[test]
+    fn inbox_cannot_be_renamed_or_deleted_and_an_unknown_group_is_refused() {
+        let mut layout = arranged(&["a"]);
+        let before = layout.clone();
+        assert_eq!(layout.delete_group(INBOX_ID), Err(GroupError::InboxFixed));
+        assert_eq!(
+            layout.rename_group(INBOX_ID, "Main"),
+            Err(GroupError::InboxFixed)
+        );
+        assert_eq!(
+            layout.delete_group("nope"),
+            Err(GroupError::UnknownGroup("nope".to_owned()))
+        );
+        assert_eq!(layout, before);
+    }
+
+    #[test]
+    fn group_names_are_trimmed_and_must_be_non_empty_and_unique_ignoring_case() {
+        let mut layout = arranged(&[]);
+        let before = layout.clone();
+        assert_eq!(layout.create_group("  \t "), Err(GroupError::EmptyName));
+        assert_eq!(
+            layout.create_group("WORK"),
+            Err(GroupError::DuplicateName("WORK".to_owned()))
+        );
+        assert_eq!(
+            layout.create_group(" inbox "),
+            Err(GroupError::DuplicateName("inbox".to_owned()))
+        );
+        assert_eq!(
+            layout.rename_group("empty", "work"),
+            Err(GroupError::DuplicateName("work".to_owned()))
+        );
+        assert_eq!(
+            layout.rename_group("empty", " "),
+            Err(GroupError::EmptyName)
+        );
+        assert_eq!(layout, before);
+
+        let id = layout.create_group("  Review ").expect("creates");
+        assert_eq!(group_ids(&layout), [INBOX_ID, "work", "empty", id.as_str()]);
+        assert_eq!(
+            layout.groups().last().map(|g| g.name.as_str()),
+            Some("Review")
+        );
+        // Renaming a group to its own name in another case is allowed.
+        assert_eq!(layout.rename_group(&id, "REVIEW"), Ok(true));
+        assert_eq!(layout.rename_group(&id, "REVIEW"), Ok(false));
+    }
+
+    #[test]
+    fn collapsed_state_and_group_order_survive_a_save_and_load() {
+        let dir = scratch("groups");
+        let path = dir.join(LAYOUT_FILE);
+        let (mut store, _) = LayoutStore::open(path.clone());
+        store.reconcile(&keys(&["s1"]));
+        let work = store.create_group("Work").expect("creates");
+        let review = store.create_group("Review").expect("creates");
+        assert_eq!(
+            store.move_group(&review, GroupPlacement::Before(INBOX_ID)),
+            Ok(true)
+        );
+        assert_eq!(store.set_collapsed(&work, true), Ok(true));
+        assert_eq!(store.set_collapsed(&work, true), Ok(false));
+        assert!(store.save_if_changed().expect("saves"));
+
+        let (reloaded, error) = LayoutStore::open(path);
+        assert!(error.is_none());
+        assert_eq!(reloaded.layout(), store.layout());
+        let sections = reloaded.layout().arrange(&[]);
+        assert_eq!(
+            sections.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["Review", "Inbox", "Work"]
+        );
+        assert_eq!(
+            sections.iter().map(|s| s.collapsed).collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moving_a_group_changes_only_its_key_and_a_no_op_move_changes_nothing() {
+        let mut layout = arranged(&[]);
+        let before = layout.clone();
+        assert_eq!(
+            layout.move_group("work", GroupPlacement::After(INBOX_ID)),
+            Ok(false)
+        );
+        assert_eq!(
+            layout.move_group("work", GroupPlacement::Before("empty")),
+            Ok(false)
+        );
+        assert_eq!(
+            layout.move_group("work", GroupPlacement::Before("work")),
+            Ok(false)
+        );
+        assert_eq!(layout, before);
+
+        assert_eq!(
+            layout.move_group("empty", GroupPlacement::Before(INBOX_ID)),
+            Ok(true)
+        );
+        assert_eq!(group_ids(&layout), ["empty", INBOX_ID, "work"]);
+        for (old, new) in before.groups().iter().zip(layout.groups()) {
+            if new.id != "empty" {
+                assert_eq!(old, new);
+            }
+        }
     }
 
     #[test]
