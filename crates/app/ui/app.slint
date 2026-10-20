@@ -580,6 +580,213 @@ component GroupHeader inherits Rectangle {
     }
 }
 
+global ConfirmTheme {
+    out property <length> padding: 16px;
+    out property <length> spacing: 12px;
+    out property <length> button-height: 30px;
+    out property <length> button-radius: 4px;
+    out property <length> button-padding: 6px;
+    out property <length> title-font-size: 15px;
+    out property <length> body-font-size: 13px;
+    out property <length> card-margin: 16px;
+    out property <length> card-radius: 8px;
+    out property <color> backdrop: #000000b3;
+    out property <color> card-background: #2b2d31;
+    out property <color> card-border: #4a4d54;
+}
+
+component DialogButton inherits Rectangle {
+    in property <string> label;
+    in property <color> accent;
+    // The button Enter activates.
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback clicked();
+    horizontal-stretch: 1;
+    height: ConfirmTheme.button-height;
+    border-radius: ConfirmTheme.button-radius;
+    background: touch.has-hover && root.enabled ? Theme.chip-hover-background : Theme.chip-background;
+    border-width: root.selected ? Theme.confirm-selected-border : Theme.confirm-border;
+    border-color: root.accent;
+    accessible-role: button;
+    accessible-label: root.label;
+    HorizontalLayout {
+        padding-left: ConfirmTheme.button-padding;
+        padding-right: ConfirmTheme.button-padding;
+        Text {
+            text: root.label;
+            color: root.enabled ? root.accent : Theme.detail;
+            font-size: ConfirmTheme.body-font-size;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Modal confirmation of a destructive session action, drawn over the whole
+// window. The backdrop swallows pointer and scroll input so the list behind
+// stays inert; a click on it cancels. The default button is Cancel: the
+// destructive button needs a click, or Tab and then Enter.
+component ConfirmModal inherits Rectangle {
+    // Window title word and the destructive button's label for the action.
+    in property <string> heading;
+    in property <string> confirm-label;
+    in property <string> name;
+    // What the action does, in plain words.
+    in property <string> consequence;
+    // The action is in flight.
+    in property <bool> busy;
+    // Why the last attempt failed; empty when none did.
+    in property <string> error;
+    // A completed action left something for the owner to handle; only Close is offered.
+    in property <string> notice;
+    in-out property <bool> confirm-selected;
+    callback confirm();
+    callback cancel();
+
+    pure function finished() -> bool {
+        root.notice != ""
+    }
+
+    function activate-selected() {
+        if root.busy {
+            return;
+        }
+        if root.finished() || !root.confirm-selected {
+            root.cancel();
+        } else {
+            root.confirm();
+        }
+    }
+
+    Rectangle { background: ConfirmTheme.backdrop; }
+    // Swallows every pointer and scroll event that reaches past the card.
+    backdrop := TouchArea {
+        mouse-cursor: default;
+        clicked => {
+            if !root.busy {
+                root.cancel();
+            }
+        }
+        scroll-event(event) => { accept }
+    }
+
+    keys := FocusScope {
+        init => { self.focus(); }
+        // Captured so a focused button never changes what Enter does.
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                if !root.busy {
+                    root.cancel();
+                }
+                return accept;
+            }
+            if root.busy || root.finished() {
+                if event.text == Key.Return {
+                    root.activate-selected();
+                    return accept;
+                }
+                return reject;
+            }
+            if event.text == Key.LeftArrow {
+                root.confirm-selected = false;
+                return accept;
+            }
+            if event.text == Key.RightArrow {
+                root.confirm-selected = true;
+                return accept;
+            }
+            if event.text == Key.Tab {
+                root.confirm-selected = !root.confirm-selected;
+                return accept;
+            }
+            if event.text == Key.Return {
+                root.activate-selected();
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            padding: ConfirmTheme.card-margin;
+            card := Rectangle {
+                background: ConfirmTheme.card-background;
+                border-radius: ConfirmTheme.card-radius;
+                border-width: Theme.confirm-border;
+                border-color: ConfirmTheme.card-border;
+                accessible-role: groupbox;
+                accessible-label: root.heading + " " + root.name;
+                // Keeps clicks on the card from reaching the backdrop; a click
+                // clears the focus, so it is taken back for the keys.
+                TouchArea {
+                    clicked => { keys.focus(); }
+                }
+                VerticalLayout {
+                    padding: ConfirmTheme.padding;
+                    spacing: ConfirmTheme.spacing;
+                    VerticalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        title-text := Text {
+                            text: root.heading + " " + root.name + "?";
+                            color: Theme.text;
+                            font-size: ConfirmTheme.title-font-size;
+                            font-weight: 700;
+                            wrap: word-wrap;
+                        }
+                        consequence-text := Text {
+                            text: root.consequence;
+                            color: Theme.text;
+                            font-size: ConfirmTheme.body-font-size;
+                            wrap: word-wrap;
+                        }
+                        if root.error != "": modal-error-text := Text {
+                            text: root.error;
+                            color: Theme.error;
+                            font-size: ConfirmTheme.body-font-size;
+                            wrap: word-wrap;
+                        }
+                        if root.notice != "": modal-notice-text := Text {
+                            text: root.notice;
+                            color: Theme.detail;
+                            font-size: ConfirmTheme.body-font-size;
+                            wrap: word-wrap;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        cancel-button := DialogButton {
+                            label: root.finished() ? "Close" : "Cancel";
+                            accent: Theme.text;
+                            selected: root.finished() || !root.confirm-selected;
+                            enabled: !root.busy;
+                            clicked => {
+                                keys.focus();
+                                root.cancel();
+                            }
+                        }
+                        if !root.finished(): confirm-button := DialogButton {
+                            label: root.busy ? "Working..." : root.confirm-label;
+                            accent: Theme.error;
+                            selected: root.confirm-selected;
+                            enabled: !root.busy;
+                            clicked => {
+                                keys.focus();
+                                root.confirm();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Pohunek Companion";
     preferred-width: 320px;
@@ -672,8 +879,25 @@ export component AppWindow inherits Window {
     in-out property <string> rename-text;
     // Why the last "Open folder" or "Open link" failed; empty when it succeeded or none ran.
     in-out property <string> open-error;
-    // Opens the confirmation dialog for "stop" or "remove" of the session (host, id, name).
+    // Asks to stop or remove the session (host, id, name); `kind` is "stop" or "remove".
     callback request-action(string, string, string, string);
+    // The in-app confirmation modal; its text and state are set by the host.
+    in-out property <bool> confirm-open;
+    in property <string> confirm-heading;
+    in property <string> confirm-label;
+    in property <string> confirm-name;
+    in property <string> confirm-consequence;
+    in property <bool> confirm-busy;
+    in property <string> confirm-error;
+    in property <string> confirm-notice;
+    in-out property <bool> confirm-selected;
+    callback confirm-accepted();
+    callback confirm-cancelled();
+    changed confirm-open => {
+        if !self.confirm-open {
+            window-keys.focus();
+        }
+    }
     // A standalone group name editor ("+ New group") belongs to the editable
     // view; leaving it ends that edit. A row menu's edit stays open.
     changed editable => {
@@ -1029,6 +1253,20 @@ export component AppWindow inherits Window {
             }
         }
     }
+    }
+    if root.confirm-open: confirm-modal := ConfirmModal {
+        width: root.width;
+        height: root.height;
+        heading: root.confirm-heading;
+        confirm-label: root.confirm-label;
+        name: root.confirm-name;
+        consequence: root.confirm-consequence;
+        busy: root.confirm-busy;
+        error: root.confirm-error;
+        notice: root.confirm-notice;
+        confirm-selected <=> root.confirm-selected;
+        confirm => { root.confirm-accepted(); }
+        cancel => { root.confirm-cancelled(); }
     }
 }
 
