@@ -79,6 +79,21 @@ file: session ids and `scripts/ui-agent layout` content survive it, which is how
 a restart-persistence check runs in isolated mode. `stop` after a `restart`
 still removes the daemon and the isolated directory.
 
+A dialog the sidebar spawns (`new-session`, `confirm`) inherits the sidebar's
+MCP port, cannot bind it, and runs with no MCP endpoint. To screenshot, read, or
+click a dialog, start it through the script instead:
+
+```bash
+scripts/ui-agent dialog new-session --project <project id>   # prints "N http://127.0.0.1:<port>/mcp"
+UI_AGENT_DIALOG=N scripts/ui-agent screenshot dialog.png      # also tree, find, click, call
+scripts/ui-agent dialogs                                      # running dialogs and endpoints
+scripts/ui-agent dialog-stop [N]                              # one dialog, or all
+```
+
+The dialog runs the same binary with the sidebar's recorded environment (isolated
+daemon, config, backend) on its own free port; `stop` and `restart` stop every
+dialog it started.
+
 ## Published evidence
 
 The repository is public. Screenshots, logs, and PR or issue text must not

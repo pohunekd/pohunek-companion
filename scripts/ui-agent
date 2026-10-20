@@ -10,6 +10,9 @@
 #   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
 #   scripts/ui-agent restart                         stop and start only the app
+#   scripts/ui-agent dialog [-- ] APP_ARGS...        start a dialog process with its own MCP port
+#   scripts/ui-agent dialog-stop [N]                 stop dialog N (default: all)
+#   scripts/ui-agent dialogs                         list running dialogs and their endpoints
 #   scripts/ui-agent stop                            stop the instance
 #   scripts/ui-agent status                          print the endpoint if running
 #   scripts/ui-agent call TOOL [JSON_ARGS]           one MCP tools/call, JSON out
@@ -36,6 +39,14 @@
 # `-- new-session --project ID`). `restart` stops and starts only the app with
 # the same environment, arguments, and MCP port, so the isolated daemon, its
 # session ids, and the layout file are kept; `stop` still removes everything.
+#
+# A dialog (`new-session`, `confirm`) the sidebar spawns inherits the sidebar's
+# MCP port, cannot bind it, and runs without an MCP endpoint. To drive a dialog,
+# start it with `dialog` instead (e.g. `dialog new-session --project ID`): it
+# runs with the app's recorded environment (same isolated daemon, config,
+# backend) on its own port, and the command prints `N <endpoint>`. Select it
+# for call, screenshot, tree, find, and click with UI_AGENT_DIALOG=N. `stop`
+# also stops every dialog.
 #
 # The server binds 127.0.0.1 without authentication: any local process can
 # drive the app while it runs. Use only for agent-run debug builds.
@@ -103,9 +114,110 @@ running_pid() {
     echo "$pid"
 }
 
+dialogs_dir=$state/dialogs
+
+# The MCP endpoint a command talks to: the sidebar, or dialog $UI_AGENT_DIALOG.
 endpoint() {
+    if [ -n "${UI_AGENT_DIALOG:-}" ]; then
+        dialog_n=$UI_AGENT_DIALOG
+        case $dialog_n in
+            '' | *[!0-9]*) die "UI_AGENT_DIALOG must be a dialog number" ;;
+        esac
+        dialog_running "$dialog_n" || die "dialog $dialog_n is not running; see: scripts/ui-agent dialogs"
+        cat "$dialogs_dir/$dialog_n/endpoint"
+        return
+    fi
     running_pid >/dev/null || die "not running; start it with: scripts/ui-agent start"
     cat "$endpoint_file"
+}
+
+# True when dialog $1's recorded process is still this script's binary.
+dialog_running() {
+    local pid
+    [ -f "$dialogs_dir/$1/pid" ] || return 1
+    pid=$(cat "$dialogs_dir/$1/pid")
+    case $(ps -o command= -p "$pid" 2>/dev/null) in
+        "$bin "*) ;;
+        *) return 1 ;;
+    esac
+    # A reused pid has another start time.
+    [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$(cat "$dialogs_dir/$1/lstart")" ]
+}
+
+# Starts a dialog process (`$@` are its app arguments) on a fresh MCP port with
+# the sidebar's recorded environment; prints `N <endpoint>`.
+dialog_start() {
+    [ $# -gt 0 ] || die "dialog needs app arguments, e.g. new-session --project ID"
+    running_pid >/dev/null && [ -f "$launch_env_file" ] || die "not running; start it with: scripts/ui-agent start"
+    local -a envs=()
+    mapfile -t envs <"$launch_env_file"
+    local port n dir i
+    port=$(free_port)
+    n=1
+    mkdir -p "$dialogs_dir"
+    while ! mkdir "$dialogs_dir/$n" 2>/dev/null; do n=$((n + 1)); done
+    dir=$dialogs_dir/$n
+    envs=("${envs[@]/#SLINT_MCP_PORT=*/SLINT_MCP_PORT=$port}")
+    case " ${envs[*]} " in
+        *" SLINT_BACKEND=headless-software "*) unset WAYLAND_DISPLAY DISPLAY ;;
+    esac
+    (
+        cd "$state"
+        exec env "${envs[@]}" "$bin" "$@" >"$dir/log" 2>&1 </dev/null
+    ) &
+    echo $! >"$dir/pid"
+    ps -o lstart= -p "$!" >"$dir/lstart" 2>/dev/null || true
+    echo "http://127.0.0.1:$port/mcp" >"$dir/endpoint"
+    for i in $(seq 1 100); do
+        if grep -q "Slint MCP server listening" "$dir/log" 2>/dev/null; then
+            echo "$n $(cat "$dir/endpoint")"
+            return 0
+        fi
+        dialog_running "$n" || break
+        sleep 0.2
+    done
+    local tail_log
+    tail_log=$(tail -n 5 "$dir/log" 2>/dev/null || true)
+    dialog_stop "$n" >/dev/null 2>&1 || true
+    die "the dialog's MCP server did not start (the dialog may have exited): $tail_log"
+}
+
+# Stops dialog $1, or every dialog without an argument.
+dialog_stop() {
+    local n pid i dir
+    local -a dirs=("$dialogs_dir"/[0-9]*)
+    if [ $# -gt 0 ]; then
+        case $1 in
+            '' | *[!0-9]*) die "dialog-stop takes a dialog number" ;;
+        esac
+        dirs=("$dialogs_dir/$1")
+    fi
+    for dir in "${dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        n=${dir##*/}
+        if dialog_running "$n"; then
+            pid=$(cat "$dir/pid")
+            kill "$pid" 2>/dev/null || true
+            for i in $(seq 1 50); do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.1
+            done
+            if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+            echo "stopped dialog $n"
+        fi
+        rm -rf "$dir"
+    done
+    return 0
+}
+
+dialog_list() {
+    local dir n
+    for dir in "$dialogs_dir"/[0-9]*; do
+        [ -d "$dir" ] || continue
+        n=${dir##*/}
+        if dialog_running "$n"; then echo "$n $(cat "$dir/endpoint")"; fi
+    done
+    return 0
 }
 
 # Synthetic projects of the isolated daemon: git repositories under $iso/work.
@@ -344,6 +456,7 @@ start() {
     [ -n "$port" ] || port=$(free_port)
 
     mkdir -p "$state"
+    dialog_stop >/dev/null
     stop_isolated_daemon
     rm -f "$launch_env_file" "$launch_args_file"
     build_app
@@ -447,6 +560,7 @@ restart() {
     port=$(grep -m1 '^SLINT_MCP_PORT=' "$launch_env_file" | cut -d= -f2) ||
         die "the launch record has no MCP port"
     build_app
+    dialog_stop >/dev/null
     stop_app
     launch_app "$port" keep_daemon
 }
@@ -472,13 +586,16 @@ stop_app() {
 }
 
 stop() {
+    dialog_stop
     stop_app
     rm -f "$launch_env_file" "$launch_args_file"
     stop_isolated_daemon
 }
 
 rpc() {
-    curl -sS --fail-with-body -X POST "$(endpoint)" \
+    local url
+    url=$(endpoint) || exit 1
+    curl -sS --fail-with-body -X POST "$url" \
         -H "Content-Type: application/json" -d "$1"
 }
 
@@ -506,6 +623,9 @@ cmd=${1:-}
 [ $# -gt 0 ] && shift
 case $cmd in
     start) start "$@" ;;
+    dialog) [ "${1:-}" != "--" ] || shift; dialog_start "$@" ;;
+    dialog-stop) dialog_stop "$@" ;;
+    dialogs) dialog_list ;;
     restart) [ $# -eq 0 ] || die "restart takes no arguments; pass app arguments to start after --"; restart ;;
     stop) stop ;;
     status) endpoint ;;
@@ -549,5 +669,5 @@ case $cmd in
             echo "$state/state/pohunek-companion/layout.toml"
         fi
         ;;
-    *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
