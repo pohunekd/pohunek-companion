@@ -1,0 +1,22 @@
+#!/bin/sh
+# Ad-hoc sign an app bundle and verify the signature.
+#
+# usage: sign <path-to-app-bundle>
+#
+# There is no Developer ID: the bundle is signed ad hoc and not notarized.
+
+set -eu
+
+fail() {
+    printf 'sign: %s\n' "$*" >&2
+    exit 1
+}
+
+[ "$#" -eq 1 ] || fail "usage: sign <path-to-app-bundle>"
+app=$1
+[ -d "$app/Contents" ] || fail "not an app bundle: $app"
+command -v codesign >/dev/null 2>&1 || fail "codesign is required (macOS only)"
+
+codesign --force --deep --sign - "$app"
+codesign --verify --deep --strict "$app"
+printf '%s\n' "$app"

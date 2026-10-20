@@ -278,7 +278,13 @@ Remove use the confirmation flow above and appear under the same
 A Wayland client cannot position itself or stay on top. The sidebar position
 comes from compositor window rules (documented per compositor in
 `docs/`); layer-shell is out of scope for v1. On macOS the app positions its
-window itself and runs as an accessory app without a Dock icon. A Linux tray
+window itself. The sidebar process runs as an accessory app without a Dock
+icon: it sets winit's `ActivationPolicy::Accessory` through Slint's
+`BackendSelector::with_winit_event_loop_builder` (`select_accessory_backend`
+in `crates/app/src/main.rs`, macOS only). `LSUIElement` is not used because
+it would also apply to the dialog, which is the same executable. The bundle is
+built by `packaging/macos/build-app-bundle` and ad-hoc signed by
+`packaging/macos/sign`. A Linux tray
 needs a StatusNotifierItem host (a bar with a tray module; on GNOME the
 AppIndicator extension).
 

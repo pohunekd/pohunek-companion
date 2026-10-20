@@ -805,6 +805,23 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 }
 
+/// Runs the sidebar as a macOS accessory app (menu bar item and window, no
+/// Dock icon). It is set per process rather than with `LSUIElement`, which
+/// would also apply to the new-session dialog started from the same executable.
+#[cfg(target_os = "macos")]
+fn select_accessory_backend() -> Result<(), slint::PlatformError> {
+    use slint::winit_030::winit::{
+        event_loop::EventLoop,
+        platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS},
+    };
+    // The backend itself still follows SLINT_BACKEND (the headless UI agent).
+    let mut builder = EventLoop::with_user_event();
+    builder.with_activation_policy(ActivationPolicy::Accessory);
+    slint::BackendSelector::new()
+        .with_winit_event_loop_builder(builder)
+        .select()
+}
+
 fn run_sidebar() -> Result<(), slint::PlatformError> {
     let log_error = match logging::init() {
         Ok(path) => {
@@ -816,6 +833,8 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
             format!("Logging disabled: {err}")
         }
     };
+    #[cfg(target_os = "macos")]
+    select_accessory_backend()?;
     let window = AppWindow::new()?;
     window.set_log_error(log_error.into());
     // Compositor window rules match on this id (Wayland app_id); it needs the
