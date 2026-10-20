@@ -365,7 +365,7 @@ component SessionRow inherits Rectangle {
                 horizontal-stretch: 0;
             }
             state-text := Text {
-                text: root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "") + (root.data.host-label != "" ? " - " + root.data.host-label : "") + (root.data.host-unreachable ? " - host unreachable" : "");
+                text: (root.data.host-unreachable ? "host unreachable - " : "") + root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "") + (root.data.host-label != "" ? " - " + root.data.host-label : "");
                 color: Theme.detail;
                 font-size: Theme.detail-font-size;
                 horizontal-alignment: left;
