@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 mod confirm;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod detail;
 mod launch;
 mod logging;
@@ -1333,6 +1335,38 @@ fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> R
     })
 }
 
+const DESKTOP_COMMAND: &str = "desktop";
+
+/// `desktop install` and `desktop uninstall`; they never open a window.
+#[cfg(target_os = "linux")]
+fn run_desktop_command(action: Option<&str>) -> Result<(), slint::PlatformError> {
+    let (verb, result) = match action {
+        Some("install") => ("installed", desktop::install()),
+        Some("uninstall") => ("uninstalled", desktop::uninstall()),
+        _ => {
+            eprintln!("{}", desktop::USAGE);
+            std::process::exit(2);
+        }
+    };
+    match result {
+        Ok(root) => {
+            println!("desktop entry and icons {verb} under {}:", root.display());
+            print!("{}", desktop::summary(&root));
+            Ok(())
+        }
+        Err(err) => {
+            eprintln!("desktop {}: {err}", action.unwrap_or_default());
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_desktop_command(_action: Option<&str>) -> Result<(), slint::PlatformError> {
+    eprintln!("`{DESKTOP_COMMAND}` is Linux-only; macOS uses the app bundle");
+    std::process::exit(2);
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     use launch::NEW_SESSION_COMMAND;
     let mut args = std::env::args().skip(1);
@@ -1345,7 +1379,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Some(NEW_SESSION_COMMAND) => {
             let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
                 eprintln!(
-                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]]"
+                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]] | pohunek-companion {DESKTOP_COMMAND} <install|uninstall>"
                 );
                 std::process::exit(2);
             });
@@ -1354,9 +1388,10 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             new_session::run(parsed)
         }
+        Some(DESKTOP_COMMAND) => run_desktop_command(args.next().as_deref()),
         Some(other) => {
             eprintln!(
-                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]]"
+                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]] | pohunek-companion {DESKTOP_COMMAND} <install|uninstall>"
             );
             std::process::exit(2);
         }

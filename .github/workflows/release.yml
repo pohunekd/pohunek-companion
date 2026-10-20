@@ -45,6 +45,8 @@ on:
       - "rust-toolchain.toml"
       - "scripts/release-*"
       - "packaging/macos/**"
+      - "packaging/linux/**"
+      - "assets/icons/hicolor/**"
 
 concurrency:
   group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
@@ -142,6 +144,10 @@ jobs:
           mkdir -p "$stage" dist
           install -m 0755 target/release/pohunek-companion "$stage/"
           install -m 0644 LICENSE README.md "$stage/"
+          # Desktop entry and hicolor icons for a manual install (see README).
+          install -D -m 0644 packaging/linux/pohunek-companion.desktop "$stage/share/applications/pohunek-companion.desktop"
+          ( cd assets/icons && find hicolor -type f -print0 | sort -z \
+            | while IFS= read -r -d '' f; do install -D -m 0644 "$f" "$stage/share/icons/$f"; done )
           # Archives carry the tagged commit's time so a rebuild lists the same metadata.
           mtime="@$(git log -1 --format=%ct)"
           tar --sort=name --mtime="$mtime" --owner=0 --group=0 --numeric-owner \
@@ -155,7 +161,22 @@ jobs:
           check="$(mktemp -d)"
           ( cd dist && sha256sum -c "$name.tar.gz.sha256" )
           tar -xzf "dist/$name.tar.gz" -C "$check"
-          test "$(find "$check/$name" -type f | wc -l)" = 3
+          # Binary, LICENSE, README, the desktop entry, 7 PNG sizes and the SVG: 12 files.
+          test "$(find "$check/$name" -type f | wc -l)" = 12
+          test -f "$check/$name/share/applications/pohunek-companion.desktop"
+          test -f "$check/$name/share/icons/hicolor/scalable/apps/pohunek-companion.svg"
+          test "$(find "$check/$name/share/icons/hicolor" -type f -name 'pohunek-companion.png' | wc -l)" = 7
+          sudo apt-get install -y --no-install-recommends desktop-file-utils \
+            || { sudo apt-get update && sudo apt-get install -y --no-install-recommends desktop-file-utils; }
+          desktop-file-validate "$check/$name/share/applications/pohunek-companion.desktop"
+          # The subcommand installs into a throwaway data directory and removes it again.
+          data="$check/data"
+          mkdir "$data"
+          XDG_DATA_HOME="$data" "$check/$name/pohunek-companion" desktop install
+          desktop-file-validate "$data/applications/pohunek-companion.desktop"
+          test "$(find "$data" -type f -name 'pohunek-companion.*' | wc -l)" = 9
+          XDG_DATA_HOME="$data" "$check/$name/pohunek-companion" desktop uninstall
+          test -z "$(find "$data" -mindepth 1)"
           "$check/$name/pohunek-companion" --version | tee "$check/version.txt"
           test "$(cat "$check/version.txt")" = "pohunek-companion ${VERSION}"
           echo "Runtime libraries:"

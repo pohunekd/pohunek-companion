@@ -14,6 +14,9 @@ Regenerate the icons with `scripts/build-icons` (needs `rsvg-convert`,
 ImageMagick and `python3`). The outputs are committed, so a normal build needs
 none of these tools.
 
+- `icons/hicolor/`: freedesktop icon theme tree (PNG 16 to 512 px, SVG master
+  in `scalable/apps`) embedded in the binary for `desktop install` and shipped
+  in the Linux archive.
 - `icons/pohunek-app-256.png`: window icon of the sidebar and dialogs, and the
   logo in the About window.
 - `icons/pohunek-companion.icns`: macOS app bundle icon, installed by
