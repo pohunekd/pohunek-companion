@@ -114,6 +114,32 @@ show the owner's real sessions (names, ids, working directories, Work links).
   mode.
 - For a manual `cargo run` that is meant to be published, set the same
   isolated environment instead; the owner's socket is `$XDG_RUNTIME_DIR/pohunek`.
+- `scripts/ui-agent start --remote-host <ssh destination>` also starts a
+  synthetic remote host for multi-host checks: an isolated daemon on the macOS
+  machine `<dest>`, in its own temporary directory with its own overlay port
+  (`--remote-port N`, default a random free port; never 18722), one project
+  `remote-proj` and two sessions `remote-alpha` and `remote-beta`. The local
+  isolated daemon and the app get the same `POHUNEK_REMOTE_PORT`, and the script
+  prints the route (`netbird:<fqdn>@<port>`), also available as
+  `scripts/ui-agent remote-route`. Check it with the isolated environment:
+  `POHUNEK_REMOTE_PORT=<port> pohunek --host <route> session list`.
+  `remote-stop` stops only the remote daemon (a lost host: the route then
+  refuses connections) and `remote-start` starts it again with the same session
+  ids; the restarted daemon lists those sessions as `running` although their
+  workers died with it. `stop` stops the remote daemon and its sessions and
+  deletes the remote directory, then checks that no process and no directory is
+  left.
+  Prerequisites: NetBird up on both machines, `pohunek` and `pohunekd` (same
+  version as the local CLI) and `netbird` on the remote PATH (the nix and
+  homebrew profiles are added; `UI_AGENT_REMOTE_PATH` prepends more), and
+  non-interactive ssh to `<dest>`. `UI_AGENT_REMOTE_EXEC` replaces the
+  `ssh -o BatchMode=yes` command with another that takes the destination and
+  `sh -s -- ARGS` and feeds stdin to the remote `sh`. The option never touches
+  the owner's daemon on that host: the remote daemon is a `--dev-subprocess` one
+  (plain child processes, no launchd jobs; the script aborts if launchd holds a
+  job for one of its sessions), only processes whose environment carries the
+  isolated `XDG_RUNTIME_DIR` are signalled, and the owner's port stays bound.
+  Describe checks against the owner's real remote daemons in words only.
 - `scripts/ui-agent start --owner-daemon` connects to the owner's real daemon,
   for diagnosing a problem that only the real data shows. Describe what was
   checked in words only; never attach or paste its screenshots, element trees,
