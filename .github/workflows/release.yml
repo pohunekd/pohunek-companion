@@ -161,8 +161,8 @@ jobs:
           check="$(mktemp -d)"
           ( cd dist && sha256sum -c "$name.tar.gz.sha256" )
           tar -xzf "dist/$name.tar.gz" -C "$check"
-          # Binary, LICENSE, README, the desktop entry, 7 PNG sizes and the SVG.
-          test "$(find "$check/$name" -type f | wc -l)" = 11
+          # Binary, LICENSE, README, the desktop entry, 7 PNG sizes and the SVG: 12 files.
+          test "$(find "$check/$name" -type f | wc -l)" = 12
           test -f "$check/$name/share/applications/pohunek-companion.desktop"
           test -f "$check/$name/share/icons/hicolor/scalable/apps/pohunek-companion.svg"
           test "$(find "$check/$name/share/icons/hicolor" -type f -name 'pohunek-companion.png' | wc -l)" = 7
