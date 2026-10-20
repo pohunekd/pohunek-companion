@@ -13,11 +13,12 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
-    HostConfig, INBOX_ID, LOCAL_HOST, LayoutStore, LiveHost, LiveUpdate, MoveError, NEEDS_YOU_ID,
-    OpenConfig, OpenKind, OwnerState, PendingStore, Placement, PlacementRule, ProjectChip,
-    ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View,
-    ViewConfig, attach, clip_display, filter_sections, host_naming_this_machine, layout_path,
-    name_from_input, open, project_chips, rename_session, run_live, state_chips, state_from_key,
+    HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, LOCAL_HOST, LayoutStore, LiveHost,
+    LiveUpdate, MoveError, NEEDS_YOU_ID, OpenConfig, OpenKind, OwnerState, PendingStore, Placement,
+    PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip,
+    TraySummary, View, ViewConfig, attach, clip_display, filter_sections, host_naming_this_machine,
+    host_options, layout_path, name_from_input, open, project_chips, rename_session, run_live,
+    state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -108,6 +109,13 @@ struct Arranged {
     project_chips: Vec<ProjectChip>,
     project_index: usize,
     state_chips: Vec<StateChip>,
+    host_options: Vec<HostOption>,
+}
+
+/// The identifier the window sends back for a Hosts dropdown entry; empty for
+/// "All hosts".
+fn host_key(option: &HostOption) -> String {
+    option.target.clone().unwrap_or_default()
 }
 
 /// The identifier the window sends back for a project chip; stable across
@@ -117,6 +125,20 @@ fn chip_key(selection: &ProjectSelection) -> String {
         ProjectSelection::All => "all".to_owned(),
         ProjectSelection::NoProject => "none".to_owned(),
         ProjectSelection::Project(project) => format!("project:{}", project.id),
+    }
+}
+
+/// The sessions of the selected host, or all of them; the project and state
+/// chips offer only what exists there.
+fn host_rows(state: &LayoutState) -> Vec<SessionRow> {
+    match state.filter.host() {
+        Some(host) => state
+            .rows
+            .iter()
+            .filter(|row| row.key.host == host)
+            .cloned()
+            .collect(),
+        None => state.rows.clone(),
     }
 }
 
@@ -133,12 +155,13 @@ fn arrange(state: &LayoutState) -> Arranged {
         sessions = state.rows.len(),
         "filter and present"
     );
-    let (project_chips, project_index) = project_chips(&state.rows, state.filter.project());
+    let (project_chips, project_index) = project_chips(&host_rows(state), state.filter.project());
     Arranged {
         filter_empty: state.filter.is_active()
             && !state.rows.is_empty()
             && sections.iter().all(|section| section.rows.is_empty()),
-        state_chips: state_chips(&state.rows, state.filter.states()),
+        state_chips: state_chips(&host_rows(state), state.filter.states()),
+        host_options: host_options(&state.hosts, state.filter.host()),
         sections,
         project_chips,
         project_index,
@@ -170,7 +193,26 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
         project_chips,
         project_index,
         state_chips,
+        host_options,
     } = arranged;
+    window.set_host_keys(ModelRc::new(VecModel::from(
+        host_options
+            .iter()
+            .map(|option| slint::SharedString::from(host_key(option)))
+            .collect::<Vec<_>>(),
+    )));
+    window.set_host_checked(ModelRc::new(VecModel::from(
+        host_options
+            .iter()
+            .map(|option| option.selected)
+            .collect::<Vec<_>>(),
+    )));
+    window.set_host_names(ModelRc::new(VecModel::from(
+        host_options
+            .into_iter()
+            .map(|option| slint::SharedString::from(option.label))
+            .collect::<Vec<_>>(),
+    )));
     window.set_state_keys(ModelRc::new(VecModel::from(
         state_chips
             .iter()
@@ -244,6 +286,8 @@ fn group_data(sections: Vec<GroupSection>, placed: &Placements) -> Vec<GroupData
 struct LayoutState {
     store: LayoutStore,
     rows: Vec<SessionRow>,
+    /// Every followed host with its connection state, local first.
+    hosts: Vec<HostEntry>,
     load_error: Option<String>,
     /// Placement rules from `companion.toml`, applied to sessions the owner
     /// hands back with "Return to rule placement".
@@ -331,6 +375,8 @@ enum LayoutRequest {
     SetProject(String),
     /// The key (`state_key`) of the state chip the owner toggled.
     ToggleState(String),
+    /// The target of the host the owner picked; empty for all hosts.
+    SetHost(String),
 }
 
 /// Selects the view on a background thread (the save waits on disk) and shows
@@ -475,8 +521,19 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
             }
             Refusal::default()
         }
+        LayoutRequest::SetHost(target) => {
+            let options = host_options(&state.hosts, state.filter.host());
+            match options.into_iter().find(|o| host_key(o) == target) {
+                Some(option) => {
+                    state.filter.set_host(option.target);
+                    store_filter(state);
+                }
+                None => warn!(host = %target, "host entry is no longer offered"),
+            }
+            Refusal::default()
+        }
         LayoutRequest::SetProject(key) => {
-            let (chips, _) = project_chips(&state.rows, state.filter.project());
+            let (chips, _) = project_chips(&host_rows(state), state.filter.project());
             match chips
                 .into_iter()
                 .find(|chip| chip_key(&chip.selection) == key)
@@ -579,6 +636,8 @@ struct HostsView {
     rows: Vec<(String, Option<Vec<SessionRow>>)>,
     /// Status line per host that is not connected, by target.
     down: Vec<(String, String)>,
+    /// Display name per host target.
+    labels: Vec<(String, String)>,
 }
 
 impl HostsView {
@@ -586,6 +645,13 @@ impl HostsView {
         Self {
             rows: hosts.iter().map(|h| (h.target.clone(), None)).collect(),
             down: Vec::new(),
+            labels: hosts
+                .iter()
+                .map(|h| {
+                    let label = h.label.clone().unwrap_or_else(|| "Local".to_owned());
+                    (h.target.clone(), label)
+                })
+                .collect(),
         }
     }
 
@@ -641,6 +707,28 @@ impl HostsView {
         if let Some(line) = line {
             self.down.push((host.to_owned(), line));
         }
+    }
+
+    /// Every followed host with its connection state, for the Hosts dropdown.
+    /// A remote host that is not connected is unreachable; the local daemon's
+    /// outage is shown by the tray and status line, not by this entry.
+    fn entries(&self) -> Vec<HostEntry> {
+        self.rows
+            .iter()
+            .map(|(target, _)| HostEntry {
+                target: target.clone(),
+                label: self
+                    .labels
+                    .iter()
+                    .find(|(t, _)| t == target)
+                    .map_or_else(|| target.clone(), |(_, label)| label.clone()),
+                connection: if self.is_unreachable(target) {
+                    HostConnection::Unreachable
+                } else {
+                    HostConnection::Connected
+                },
+            })
+            .collect()
     }
 
     fn status(&self) -> String {
@@ -737,6 +825,7 @@ impl Publisher {
                 }
                 let layout_error = save_layout(&mut state);
                 state.rows = all.clone();
+                state.hosts = self.hosts.borrow().entries();
                 let arranged = arrange(&state);
                 guard = Some(state);
                 Some((arranged, layout_error))
@@ -1125,6 +1214,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     let layout: SharedLayout = Arc::new(Mutex::new(LayoutState {
         store: layout,
         rows: Vec::new(),
+        hosts: Vec::new(),
         load_error: layout_error.clone(),
         rules: Vec::new(),
         title_max_chars: ViewConfig::default().section_title_max_chars,
@@ -1411,6 +1501,10 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         window.on_filter_changed({
             let send = send.clone();
             move |query| send(LayoutRequest::SetFilter(query.into()))
+        });
+        window.on_host_selected({
+            let send = send.clone();
+            move |target| send(LayoutRequest::SetHost(target.into()))
         });
         window.on_project_selected({
             let send = send.clone();

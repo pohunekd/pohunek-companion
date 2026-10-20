@@ -35,8 +35,9 @@ pub use config::{
 pub use connect::host_naming_this_machine;
 pub use error::CoreError;
 pub use filter::{
-    ProjectChip, ProjectSelection, SessionFilter, StateChip, StateSelection, StoredFilter,
-    filter_sections, fuzzy_matches, project_chips, state_chips, state_from_key, state_key,
+    HostConnection, HostEntry, HostOption, ProjectChip, ProjectSelection, SessionFilter, StateChip,
+    StateSelection, StoredFilter, filter_sections, fuzzy_matches, host_options, project_chips,
+    state_chips, state_from_key, state_key,
 };
 pub use layout::{
     CreateAndMoveError, GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError,

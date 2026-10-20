@@ -145,6 +145,11 @@ pub struct StoredFilter {
     /// Sessions without a project; ignored when `project_id` is set.
     #[serde(default, skip_serializing_if = "is_false")]
     no_project: bool,
+    /// Target of the selected host (`local` or a configured remote target);
+    /// absent selects every host. A host that is no longer configured keeps
+    /// filtering as an empty host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -225,16 +230,73 @@ pub fn project_chips(
     (chips, index)
 }
 
+/// Connection state of a followed host, as the Hosts dropdown shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostConnection {
+    Connected,
+    Unreachable,
+}
+
+/// A followed host: `target` is the session keys' host (`local` or the
+/// configured target), `label` the name it is shown under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostEntry {
+    pub target: String,
+    pub label: String,
+    pub connection: HostConnection,
+}
+
+/// One entry of the Hosts dropdown. `target` is `None` for "All hosts".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostOption {
+    pub target: Option<String>,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// The Hosts dropdown entries: "All hosts", then each followed host with its
+/// connection state. Empty while at most the local host exists, so the
+/// dropdown stays hidden. The selected host keeps its entry, marked
+/// unreachable, even when it is no longer followed.
+pub fn host_options(hosts: &[HostEntry], selected: Option<&str>) -> Vec<HostOption> {
+    let stale = selected.filter(|target| !hosts.iter().any(|h| h.target == *target));
+    if hosts.len() < 2 && stale.is_none() {
+        return Vec::new();
+    }
+    let state_label = |connection: HostConnection| match connection {
+        HostConnection::Connected => "connected",
+        HostConnection::Unreachable => "unreachable",
+    };
+    let mut options = vec![HostOption {
+        target: None,
+        label: "All hosts".to_owned(),
+        selected: selected.is_none(),
+    }];
+    options.extend(hosts.iter().map(|h| HostOption {
+        target: Some(h.target.clone()),
+        label: format!("{} ({})", h.label, state_label(h.connection)),
+        selected: selected == Some(h.target.as_str()),
+    }));
+    options.extend(stale.map(|target| HostOption {
+        target: Some(target.to_owned()),
+        label: format!("{target} ({})", state_label(HostConnection::Unreachable)),
+        selected: true,
+    }));
+    options
+}
+
 /// A parsed filter query. The query is split on whitespace; a session matches
 /// when every token matches at least one of its fields, case-insensitively:
 /// as a subsequence of a text field, as a substring of an identifier field. An
-/// empty query matches everything. A selected project narrows further: a
-/// session must pass both.
+/// empty query matches everything. A selected project or host narrows
+/// further: a session must pass all of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionFilter {
     tokens: Vec<Vec<char>>,
     project: ProjectSelection,
     states: StateSelection,
+    /// Target of the host the sidebar is narrowed to; `None` shows every host.
+    host: Option<String>,
 }
 
 impl SessionFilter {
@@ -243,6 +305,7 @@ impl SessionFilter {
             tokens: query.split_whitespace().map(lowercase_chars).collect(),
             project: ProjectSelection::All,
             states: StateSelection::default(),
+            host: None,
         }
     }
 
@@ -270,10 +333,12 @@ impl SessionFilter {
             (None, true) => ProjectSelection::NoProject,
             (None, false) => ProjectSelection::All,
         };
+        filter.host = stored.host.clone().filter(|host| !host.is_empty());
         filter
     }
 
-    /// The project and states, as stored per view; the query is not stored.
+    /// The project, host and states, as stored per view; the query is not
+    /// stored.
     pub fn to_stored(&self) -> StoredFilter {
         let (project_id, project_label) = match &self.project {
             ProjectSelection::Project(p) => (Some(p.id.clone()), Some(p.label.clone())),
@@ -284,6 +349,7 @@ impl SessionFilter {
             project_id,
             project_label,
             no_project: self.project == ProjectSelection::NoProject,
+            host: self.host.clone(),
         }
     }
 
@@ -299,6 +365,15 @@ impl SessionFilter {
         &self.project
     }
 
+    /// Narrows to the host with this target; `None` shows every host.
+    pub fn set_host(&mut self, host: Option<String>) {
+        self.host = host;
+    }
+
+    pub fn host(&self) -> Option<&str> {
+        self.host.as_deref()
+    }
+
     pub fn states(&self) -> &StateSelection {
         &self.states
     }
@@ -307,10 +382,10 @@ impl SessionFilter {
         self.states.toggle(state);
     }
 
-    /// Whether a query or project narrows the list; section expansion and
-    /// hiding empty sections follow this, not the state selection.
+    /// Whether a query, project or host narrows the list; section expansion
+    /// and hiding empty sections follow this, not the state selection.
     pub fn is_searching(&self) -> bool {
-        !self.tokens.is_empty() || self.project != ProjectSelection::All
+        !self.tokens.is_empty() || self.project != ProjectSelection::All || self.host.is_some()
     }
 
     /// Whether any part of the filter hides sessions.
@@ -319,7 +394,13 @@ impl SessionFilter {
     }
 
     pub fn matches(&self, row: &SessionRow) -> bool {
-        if !self.states.contains(row.owner_state) || !self.project.admits(row) {
+        if !self.states.contains(row.owner_state)
+            || !self.project.admits(row)
+            || self
+                .host
+                .as_deref()
+                .is_some_and(|host| row.key.host != host)
+        {
             return false;
         }
         if self.tokens.is_empty() {
@@ -381,7 +462,7 @@ pub fn fuzzy_matches<S: AsRef<str>>(query: &str, items: &[S]) -> Vec<usize> {
 }
 
 /// Keeps only the matching rows of each section, in their order. While a
-/// query or project is selected, sections left without a row are dropped and
+/// query, project or host is selected, sections left without a row are dropped and
 /// the rest are shown expanded so their matches are visible. With only a state
 /// selection, sections the filter emptied are dropped, sections that were
 /// already empty stay, and collapsing is kept. An inactive filter returns the
@@ -624,6 +705,60 @@ mod tests {
         let (chips, index) = project_chips(&only_projects, &ProjectSelection::NoProject);
         assert_eq!(chips.last().map(|c| c.label.as_str()), Some("No project"));
         assert_eq!(index, chips.len() - 1);
+    }
+
+    fn host_entry(target: &str, connection: HostConnection) -> HostEntry {
+        HostEntry {
+            target: target.into(),
+            label: target.into(),
+            connection,
+        }
+    }
+
+    #[test]
+    fn a_host_narrows_every_section_and_round_trips_with_the_view_filter() {
+        let mut remote = row("2", "beta");
+        remote.key.host = "host-b".into();
+        let sections = vec![section("a", vec![row("1", "alpha"), remote])];
+        let mut filter = SessionFilter::default();
+        filter.set_host(Some("host-b".into()));
+        assert_eq!(
+            ids(&filter_sections(sections.clone(), &filter)),
+            [vec!["2"]]
+        );
+        filter.set_host(None);
+        assert_eq!(ids(&filter_sections(sections, &filter)), [vec!["1", "2"]]);
+        filter.set_host(Some("host-b".into()));
+        let restored = SessionFilter::from_stored(&filter.to_stored());
+        assert_eq!(restored.host(), Some("host-b"));
+        assert_eq!(
+            SessionFilter::default().to_stored(),
+            StoredFilter::default()
+        );
+    }
+
+    #[test]
+    fn host_options_are_hidden_for_one_host_and_keep_a_vanished_selection() {
+        let local = host_entry("local", HostConnection::Connected);
+        assert!(host_options(std::slice::from_ref(&local), None).is_empty());
+        let both = [
+            local.clone(),
+            host_entry("host-b", HostConnection::Unreachable),
+        ];
+        let labels: Vec<_> = host_options(&both, Some("host-b"))
+            .into_iter()
+            .map(|o| (o.label, o.selected))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("All hosts".to_owned(), false),
+                ("local (connected)".to_owned(), false),
+                ("host-b (unreachable)".to_owned(), true),
+            ]
+        );
+        let gone = host_options(&[local], Some("host-x"));
+        assert_eq!(gone.last().map(|o| o.selected), Some(true));
     }
 
     #[test]
