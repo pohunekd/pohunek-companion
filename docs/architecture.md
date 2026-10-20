@@ -216,32 +216,33 @@ shown only when the daemon's own rule allows it for the session
 session or an ended session (no Stop) gets no entry. A `conflict` runtime
 offers Stop and Remove and an `incompatible` one offers Remove, although the
 client rule refuses them: the daemon is authoritative and refuses the records
-it cannot retire. For such a session the dialog says the daemon may refuse and
-shows its message and `recover` hint. Choosing one starts `pohunek-companion confirm
-<stop|remove> --host H --session ID --name NAME`, a small dialog in its own
-process and window (Wayland `app_id` `pohunek-companion-confirm`), so it
-survives the sidebar closing and compositor rules can float it. It names the
+it cannot retire. For such a session the modal says the daemon may refuse and
+shows its message and `recover` hint. Choosing one opens a modal inside the sidebar
+window: a dimmed backdrop over the whole window that swallows pointer and
+scroll input (the list behind stays inert) and a centred card. It is an
+overlay component rather than a `PopupWindow`, which gives full control of
+the backdrop, focus and keys. A click on the backdrop cancels. It names the
 session and the consequence: stop ends the agent and keeps the session in the
 list as ended; remove deletes it from the daemon (stopped first if live)
-together with any worktree checkout Pohunek created for it. The dialog starts
-on Cancel: Enter and Escape cancel, closing the window does nothing, Tab or the
+together with any worktree checkout Pohunek created for it. The modal starts
+on Cancel: Enter and Escape cancel, Tab or the
 Right arrow moves the selection to the destructive button (Left returns to
 Cancel), and only then Enter (or a click) sends one `session.stop` or
-`session.remove`. The dialog performs the call itself and closes when it
-succeeds without anything to report.
+`session.remove`. The sidebar performs the call itself and closes the modal
+when it succeeds without anything to report.
 
 Removal first sends `session.remove`. When the daemon refuses it with
 `runtime_supervision_ambiguous` (it cannot confirm that processes of the
 session's runtime ended, for example because they have an unreadable
-environment) the same dialog shows the refusal as "Cannot remove <id>:
+environment) the same modal shows the refusal as "Cannot remove <id>:
 <message>" and turns into the "Remove anyway" step, again starting on Cancel,
 that says in plain words that the daemon cannot confirm the processes ended,
 that they are not signalled and may keep running unsupervised after the
 session, its logs and its worktree are deleted. Only confirming it sends
 `session.remove_accepting_unconfirmed` for that one session; the consent is
 never remembered and the safe call is always tried first. After that removal
-the dialog stays open with the accepted processes (pid and command name) from
-the result and a Close button. Any other refusal is shown in the dialog,
+the modal stays open with the accepted processes (pid and command name) from
+the result and a Close button. Any other refusal is shown in the modal,
 which stays open (Cancel closes it, the destructive button retries). Both
 calls run on a connection whose request timeout is
 `daemon.session_action_timeout_ms`, because they wait for the runtime to end
@@ -249,7 +250,7 @@ and be swept. The row changes, and the layout store drops a removed session,
 when the daemon's session events arrive. A request that exceeded the timeout
 has an unknown outcome and may still complete in the daemon. A removal that
 could not delete worktree checkouts is reported with their count in the
-dialog. Log lines carry the session id and the error code.
+modal. Log lines carry the session id and the error code.
 
 ## Row action icons
 

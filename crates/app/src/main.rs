@@ -776,7 +776,7 @@ fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> R
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    use launch::{CONFIRM_COMMAND, NEW_SESSION_COMMAND};
+    use launch::NEW_SESSION_COMMAND;
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => run_sidebar(),
@@ -792,20 +792,9 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             new_session::run(parsed)
         }
-        Some(CONFIRM_COMMAND) => {
-            let parsed = confirm::parse_args(args).unwrap_or_else(|message| {
-                eprintln!("{message}\nusage: pohunek-companion {}", confirm::USAGE);
-                std::process::exit(2);
-            });
-            if let Err(err) = logging::init() {
-                eprintln!("logging disabled: {err}");
-            }
-            confirm::run(parsed)
-        }
         Some(other) => {
             eprintln!(
-                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID] [--group ID]]\n       pohunek-companion {}",
-                confirm::USAGE
+                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID] [--group ID]]"
             );
             std::process::exit(2);
         }
@@ -924,28 +913,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
             OpenKind::Link => window.on_open_link(handler),
         }
     }
-    {
-        let weak = window.as_weak();
-        let layout = layout.clone();
-        window.on_request_action(move |kind, host, id, name| {
-            info!(host = %host, session = %id, action = %kind, "confirmation requested from the sidebar");
-            let key = SessionKey {
-                host: host.to_string(),
-                session_id: id.to_string(),
-            };
-            let runtime_problem = lock(&layout)
-                .rows
-                .iter()
-                .any(|row| row.key == key && !row.runtime_detail.is_empty());
-            let outcome = launch::spawn_confirm(&kind, &host, &id, &name, runtime_problem);
-            if let Err(message) = &outcome {
-                error!(error = %message, "start the confirmation dialog");
-            }
-            if let Some(window) = weak.upgrade() {
-                window.set_launch_error(outcome.err().unwrap_or_default().into());
-            }
-        });
-    }
+    confirm::install(&window, rename_daemon.clone(), layout.clone());
     {
         let weak = window.as_weak();
         window.on_rename_session(move |host, id, name| {
