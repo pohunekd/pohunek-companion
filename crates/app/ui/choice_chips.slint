@@ -26,6 +26,10 @@ export component ChoiceChips inherits FlexboxLayout {
         root.multi ? root.checked[index] : index == root.selected-index
     }
     spacing: root.chip-spacing;
+    // An explicit maximum keeps the toplevel's maximum width (Wayland
+    // `xdg_toplevel.set_max_size`) from being capped to the chips' single-line
+    // width; the rows wrap instead.
+    max-width: 100000px;
     for name[index] in root.model: chip := Rectangle {
         height: root.chip-height;
         border-radius: root.chip-radius;

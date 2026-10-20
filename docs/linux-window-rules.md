@@ -24,6 +24,14 @@ To keep tiled windows clear of the sidebar, reserve the space with
 `gaps left 320` (global) or the equivalent per-workspace gap; a sticky floating
 window does not do this on its own.
 
+The sidebar asks for 320x800. Its chip rows set an explicit maximum width so
+the window does not advertise a maximum width of 176 px to the compositor
+(`xdg_toplevel.set_max_size`); with that cap its first committed geometry was
+176x800, the size seen at startup before the rule's resize took effect. The
+startup size of 176x800 itself did not reproduce in a nested headless sway
+(the rule produced `320x1417` with and without the cap), so the cap is the
+only cause found, not a confirmed one.
+
 The same rule works as a one-off command on an already running window, which
 is how it was verified on sway 1.12 with a waybar top bar:
 
