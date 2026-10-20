@@ -72,6 +72,8 @@ export component NewSessionWindow inherits Window {
     }
 
     FocusScope {
+        // Only routes keys; Tab skips it.
+        focus-on-tab-navigation: false;
         // Captured before the focused field sees the key: `TextEdit` consumes
         // Enter itself.
         capture-key-pressed(event) => {
@@ -255,8 +257,9 @@ export component NewSessionWindow inherits Window {
                     }
                     Rectangle {
                         border-radius: DialogTheme.button-radius;
-                        border-width: create-button.has-focus ? DialogTheme.focus-border-width : 0px;
-                        border-color: DialogTheme.focus-border;
+                        // The ring is light: the button itself is the focus colour.
+                        border-width: create-button.has-focus ? 2 * DialogTheme.focus-border-width : 0px;
+                        border-color: Theme.text;
                         background: !root.can-submit() ? DialogTheme.button-disabled
                             : create-touch.has-hover ? Theme.chip-selected-background.brighter(0.2)
                             : Theme.chip-selected-background;
