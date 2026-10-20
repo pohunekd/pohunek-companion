@@ -35,6 +35,8 @@ export struct SessionRowData {
     // The daemon accepts session.stop / session.remove for this session.
     can-stop: bool,
     can-remove: bool,
+    // The session ended and the daemon can resume it.
+    can-resume: bool,
     // The session's folder exists / its Work link is an http(s) URL.
     open-folder: bool,
     open-link: bool,
@@ -211,7 +213,7 @@ component ThemedSearchField inherits SearchField {
 }
 
 component ActionIcon inherits Rectangle {
-    // "info", "stop", "remove", "folder", "link" or "copy".
+    // "info", "stop", "remove", "resume", "folder", "link" or "copy".
     in property <string> kind;
     // Hit target and glyph size; the row action defaults.
     in property <length> size: Theme.action-icon-size;
@@ -272,6 +274,17 @@ component ActionIcon inherits Rectangle {
         stroke: root.tint;
         stroke-width: Theme.action-icon-stroke;
     }
+    if root.kind == "resume": Path {
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 3 1.5 L 10.5 6 L 3 10.5 Z";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
     if root.kind == "folder": Path {
         x: (parent.width - root.glyph) / 2;
         y: (parent.height - root.glyph) / 2;
@@ -315,6 +328,7 @@ component SessionRow inherits Rectangle {
     callback new-session-in-project(string, string, string);
     callback stop();
     callback remove();
+    callback resume();
     callback open-folder();
     callback open-link();
     callback details();
@@ -366,6 +380,10 @@ component SessionRow inherits Rectangle {
             if root.data.can-stop: MenuItem {
                 title: "Stop...";
                 activated => { root.stop(); }
+            }
+            if root.data.can-resume: MenuItem {
+                title: "Resume";
+                activated => { root.resume(); }
             }
             if root.data.can-remove: MenuItem {
                 title: "Remove...";
@@ -485,11 +503,12 @@ component SessionRow inherits Rectangle {
 
     // Action icons, right-aligned over the row while the pointer is on it. The
     // strip is opaque so the name underneath stays out of the way.
-    property <bool> icons-hovered: info-icon.hovered || open-folder-icon.hovered || open-link-icon.hovered || stop-icon.hovered || remove-icon.hovered;
+    property <bool> icons-hovered: info-icon.hovered || open-folder-icon.hovered || open-link-icon.hovered || stop-icon.hovered || resume-icon.hovered || remove-icon.hovered;
     property <string> active-tip: info-icon.hovered ? info-icon.tip
         : open-folder-icon.hovered ? open-folder-icon.tip
         : open-link-icon.hovered ? open-link-icon.tip
         : stop-icon.hovered ? stop-icon.tip
+        : resume-icon.hovered ? resume-icon.tip
         : remove-icon.hovered ? remove-icon.tip : "";
     action-strip := Rectangle {
         visible: row-touch.has-hover || root.icons-hovered;
@@ -525,6 +544,13 @@ component SessionRow inherits Rectangle {
                 kind: "stop";
                 tip: "Stop...";
                 activated => { root.stop(); }
+            }
+            resume-icon := ActionIcon {
+                visible: root.data.can-resume;
+                width: root.data.can-resume ? Theme.action-icon-size : 0px;
+                kind: "resume";
+                tip: "Resume";
+                activated => { root.resume(); }
             }
             remove-icon := ActionIcon {
                 visible: root.data.can-remove;
@@ -925,8 +951,12 @@ component DetailModal inherits Rectangle {
     in property <string> owner-label;
     in property <[DetailSectionData]> sections;
     in property <string> copy-all;
+    // The session ended and can be resumed / why it cannot (empty otherwise).
+    in property <bool> can-resume;
+    in property <string> resume-note;
     callback close();
     callback open-link();
+    callback resume();
 
     // Section title and field label of the value copied last; empty when the
     // confirmation is not showing.
@@ -1045,6 +1075,12 @@ component DetailModal inherits Rectangle {
                             activated => { root.close(); }
                         }
                     }
+                    if root.resume-note != "": resume-note-text := Text {
+                        text: root.resume-note;
+                        color: Theme.detail;
+                        font-size: Theme.detail-font-size;
+                        wrap: word-wrap;
+                    }
                     ScrollView {
                         preferred-height: sections-layout.preferred-height;
                         sections-layout := VerticalLayout {
@@ -1135,6 +1171,11 @@ component DetailModal inherits Rectangle {
                                 keys.focus();
                                 root.copy-text("all", root.copy-all);
                             }
+                        }
+                        if root.can-resume: DialogButton {
+                            label: "Resume";
+                            accent: Theme.text;
+                            clicked => { root.resume(); }
                         }
                         DialogButton {
                             label: "Close";
@@ -1258,6 +1299,8 @@ export component AppWindow inherits Window {
     // Asks for the detail view of the session (host, id); the host fills the
     // detail-* properties and sets detail-open.
     callback request-details(string, string);
+    // Asks to resume the ended session (host, id, name) and attach to it.
+    callback request-resume(string, string, string);
     in-out property <bool> detail-open;
     in property <string> detail-name;
     in property <string> detail-host-label;
@@ -1265,6 +1308,8 @@ export component AppWindow inherits Window {
     in property <string> detail-owner-label;
     in property <string> detail-host;
     in property <string> detail-id;
+    in property <bool> detail-can-resume;
+    in property <string> detail-resume-note;
     in property <[DetailSectionData]> detail-sections;
     // The plain-text block "Copy all" puts on the clipboard.
     in property <string> detail-copy-all;
@@ -1649,6 +1694,7 @@ export component AppWindow inherits Window {
                                 }
                                 stop => { root.request-action("stop", session.host, session.id, session.name); }
                                 remove => { root.request-action("remove", session.host, session.id, session.name); }
+                                resume => { root.request-resume(session.host, session.id, session.name); }
                                 open-folder => { root.open-folder(session.host, session.id); }
                                 open-link => { root.open-link(session.host, session.id); }
                                 details => { root.request-details(session.host, session.id); }
@@ -1695,6 +1741,12 @@ export component AppWindow inherits Window {
         copy-all: root.detail-copy-all;
         close => { root.detail-open = false; }
         open-link => { root.open-link(root.detail-host, root.detail-id); }
+        can-resume: root.detail-can-resume;
+        resume-note: root.detail-resume-note;
+        resume => {
+            root.detail-open = false;
+            root.request-resume(root.detail-host, root.detail-id, root.detail-name);
+        }
     }
     if root.confirm-open: confirm-modal := ConfirmModal {
         width: root.width;

@@ -7,6 +7,7 @@ use pohunek_companion_core::{DaemonConfig, LifecycleAction, SessionKey, run_life
 use slint::ComponentHandle;
 use tracing::{error, info, warn};
 
+use crate::resume::{ResumeContext, Step, resume_and_attach};
 use crate::{AppWindow, SharedLayout, lock, remote_host_name};
 
 /// Modal wording for one action.
@@ -32,6 +33,11 @@ fn wording(action: LifecycleAction) -> Wording {
             heading: "Remove anyway",
             confirm_label: "Remove anyway",
             consequence: "The daemon cannot confirm that all of its processes ended. They are not signalled and may keep running unsupervised after the session, its logs and its worktree are deleted.",
+        },
+        LifecycleAction::Resume | LifecycleAction::ResumeAcceptingProfileChange => Wording {
+            heading: "Resume",
+            confirm_label: "Resume",
+            consequence: "The agent profile changed since launch. Resume with the current profile?",
         },
     }
 }
@@ -66,6 +72,8 @@ fn show_wording(window: &AppWindow, action: LifecycleAction, runtime_problem: bo
 struct ActionReport {
     error: String,
     notice: String,
+    /// Status line text for a resume that succeeded.
+    status: String,
     /// The refusal was only an unconfirmed runtime sweep: offer "Remove anyway".
     offer_unconfirmed: bool,
 }
@@ -141,6 +149,7 @@ fn action_label(action: LifecycleAction, session_id: &str, host_name: Option<&st
     let verb = match action {
         LifecycleAction::Stop => "stop",
         LifecycleAction::Remove | LifecycleAction::RemoveAcceptingUnconfirmed => "remove",
+        LifecycleAction::Resume | LifecycleAction::ResumeAcceptingProfileChange => "resume",
     };
     format!("{verb} {}", subject(session_id, host_name))
 }
@@ -161,6 +170,9 @@ fn show_report(window: &AppWindow, report: ActionReport, remote: bool) {
     } else if !report.notice.is_empty() {
         window.set_confirm_notice(report.notice.into());
     } else {
+        if !report.status.is_empty() {
+            window.set_attach_error(report.status.into());
+        }
         window.set_confirm_open(false);
     }
 }
@@ -176,10 +188,53 @@ struct Pending {
     action: LifecycleAction,
 }
 
+/// The modal's pending request, shared with the resume flow so it can ask for
+/// the owner's approval of a changed agent profile.
+#[derive(Clone)]
+pub struct ConfirmHandle {
+    pending: Arc<Mutex<Option<Pending>>>,
+}
+
+impl ConfirmHandle {
+    /// Opens the modal asking to resume `key` under the current agent profile.
+    pub fn offer_resume_with_profile_change(
+        &self,
+        window: &AppWindow,
+        key: &SessionKey,
+        name: &str,
+        host_name: Option<String>,
+    ) {
+        if window.get_confirm_busy() {
+            return;
+        }
+        let action = LifecycleAction::ResumeAcceptingProfileChange;
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(Pending {
+            host: key.host.clone(),
+            host_name: host_name.clone(),
+            session_id: key.session_id.clone(),
+            action,
+        });
+        window.set_confirm_name(subject(name, host_name.as_deref()).into());
+        window.set_confirm_error("".into());
+        window.set_confirm_notice("".into());
+        show_wording(window, action, false, host_name.is_some());
+        window.set_confirm_open(true);
+    }
+}
+
 /// Wires the sidebar's stop and remove requests to the modal. `daemon` is the
-/// loaded daemon configuration, or why it could not be loaded.
-pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout: SharedLayout) {
+/// loaded daemon configuration, or why it could not be loaded; `resume` runs
+/// an approved resume.
+pub fn install(
+    window: &AppWindow,
+    daemon: Result<DaemonConfig, String>,
+    resume: ResumeContext,
+    layout: SharedLayout,
+) -> ConfirmHandle {
     let pending: Arc<Mutex<Option<Pending>>> = Arc::new(Mutex::new(None));
+    let handle = ConfirmHandle {
+        pending: pending.clone(),
+    };
 
     let weak = window.as_weak();
     let slot = pending.clone();
@@ -246,8 +301,13 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
         let weak = window.as_weak();
         let slot = slot.clone();
         let daemon = daemon.clone();
+        let resume = resume.clone();
         std::thread::spawn(move || {
-            let report = lifecycle_report(&daemon, &host, host_name.as_deref(), &session_id, action);
+            let report = if action == LifecycleAction::ResumeAcceptingProfileChange {
+                resume_report(&resume, &host, host_name.as_deref(), &session_id)
+            } else {
+                lifecycle_report(&daemon, &host, host_name.as_deref(), &session_id, action)
+            };
             if !report.error.is_empty() {
                 warn!(session = %session_id, action = action.verb(), error = %report.error, "session action failed");
             }
@@ -276,4 +336,37 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
             window.set_confirm_open(false);
         }
     });
+    handle
+}
+
+/// Resumes under the current agent profile after the owner approved it. The
+/// attach outcome goes to the status line, not the modal, which closes.
+fn resume_report(
+    resume: &ResumeContext,
+    host: &str,
+    host_name: Option<&str>,
+    session_id: &str,
+) -> ActionReport {
+    let key = SessionKey {
+        host: host.to_owned(),
+        session_id: session_id.to_owned(),
+    };
+    match resume_and_attach(resume, &key, host_name, true) {
+        Step::Done(status) => ActionReport {
+            status,
+            ..Default::default()
+        },
+        Step::Failed(error) => ActionReport {
+            error,
+            ..Default::default()
+        },
+        // An approved resume never asks again.
+        Step::NeedsProfileApproval => ActionReport {
+            error: format!(
+                "Cannot resume {}: the agent profile changed again",
+                subject(session_id, host_name)
+            ),
+            ..Default::default()
+        },
+    }
 }

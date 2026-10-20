@@ -13,6 +13,7 @@ mod detail;
 mod launch;
 mod logging;
 mod new_session;
+mod resume;
 mod tray;
 
 use launch::{ASSISTANT_COMMAND, NEW_SESSION_COMMAND};
@@ -86,6 +87,7 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 // Actions need a connected host.
                 can_stop: s.can_stop && !s.host_unreachable,
                 can_remove: s.can_remove && !s.host_unreachable,
+                can_resume: s.resume.is_available() && !s.host_unreachable,
                 open_folder: s.open.existing_folder().is_some(),
                 open_link: s.open.link.is_some() && !s.host_unreachable,
                 attach_refusal: if s.host_unreachable {
@@ -1557,7 +1559,16 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
             OpenKind::Link => window.on_open_link(handler),
         }
     }
-    confirm::install(&window, rename_daemon.clone(), layout.clone());
+    let resume_context = resume::ResumeContext {
+        daemon: rename_daemon.clone(),
+        attach: attach_context.clone(),
+    };
+    let confirm_handle = confirm::install(
+        &window,
+        rename_daemon.clone(),
+        resume_context.clone(),
+        layout.clone(),
+    );
     detail::install(&window, layout.clone());
     {
         let weak = window.as_weak();
@@ -1593,11 +1604,54 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     }
     {
         let weak = window.as_weak();
+        let layout = layout.clone();
+        let context = resume_context.clone();
+        let confirm = confirm_handle.clone();
+        window.on_request_resume(move |host, id, name| {
+            let key = SessionKey {
+                host: host.into(),
+                session_id: id.into(),
+            };
+            resume::start_resume(
+                weak.clone(),
+                context.clone(),
+                confirm.clone(),
+                &layout,
+                key,
+                name.into(),
+            );
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let layout = layout.clone();
         window.on_attach(move |host, id, refusal| {
             let key = SessionKey {
                 host: host.into(),
                 session_id: id.into(),
             };
+            // An ended session the daemon can resume is resumed, then attached.
+            let resumable = lock(&layout)
+                .rows
+                .iter()
+                .find(|row| row.key == key)
+                .map(|row| {
+                    (
+                        row.resume.is_available() && !row.host_unreachable,
+                        row.display_name.clone(),
+                    )
+                });
+            if let Some((true, name)) = resumable {
+                resume::start_resume(
+                    weak.clone(),
+                    resume_context.clone(),
+                    confirm_handle.clone(),
+                    &layout,
+                    key,
+                    name,
+                );
+                return;
+            }
             start_attach(
                 weak.clone(),
                 attach_context.clone(),

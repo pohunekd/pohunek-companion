@@ -55,6 +55,8 @@ pub fn install(window: &AppWindow, layout: SharedLayout) {
         window.set_detail_host_label(row.host_label.clone().unwrap_or_default().into());
         window.set_detail_owner_state(owner_state_kind(row.owner_state));
         window.set_detail_owner_label(row.owner_state.label().into());
+        window.set_detail_can_resume(row.resume.is_available() && !row.host_unreachable);
+        window.set_detail_resume_note(row.resume.note().into());
         window.set_detail_host(host);
         window.set_detail_id(id);
         window.set_detail_copy_all(row.details.copy_all(&row.display_name).into());
