@@ -33,6 +33,8 @@ const KNOWN_HOSTS_FLAG: &str = "--known-hosts";
 
 /// Why Start is disabled when the host's projects and agents could not be read.
 const HOST_UNREADABLE: &str = "This host's projects and agents could not be read.";
+/// Why Start is disabled when `companion.toml` could not be loaded.
+const CONFIG_UNREADABLE: &str = "companion.toml could not be loaded.";
 /// First entries of the project and agent selects: no project, and the
 /// launch's own agent choice.
 const NO_PROJECT_LABEL: &str = "No project";
@@ -319,9 +321,10 @@ fn load_in_background(
             );
             match outcome {
                 Ok(loaded) => {
-                    // The project may have been picked while the agents loaded.
-                    let chosen = dialog.form(&window).project.or(project);
-                    show_projects(&window, &loaded.projects, chosen.as_deref());
+                    // Projects shown early keep whatever the owner picked since.
+                    if !window.get_projects_ready() {
+                        show_projects(&window, &loaded.projects, project.as_deref());
+                    }
                     show_agents(&window, &loaded, agent.as_deref());
                     *lock(&dialog.choices) = loaded;
                 }
@@ -642,7 +645,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
         Err(err) => {
             error!(error = %err, "load companion.toml");
             window.set_loading(false);
-            window.set_blocker("".into());
+            window.set_blocker(CONFIG_UNREADABLE.into());
             window.set_error(err.to_string().into());
         }
     }
