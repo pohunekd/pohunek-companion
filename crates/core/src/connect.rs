@@ -6,7 +6,10 @@ use pohunek_client::protocol::{
     NotificationKind, NotificationListParams, NotificationRecord, Request, SessionInfo,
     SessionListParams,
 };
-use pohunek_client::{Client, ClientError, ClientOptions, OriginSource, Subscription};
+use pohunek_client::{
+    Client, ClientError, ClientOptions, LOCAL_HOST, OriginSource, Subscription, is_local_host,
+    names_this_machine,
+};
 use tracing::{error, info};
 
 use crate::config::{DaemonConfig, NewSessionConfig};
@@ -38,14 +41,49 @@ pub(crate) fn resolve_socket() -> Result<PathBuf, CoreError> {
     })
 }
 
+/// The socket a connection to `host` needs: the local daemon's for the local
+/// host, none for a remote one (its overlay route is resolved on every
+/// connection).
+pub(crate) fn socket_for_host(host: &str) -> Result<PathBuf, CoreError> {
+    if is_local_host(host) {
+        resolve_socket()
+    } else {
+        Ok(PathBuf::new())
+    }
+}
+
 /// The origin is omitted so a companion started inside a Pohunek session does
 /// not tag its requests with that session's identity.
 pub(crate) async fn connect(socket: &Path, config: &DaemonConfig) -> Result<Client, CoreError> {
+    connect_host(LOCAL_HOST, socket, config).await
+}
+
+/// Connects to the local daemon (`host` is `local`) or to the remote host
+/// route `host`; `socket` is only used for the local daemon.
+pub(crate) async fn connect_host(
+    host: &str,
+    socket: &Path,
+    config: &DaemonConfig,
+) -> Result<Client, CoreError> {
     let options = ClientOptions::default()
         .with_origin_source(OriginSource::Omitted)
         .with_connect_timeout(config.connect_timeout())
         .with_request_timeout(config.request_timeout());
-    Ok(Client::connect_local_with_options(socket, options).await?)
+    Ok(Client::connect_with_options(host, socket, options).await?)
+}
+
+/// Refuses a configured host that names this machine, which would list the
+/// local sessions twice. Returns the first such target.
+pub async fn host_naming_this_machine(
+    targets: &[String],
+    config: &DaemonConfig,
+) -> Result<Option<String>, CoreError> {
+    for target in targets {
+        if names_this_machine(target, config.connect_timeout()).await? {
+            return Ok(Some(target.clone()));
+        }
+    }
+    Ok(None)
 }
 
 /// Client whose options govern the dedicated connection `session_new` opens:
@@ -78,10 +116,11 @@ pub(crate) async fn connect_for_session_action(
 
 /// Opens a connection and turns it into the daemon's event stream.
 pub(crate) async fn subscribe(
+    host: &str,
     socket: &Path,
     config: &DaemonConfig,
 ) -> Result<Subscription, CoreError> {
-    let client = connect(socket, config).await?;
+    let client = connect_host(host, socket, config).await?;
     let request = Request::new(
         SUBSCRIBE_REQUEST_ID,
         Subscribe::NAME,
@@ -93,8 +132,12 @@ pub(crate) async fn subscribe(
 
 /// Reads the session list and the attention notifications over a second
 /// connection (`subscribe` consumes its own).
-pub(crate) async fn fetch_seed(socket: &Path, config: &DaemonConfig) -> Result<Seed, CoreError> {
-    let mut client = connect(socket, config).await?;
+pub(crate) async fn fetch_seed(
+    host: &str,
+    socket: &Path,
+    config: &DaemonConfig,
+) -> Result<Seed, CoreError> {
+    let mut client = connect_host(host, socket, config).await?;
     let sessions = client
         .call::<SessionList>(SessionListParams::default())
         .await?;

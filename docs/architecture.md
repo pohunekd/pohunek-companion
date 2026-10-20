@@ -68,8 +68,20 @@ All facts come from the public protocol (Pohunek `docs/public-api.md`):
 - `agent_state`, `subagent_state`, and `background_state` events are applied
   only when their runtime identity matches the session snapshot and their
   revision is newer.
-- Sessions are keyed by `(host, session_id)` from the start. v1 connects to the
-  local daemon only; more hosts come through `host.discover`.
+- Sessions are keyed by `(host, session_id)`. `host` is `local` for the local
+  daemon and, for a remote one, the `target` of its `[[hosts]]` entry in
+  `companion.toml` verbatim (a Pohunek host route as `pohunek --host` accepts
+  it); it never comes from a display value. The local daemon is always
+  followed; every configured remote host gets its own connection loop (seed,
+  stream, re-seed timer, reconnect backoff) through
+  `Client::connect_with_options`, and the overlay route is resolved again on
+  every connection, never cached. A failure of one host never interrupts
+  another. A target that names this machine, is empty, is `local`, or repeats
+  another entry is refused at startup with a message naming the entry. The
+  sidebar shows the union of every host's latest list; a remote row carries its
+  host label (the configured `label`, else the `target`) on its detail line and
+  offers no Open folder, because its path exists on the other machine. More
+  hosts will come from `host.discover` once it is wired in (#139).
 - Pohunek Work metadata: `work.link.provider|kind|id|url|branch`, `work.role`,
   `work.rev`, and the legacy `link.*` family.
 - Herds (Pohunek #1300-#1307, not shipped yet): member metadata `herd`,
@@ -113,10 +125,12 @@ Storage and reconciliation:
   two neighbours never run out of precision.
 - Inbox always exists (created on first start) and is first by default.
   Sessions the layout does not know are appended to the end of Inbox in list
-  order. Every seeded `LiveUpdate::Sessions` list is the daemon's full current
-  set, so a session missing from it is pruned, which also covers sessions
-  removed while the companion was disconnected. Nothing is pruned while
-  disconnected. Resume keeps the session id and therefore the position; a fork
+  order. Every seeded `LiveUpdate::Sessions` list is one host's full current
+  set, so a session of that host missing from it is pruned, which also covers
+  sessions removed while the companion was disconnected. Pruning is per host:
+  a list seeded from host H reconciles only H's keys, and a host that is
+  disconnected or has never been seeded prunes nothing, so a lost host keeps
+  its placements. Resume keeps the session id and therefore the position; a fork
   is a new session.
 - Writes are atomic (temporary file in the same directory, then rename), the
   directory is `0700` and the file `0600`, and a write happens only when the

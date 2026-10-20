@@ -121,7 +121,7 @@ show the owner's real sessions (names, ids, working directories, Work links).
   `remote-proj` and two sessions `remote-alpha` and `remote-beta`. The local
   isolated daemon and the app get the same `POHUNEK_REMOTE_PORT`, and the script
   prints the route (`netbird:<fqdn>@<port>`), also available as
-  `scripts/ui-agent remote-route`. Check it with the isolated environment:
+  `scripts/ui-agent remote-route`, and lists it in the isolated `companion.toml` as a `[[hosts]]` entry labelled `remote`. Check it with the isolated environment:
   `POHUNEK_REMOTE_PORT=<port> pohunek --host <route> session list`.
   `remote-stop` stops only the remote daemon (a lost host: the route then
   refuses connections) and `remote-start` starts it again with the same session

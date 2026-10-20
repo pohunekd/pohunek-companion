@@ -29,8 +29,14 @@ pub struct OpenTargets {
 }
 
 impl OpenTargets {
-    pub(crate) fn from_info(info: &SessionInfo) -> Self {
-        Self::select(info.worktree_path.as_deref(), &info.cwd, &info.metadata)
+    /// A remote session has no folder: its path exists on the other machine,
+    /// and a local directory check could match an unrelated one.
+    pub(crate) fn from_info(info: &SessionInfo, remote: bool) -> Self {
+        let mut targets = Self::select(info.worktree_path.as_deref(), &info.cwd, &info.metadata);
+        if remote {
+            targets.folder = None;
+        }
+        targets
     }
 
     fn select(

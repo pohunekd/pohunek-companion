@@ -29,9 +29,10 @@ pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attac
 pub use attach_macos::AttachTerminal;
 pub use badge::{WorkBadge, WorkFacts, clip_display};
 pub use config::{
-    Config, ConfigError, DaemonConfig, LayoutConfig, NewSessionConfig, PlacementRule, TrayConfig,
-    ViewConfig,
+    Config, ConfigError, DaemonConfig, HostConfig, LayoutConfig, NewSessionConfig, PlacementRule,
+    TrayConfig, ViewConfig,
 };
+pub use connect::host_naming_this_machine;
 pub use error::CoreError;
 pub use filter::{
     ProjectChip, ProjectSelection, SessionFilter, StateChip, StateSelection, StoredFilter,
@@ -42,7 +43,7 @@ pub use layout::{
     LayoutStore, MoveError, Placement, Reconciled, RulePlacement, layout_path, state_dir,
 };
 pub use lifecycle::{LifecycleAction, LifecycleError, LifecycleOutcome, run_lifecycle_action};
-pub use live::{LiveUpdate, run_live};
+pub use live::{LiveHost, LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
 pub use needs_you::{NEEDS_YOU_ID, with_needs_you};
 pub use new_session::{

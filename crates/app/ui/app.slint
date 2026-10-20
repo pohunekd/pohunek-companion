@@ -16,6 +16,9 @@ export struct SessionRowData {
     badge: string,
     badge-role: string,
     host: string,
+    // Name of the remote host the session lives on, shown on the detail line;
+    // empty for a local session.
+    host-label: string,
     id: string,
     // Why the session cannot be attached; empty when it can.
     attach-refusal: string,
@@ -357,7 +360,7 @@ component SessionRow inherits Rectangle {
                 horizontal-stretch: 0;
             }
             state-text := Text {
-                text: root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "");
+                text: root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "") + (root.data.host-label != "" ? " - " + root.data.host-label : "");
                 color: Theme.detail;
                 font-size: Theme.detail-font-size;
                 horizontal-alignment: left;

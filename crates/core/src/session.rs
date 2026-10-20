@@ -2,11 +2,12 @@ use crate::attach::AttachRefusal;
 use crate::badge::{WorkBadge, WorkFacts, sanitize};
 use crate::open::OpenTargets;
 use crate::owner_state::OwnerState;
-use pohunek_client::LOCAL_HOST;
+use pohunek_client::is_local_host;
 use pohunek_client::protocol::{RuntimeState, SessionInfo};
 use time::OffsetDateTime;
 
-/// Identity of a session across hosts. Only the local daemon is used so far.
+/// Identity of a session across hosts: `host` is `local` for the local daemon
+/// and the configured `[[hosts]]` target verbatim for a remote one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey {
     pub host: String,
@@ -51,6 +52,9 @@ pub struct SessionRow {
     pub runtime_detail: String,
     /// Folder and link the row can open.
     pub open: OpenTargets,
+    /// Sanitized name of the remote host the session lives on; `None` for a
+    /// local session.
+    pub host_label: Option<String>,
 }
 
 /// Whether the session's runtime is in the given state.
@@ -92,7 +96,10 @@ fn runtime_detail(info: &SessionInfo) -> String {
 }
 
 impl SessionRow {
-    pub(crate) fn from_local(
+    /// A row of a session of `host`; `host_label` is `Some` for a remote host.
+    pub(crate) fn from_host(
+        host: &str,
+        host_label: Option<&str>,
         info: SessionInfo,
         owner_state: OwnerState,
         waiting_since: Option<OffsetDateTime>,
@@ -100,7 +107,7 @@ impl SessionRow {
     ) -> Self {
         let (can_stop, can_remove) = (offer_stop(&info), offer_remove(&info));
         let runtime_detail = runtime_detail(&info);
-        let open = OpenTargets::from_info(&info);
+        let open = OpenTargets::from_info(&info, !is_local_host(host));
         let display_name = info.name.unwrap_or_else(|| info.id.0.clone());
         let project = info.project_id.as_deref().map(|id| {
             let label = [info.project_label.as_deref(), known_label]
@@ -116,7 +123,7 @@ impl SessionRow {
         let work = WorkFacts::from_metadata(&info.metadata);
         Self {
             key: SessionKey {
-                host: LOCAL_HOST.to_owned(),
+                host: host.to_owned(),
                 session_id: info.id.0,
             },
             display_name,
@@ -132,6 +139,7 @@ impl SessionRow {
             can_remove,
             runtime_detail,
             open,
+            host_label: host_label.map(str::to_owned),
         }
     }
 }
@@ -139,6 +147,7 @@ impl SessionRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pohunek_client::LOCAL_HOST;
     use serde_json::{Value, json};
 
     fn info(patch: Value) -> SessionInfo {
@@ -168,7 +177,14 @@ mod tests {
     }
 
     fn row(info: SessionInfo, known_label: Option<&str>) -> SessionRow {
-        SessionRow::from_local(info, OwnerState::Working, None, known_label)
+        SessionRow::from_host(
+            LOCAL_HOST,
+            None,
+            info,
+            OwnerState::Working,
+            None,
+            known_label,
+        )
     }
 
     #[test]

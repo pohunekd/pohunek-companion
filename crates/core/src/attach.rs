@@ -260,12 +260,14 @@ pub fn attach(
     let outcome = launch(config, config_path, key);
     match &outcome {
         Ok(program) => info!(
+            host = %key.host,
             session_id = %key.session_id,
             program = %program.display(),
             outcome = "launched",
             "attach"
         ),
         Err(err) => error!(
+            host = %key.host,
             session_id = %key.session_id,
             error = %err,
             outcome = "failed",
