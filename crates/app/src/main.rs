@@ -83,7 +83,7 @@ type Placements = HashMap<SessionKey, (String, bool)>;
 /// each session's placement, and the owner groups in display order as
 /// (id, name).
 struct Arranged {
-    /// A filter is active and no session matches it.
+    /// A filter is active and no session matches it (empty sections may remain).
     filter_empty: bool,
     sections: Vec<GroupSection>,
     placed: Placements,
@@ -118,7 +118,9 @@ fn arrange(state: &LayoutState) -> Arranged {
     );
     let (project_chips, project_index) = project_chips(&state.rows, state.filter.project());
     Arranged {
-        filter_empty: state.filter.is_active() && !state.rows.is_empty() && sections.is_empty(),
+        filter_empty: state.filter.is_active()
+            && !state.rows.is_empty()
+            && sections.iter().all(|section| section.rows.is_empty()),
         state_chips: state_chips(&state.rows, state.filter.states()),
         sections,
         project_chips,
