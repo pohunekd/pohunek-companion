@@ -1,0 +1,224 @@
+name: Release
+
+# A `vX.Y.Z` tag builds the x86_64 Linux archive, attests it and publishes it as
+# a GitHub Release. `workflow_dispatch` (version input) and `pull_request`
+# (release files only) run the same build and upload workflow artifacts; they
+# never attest, tag or release.
+#
+# Jobs:
+#   prepare   resolves the version and requires it to equal the workspace one.
+#   build     runs the gate set (a tag push runs no CI), builds, packages,
+#             smoke-tests and uploads the archive and its checksum.
+#   attest    only job with `id-token`/`attestations: write`; tag pushes only.
+#   publish   only job with `contents: write`; tag pushes only.
+#
+# Provenance is checked with
+# `gh attestation verify <archive> --repo pohunekd/pohunek-companion`.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build; must equal the workspace version in Cargo.toml
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "scripts/release-*"
+
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+  TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  prepare:
+    name: Resolve and check the version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Resolve the version and compare it with Cargo.toml
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          workspace="$(awk '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && /^version[[:space:]]*=/{gsub(/[" ]/,"",$3); print $3; exit}' Cargo.toml)"
+          if ! [[ "$workspace" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::cannot read a X.Y.Z workspace version from Cargo.toml (got '$workspace')"
+            exit 1
+          fi
+          case "$EVENT" in
+            push)
+              [ "$REF_TYPE" = tag ] || { echo "::error::push without a tag"; exit 1; }
+              requested="${REF_NAME#v}"
+              ;;
+            workflow_dispatch)
+              requested="$INPUT_VERSION"
+              ;;
+            *)
+              requested="$workspace"
+              ;;
+          esac
+          if ! [[ "$requested" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$requested' is not a X.Y.Z version"
+            exit 1
+          fi
+          if [ "$requested" != "$workspace" ]; then
+            echo "::error::requested version $requested differs from the workspace version $workspace in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$requested" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build the x86_64 Linux archive
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup show active-toolchain
+      # Slint's font discovery links fontconfig through pkg-config.
+      - name: System libraries
+        run: |
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev \
+            || { sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev; }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: "false"
+      - name: Gates
+        run: scripts/gates
+      - name: Build
+        run: cargo build --release --locked -p pohunek-companion
+      - name: Package
+        run: |
+          set -euo pipefail
+          name="pohunek-companion-${VERSION}-${TARGET}"
+          stage="$RUNNER_TEMP/stage/$name"
+          mkdir -p "$stage" dist
+          install -m 0755 target/release/pohunek-companion "$stage/"
+          install -m 0644 LICENSE README.md "$stage/"
+          # Archives carry the tagged commit's time so a rebuild lists the same metadata.
+          mtime="@$(git log -1 --format=%ct)"
+          tar --sort=name --mtime="$mtime" --owner=0 --group=0 --numeric-owner \
+            -C "$RUNNER_TEMP/stage" -czf "dist/$name.tar.gz" "$name"
+          ( cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
+          ls -l dist
+      - name: Smoke-test the packaged binary
+        run: |
+          set -euo pipefail
+          name="pohunek-companion-${VERSION}-${TARGET}"
+          check="$(mktemp -d)"
+          ( cd dist && sha256sum -c "$name.tar.gz.sha256" )
+          tar -xzf "dist/$name.tar.gz" -C "$check"
+          test "$(find "$check/$name" -type f | wc -l)" = 3
+          "$check/$name/pohunek-companion" --version | tee "$check/version.txt"
+          test "$(cat "$check/version.txt")" = "pohunek-companion ${VERSION}"
+          echo "Runtime libraries:"
+          ldd "$check/$name/pohunek-companion"
+      - name: Upload the archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  # Checks out nothing: no repository code runs while the OIDC token exists.
+  attest:
+    name: Attest the release assets
+    needs: build
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-linux-x86_64
+          path: ${{ runner.temp }}/assets
+      - name: Check the checksum
+        run: cd "$RUNNER_TEMP/assets" && sha256sum -c ./*.sha256
+      - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/assets/*.tar.gz
+            ${{ runner.temp }}/assets/*.sha256
+
+  # Creates a draft, uploads exactly the inventory, verifies names, sizes and
+  # digests against the local files, then publishes.
+  publish:
+    name: Publish the release
+    needs: [prepare, build, attest]
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-linux-x86_64
+          path: ${{ runner.temp }}/release
+      - name: Check the asset set and the checksum
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/release"
+          name="pohunek-companion-${VERSION}-${TARGET}.tar.gz"
+          want="$(printf '%s\n' "$name" "$name.sha256")"
+          have="$(find . -type f -printf '%P\n' | LC_ALL=C sort)"
+          [ "$want" = "$have" ] || { echo "::error::unexpected asset set"; echo "$have"; exit 1; }
+          sha256sum -c "$name.sha256"
+      - name: Create the draft and upload the assets
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/release"
+          notes="Pohunek Companion ${VERSION} for x86_64 Linux (glibc). Verify with \`sha256sum -c\` and \`gh attestation verify <archive> --repo ${GITHUB_REPOSITORY}\`."
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "$TAG" --notes "$notes" ./*
+      - name: Verify the draft's assets
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/release"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "\(.name) \(.size) \(.digest)"' | LC_ALL=C sort > "$RUNNER_TEMP/remote.txt"
+          for f in *; do
+            echo "$f $(stat -c %s "$f") sha256:$(sha256sum "$f" | cut -d' ' -f1)"
+          done | LC_ALL=C sort > "$RUNNER_TEMP/local.txt"
+          diff "$RUNNER_TEMP/local.txt" "$RUNNER_TEMP/remote.txt"
+      - name: Publish the release
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
