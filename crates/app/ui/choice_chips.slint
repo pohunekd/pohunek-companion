@@ -1,0 +1,64 @@
+// Single-choice row of chips. Colours and sizes come from the caller so the
+// component does not depend on the window's `Theme`.
+export component ChoiceChips inherits FlexboxLayout {
+    in property <[string]> model;
+    in-out property <int> selected-index;
+    // Entries that are shown but cannot be selected; missing entries are enabled.
+    in property <[bool]> disabled;
+    in property <length> chip-height;
+    in property <length> chip-padding;
+    in property <length> chip-radius;
+    in property <length> font-size;
+    in property <color> chip-background;
+    in property <color> chip-selected-background;
+    in property <color> chip-hover-background;
+    in property <color> text-color;
+    in property <color> disabled-text-color: text-color;
+    in property <color> selected-text-color;
+    // Multi-choice mode: `checked` marks the selected entries and a click only
+    // reports the index, leaving the owner of `checked` to toggle it.
+    in property <bool> multi;
+    in property <[bool]> checked;
+    callback selected(int);
+
+    in property <length> chip-spacing;
+    pure function is-selected(index: int) -> bool {
+        root.multi ? root.checked[index] : index == root.selected-index
+    }
+    spacing: root.chip-spacing;
+    // An explicit maximum keeps the toplevel's maximum width (Wayland
+    // `xdg_toplevel.set_max_size`) from being capped to the chips' single-line
+    // width; the rows wrap instead.
+    max-width: 100000px;
+    for name[index] in root.model: chip := Rectangle {
+        height: root.chip-height;
+        border-radius: root.chip-radius;
+        background: root.is-selected(index) ? root.chip-selected-background
+            : chip-touch.has-hover && !root.disabled[index] ? root.chip-hover-background
+            : root.chip-background;
+
+        HorizontalLayout {
+            padding-left: root.chip-padding;
+            padding-right: root.chip-padding;
+            Text {
+                text: name;
+                font-size: root.font-size;
+                color: root.disabled[index] ? root.disabled-text-color
+                    : root.is-selected(index) ? root.selected-text-color : root.text-color;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                overflow: clip;
+            }
+        }
+
+        chip-touch := TouchArea {
+            enabled: !root.disabled[index];
+            clicked => {
+                if !root.multi {
+                    root.selected-index = index;
+                }
+                root.selected(index);
+            }
+        }
+    }
+}

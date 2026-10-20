@@ -1,0 +1,77 @@
+#!/bin/sh
+# Assemble "Pohunek Companion.app" around a built pohunek-companion binary.
+#
+# usage: build-app-bundle <pohunek-companion-binary> <version> <output-dir>
+#
+# Creates <output-dir> when missing, builds <output-dir>/Pohunek Companion.app
+# in it and prints the bundle path. The bundle is not signed here (`sign` does
+# that). The sidebar becomes an accessory app at run time; Info.plist
+# deliberately has no LSUIElement, because the new-session dialog is the same
+# executable and must stay a regular app.
+#
+# The Info.plist is written with plutil, which serializes every value; nothing
+# is interpolated into XML.
+
+set -eu
+
+fail() {
+    printf 'build-app-bundle: %s\n' "$*" >&2
+    exit 1
+}
+
+[ "$#" -eq 3 ] || fail "usage: build-app-bundle <pohunek-companion-binary> <version> <output-dir>"
+binary=$1
+version=$2
+output=$3
+
+[ -f "$binary" ] && [ -x "$binary" ] || fail "not an executable file: $binary"
+case $version in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) fail "version must be X.Y.Z: $version" ;;
+esac
+case $version in
+    *[!0-9.]*) fail "version must be X.Y.Z: $version" ;;
+esac
+command -v plutil >/dev/null 2>&1 || fail "plutil is required (macOS only)"
+mkdir -p -- "$output" || fail "cannot create the output directory: $output"
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+minimum_macos=$(tr -d ' \n' < "$script_dir/DEPLOYMENT_TARGET")
+
+# Reverse-DNS identifier. It never changes after the first release: it keys
+# the app's macOS permissions.
+bundle_identifier=io.github.pohunekd.companion
+executable_name=pohunek-companion
+
+app="$output/Pohunek Companion.app"
+rm -rf -- "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp "$binary" "$app/Contents/MacOS/$executable_name"
+chmod 0755 "$app/Contents/MacOS/$executable_name"
+icon_name=pohunek-companion.icns
+icon=$script_dir/../../assets/icons/$icon_name
+[ -f "$icon" ] || fail "missing the app icon: $icon"
+cp "$icon" "$app/Contents/Resources/$icon_name"
+printf 'APPL????' > "$app/Contents/PkgInfo"
+
+plist=$app/Contents/Info.plist
+plutil -create xml1 "$plist"
+set_string() {
+    plutil -insert "$1" -string "$2" "$plist"
+}
+set_string CFBundleIdentifier "$bundle_identifier"
+set_string CFBundleName "Pohunek Companion"
+set_string CFBundleDisplayName "Pohunek Companion"
+set_string CFBundleExecutable "$executable_name"
+set_string CFBundleIconFile "$icon_name"
+set_string CFBundlePackageType APPL
+set_string CFBundleSignature '????'
+set_string CFBundleInfoDictionaryVersion 6.0
+set_string CFBundleShortVersionString "$version"
+set_string CFBundleVersion "$version"
+set_string LSMinimumSystemVersion "$minimum_macos"
+set_string NSPrincipalClass NSApplication
+plutil -insert NSHighResolutionCapable -bool true "$plist"
+plutil -lint "$plist" >/dev/null || fail "the generated Info.plist is invalid"
+
+printf '%s\n' "$app"

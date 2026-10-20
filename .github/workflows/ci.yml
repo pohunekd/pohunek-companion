@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same PR cancels its older run; main runs are never
+# cancelled so every merge commit gets a result.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+
+jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: read
+    outputs:
+      platform: ${{ steps.filter.outputs.platform }}
+    steps:
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          # Paths whose changes can behave differently on macOS.
+          filters: |
+            platform:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+              - 'crates/*/build.rs'
+              - 'crates/**/platform/**'
+              - 'crates/**/*macos*'
+              - 'crates/**/tray*'
+              - 'crates/**/attach*'
+              - 'crates/**/launch*'
+              - 'packaging/**'
+
+  linux:
+    name: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # rustup on the runner installs the toolchain pinned in rust-toolchain.toml.
+      - name: Toolchain
+        run: rustup show active-toolchain
+      - name: fmt
+        run: cargo fmt --all --check
+      # Slint's font discovery links fontconfig through pkg-config. The update
+      # runs only when the runner image's package index is stale.
+      - name: System libraries
+        run: |
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev \
+            || { sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev; }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # PRs restore main's cache and never overwrite it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --workspace --locked
+
+  macos:
+    name: macos
+    needs: changes
+    # `!cancelled()` lets this run when `changes` is skipped (push, dispatch)
+    # but not after a newer push cancelled the run.
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.platform == 'true')
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --workspace --locked
+
+  ci:
+    name: ci
+    needs: [changes, linux, macos]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Aggregate results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a required job ended with '$r'"; exit 1 ;;
+            esac
+          done

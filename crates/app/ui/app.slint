@@ -1,0 +1,1819 @@
+import { AboutSlint, ScrollView } from "std-widgets.slint";
+import { ChoiceChips } from "choice_chips.slint";
+import { SearchField } from "search_field.slint";
+
+export enum OwnerStateKind { needs-owner, working, idle, runtime-problem, ended, no-agent-state }
+
+export struct SessionRowData {
+    name: string,
+    agent: string,
+    state: string,
+    // Runtime state and loss reason when the runtime is unhealthy; else empty.
+    runtime-detail: string,
+    owner-state: OwnerStateKind,
+    owner-label: string,
+    // Empty when the session has no Pohunek Work link.
+    badge: string,
+    badge-role: string,
+    host: string,
+    // Name of the remote host the session lives on, shown on the detail line;
+    // empty for a local session.
+    host-label: string,
+    // The row's remote host is not connected: the facts are the last known ones.
+    host-unreachable: bool,
+    id: string,
+    // Why the session cannot be attached; empty when it can.
+    attach-refusal: string,
+    // Id of the owner group that holds the session, whatever section shows it.
+    owner-group: string,
+    // The owner placed the session by hand, so placement rules leave it alone.
+    manual: bool,
+    // Pohunek id of the session's project; empty without a project.
+    project-id: string,
+    // Label of that project, shown in the "New session in" menu entry.
+    project-label: string,
+    // The daemon accepts session.stop / session.remove for this session.
+    can-stop: bool,
+    can-remove: bool,
+    // The session's folder exists / its Work link is an http(s) URL.
+    open-folder: bool,
+    open-link: bool,
+}
+
+export struct DetailFieldData {
+    label: string,
+    // Middle-clipped for display; `value` is what is copied.
+    shown: string,
+    value: string,
+    // The value is a Work link that can be opened.
+    link: bool,
+}
+
+export struct DetailSectionData {
+    title: string,
+    fields: [DetailFieldData],
+}
+
+export struct OwnerGroupData {
+    id: string,
+    name: string,
+}
+
+export struct GroupData {
+    id: string,
+    name: string,
+    count: int,
+    collapsed: bool,
+    // Inbox: it can be collapsed and moved but not renamed or deleted.
+    fixed: bool,
+    // The leading section of sessions that need the owner.
+    needs-you: bool,
+    rows: [SessionRowData],
+}
+
+export global Theme {
+    out property <length> row-height: 36px;
+    out property <length> row-radius: 4px;
+    // Dimming of a row whose remote host is not connected.
+    out property <float> unreachable-opacity: 0.5;
+    out property <length> row-padding: 8px;
+    out property <length> row-vertical-padding: 3px;
+    out property <length> row-spacing: 2px;
+    // Right gutter of the session list, reserved whether or not the scrollbar is shown.
+    out property <length> scrollbar-gap: 14px;
+    out property <length> window-padding: 8px;
+    out property <length> detail-font-size: 11px;
+    out property <length> error-font-size: 13px;
+    out property <length> hosts-button-max-width: 140px;
+    out property <length> host-tag-max-width: 110px;
+    out property <length> chip-height: 26px;
+    out property <length> chip-padding: 8px;
+    out property <length> chip-radius: 13px;
+    out property <length> chip-spacing: Theme.confirm-spacing;
+    out property <length> chip-font-size: 12px;
+    out property <color> chip-background: #2b2d31;
+    out property <color> chip-hover-background: #35383d;
+    out property <color> chip-selected-background: #4a6fa5;
+    out property <length> group-header-height: 24px;
+    out property <length> group-spacing: 8px;
+    out property <length> group-button-width: 22px;
+    out property <color> group-button: #8a8f98;
+    out property <color> group-button-hover: #e6e6e6;
+    // Hit target of a row action icon (fits inside row-height); the glyph is centred, so
+    // neighbouring glyphs are separated by the difference.
+    out property <length> action-icon-size: 28px;
+    out property <length> action-icon-glyph: 20px;
+    out property <length> action-icon-stroke: 2px;
+    out property <length> action-stop-size: 15px;
+    out property <length> action-tip-padding: 4px;
+    out property <color> action-icon: #8a8f98;
+    out property <color> action-icon-hover: #e6e6e6;
+    out property <length> detail-icon-size: 24px;
+    out property <length> detail-icon-glyph: 14px;
+    out property <length> detail-field-height: 38px;
+    out property <length> detail-label-font-size: 10px;
+    out property <length> detail-value-font-size: 12px;
+    out property <length> detail-section-gap: 14px;
+    out property <length> detail-scrollbar-gap: 8px;
+    out property <length> detail-card-margin: 8px;
+    out property <length> detail-card-padding: 12px;
+    out property <duration> detail-copied-duration: 1200ms;
+    out property <color> detail-copied: #4caf6e;
+    out property <length> group-edit-height: 22px;
+    out property <length> new-group-height: 26px;
+    out property <length> confirm-spacing: 4px;
+    out property <length> confirm-border: 1px;
+    out property <length> confirm-selected-border: 2px;
+    out property <color> new-group-text: #8a8f98;
+    out property <length> group-font-size: 12px;
+    out property <color> group-text: #b5bac1;
+    out property <length> badge-row-height: 16px;
+    out property <length> badge-font-size: 10px;
+    out property <length> badge-padding: 4px;
+    out property <length> badge-radius: 3px;
+    out property <length> badge-spacing: Theme.confirm-spacing;
+    out property <length> field-height: 26px;
+    out property <length> field-radius: Theme.chip-radius;
+    out property <length> field-padding: 10px;
+    // Vertical gap above and below a filter field, separating it from the chip rows and list.
+    out property <length> field-margin: 6px;
+    out property <length> field-border: 1px;
+    out property <color> field-background: Theme.chip-background;
+    out property <color> field-border-color: Theme.chip-hover-background;
+    out property <color> field-focus-border: Theme.chip-selected-background;
+    out property <color> field-selection: Theme.chip-selected-background;
+    out property <color> background: #1e1f22;
+    out property <color> row: #2b2d31;
+    out property <color> text: #e6e6e6;
+    out property <color> detail: #8a8f98;
+    out property <color> error: #e04040;
+    out property <length> drop-indicator-height: 2px;
+    out property <color> drop-indicator: #f0a030;
+    out property <length> group-end-drop-height: 12px;
+    out property <color> row-dragging: #3a3d44;
+    out property <color> badge-background: #3a3d44;
+    out property <color> badge-text: #c9d1d9;
+    out property <length> about-width: 360px;
+    out property <length> about-height: 320px;
+    out property <length> about-logo-size: 128px;
+    out property <length> about-spacing: 8px;
+    out property <length> about-title-font-size: 20px;
+    out property <color> about-background: #ffffff;
+    out property <int> tray-icon-size: 32;
+    out property <int> tray-label-max-chars: 40;
+    out property <color> tray-plate: #e9dcc0;
+    out property <color> tray-figure: #19120a;
+    out property <color> tray-digit: #19120a;
+    out property <length> owner-dot-size: 8px;
+    out property <length> owner-spacing: 5px;
+    out property <color> owner-needs-owner: #e0a030;
+    out property <color> owner-working: #4caf6e;
+    out property <color> owner-idle: #5b8def;
+    out property <color> owner-runtime-problem: #d9534f;
+    out property <color> owner-ended: #6c757d;
+    out property <color> owner-no-agent-state: #4a4d54;
+
+    pure public function owner-color(kind: OwnerStateKind) -> color {
+        if kind == OwnerStateKind.needs-owner {
+            return owner-needs-owner;
+        }
+        if kind == OwnerStateKind.working {
+            return owner-working;
+        }
+        if kind == OwnerStateKind.idle {
+            return owner-idle;
+        }
+        if kind == OwnerStateKind.runtime-problem {
+            return owner-runtime-problem;
+        }
+        if kind == OwnerStateKind.ended {
+            return owner-ended;
+        }
+        return owner-no-agent-state;
+    }
+}
+
+// SearchField with the app's field tokens applied.
+component ThemedSearchField inherits SearchField {
+    field-height: Theme.field-height;
+    field-radius: Theme.field-radius;
+    field-padding: Theme.field-padding;
+    border-width: Theme.field-border;
+    font-size: Theme.group-font-size;
+    field-background: Theme.field-background;
+    idle-border-color: Theme.field-border-color;
+    focus-border-color: Theme.field-focus-border;
+    text-color: Theme.text;
+    placeholder-color: Theme.detail;
+    glyph-color: Theme.detail;
+    glyph-hover-color: Theme.text;
+    selection-background: Theme.field-selection;
+}
+
+component ActionIcon inherits Rectangle {
+    // "info", "stop", "remove", "folder", "link" or "copy".
+    in property <string> kind;
+    // Hit target and glyph size; the row action defaults.
+    in property <length> size: Theme.action-icon-size;
+    in property <length> glyph: Theme.action-icon-glyph;
+    // Tooltip and accessible label.
+    in property <string> tip;
+    callback activated();
+    out property <bool> hovered: icon-touch.has-hover;
+    width: root.size;
+    min-height: root.size;
+
+    icon-touch := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.tip;
+        clicked => { root.activated(); }
+    }
+
+    property <color> tint: icon-touch.has-hover ? Theme.action-icon-hover : Theme.action-icon;
+
+    if root.kind == "stop": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: Theme.action-stop-size;
+        height: self.width;
+        background: root.tint;
+    }
+    if root.kind == "info": Path {
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 6 1 A 5 5 0 1 0 6 11 A 5 5 0 1 0 6 1 Z M 6 5.2 L 6 8.6 M 6 3.3 L 6 3.5";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+    if root.kind == "copy": Path {
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 4 4 L 10.5 4 L 10.5 10.5 L 4 10.5 Z M 2.5 8 L 1.5 8 L 1.5 1.5 L 8 1.5 L 8 2.5";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+    if root.kind == "remove": Path {
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 2 2 L 10 10 M 10 2 L 2 10";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+    if root.kind == "folder": Path {
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 1 2.5 L 4.5 2.5 L 6 4 L 11 4 L 11 10 L 1 10 Z";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+    if root.kind == "link": Path {
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 7 1.5 L 10.5 1.5 L 10.5 5 M 10.5 1.5 L 5.5 6.5 M 9 7.5 L 9 10.5 L 1.5 10.5 L 1.5 3 L 4.5 3";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+}
+
+component SessionRow inherits Rectangle {
+    in property <SessionRowData> data;
+    // False in the Needs-you section, which is not a drag source.
+    in property <bool> draggable: true;
+    in property <bool> indicator-above;
+    in property <bool> indicator-below;
+    // Owner groups in display order, offered by "Move to group".
+    in property <[OwnerGroupData]> owner-groups;
+    pure callback payload(SessionRowData) -> data-transfer;
+    callback clicked();
+    callback move-to-group(string);
+    callback new-group();
+    callback return-to-rule();
+    callback rename();
+    // Host, project to preselect and group to place the session in; the
+    // project and group may be empty.
+    callback new-session-in-project(string, string, string);
+    callback stop();
+    callback remove();
+    callback open-folder();
+    callback open-link();
+    callback details();
+
+    height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
+    background: row-drag.dragging ? Theme.row-dragging : Theme.row;
+    border-radius: Theme.row-radius;
+    opacity: root.data.host-unreachable ? Theme.unreachable-opacity : 1.0;
+
+    row-drag := DragArea {
+        data: root.payload(root.data);
+        enabled: root.draggable;
+        allow-move: true;
+        // A DragArea without a mouse-handling child stops starting drags
+        // (docs/architecture.md, findings); the click attaches.
+        row-touch := TouchArea {
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: root.data.name;
+            clicked => { root.clicked(); }
+        }
+    }
+
+    // On top of the row; only the right button opens the menu, so clicks and
+    // drags reach the DragArea below.
+    row-menu := ContextMenuArea {
+        Menu {
+            MenuItem {
+                // A refused row still opens: the attach shows the refusal.
+                title: "Open";
+                activated => { root.clicked(); }
+            }
+            MenuItem {
+                title: "Details";
+                activated => { root.details(); }
+            }
+            if !root.data.host-unreachable: MenuItem {
+                title: "Rename...";
+                activated => { root.rename(); }
+            }
+            if root.data.open-folder: MenuItem {
+                title: "Open folder";
+                activated => { root.open-folder(); }
+            }
+            if root.data.open-link: MenuItem {
+                title: "Open link";
+                activated => { root.open-link(); }
+            }
+            if root.data.can-stop: MenuItem {
+                title: "Stop...";
+                activated => { root.stop(); }
+            }
+            if root.data.can-remove: MenuItem {
+                title: "Remove...";
+                activated => { root.remove(); }
+            }
+            if root.data.project-id != "": MenuItem {
+                title: "New session in " + root.data.project-label;
+                activated => { root.new-session-in-project(root.data.host, root.data.project-id, root.data.owner-group); }
+            }
+            if root.data.project-id == "" && root.data.owner-group != "": MenuItem {
+                title: "New session here";
+                activated => { root.new-session-in-project(root.data.host, "", root.data.owner-group); }
+            }
+            Menu {
+                title: "Move to group";
+                for owner-group in root.owner-groups: MenuItem {
+                    title: owner-group.name;
+                    checkable: true;
+                    checked: owner-group.id == root.data.owner-group;
+                    enabled: owner-group.id != root.data.owner-group;
+                    activated => { root.move-to-group(owner-group.id); }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    title: "New group...";
+                    activated => { root.new-group(); }
+                }
+            }
+            if root.data.manual: MenuItem {
+                title: "Return to rule placement";
+                activated => { root.return-to-rule(); }
+            }
+        }
+    }
+
+    VerticalLayout {
+        padding-left: Theme.row-padding;
+        padding-right: Theme.row-padding;
+        padding-top: Theme.row-vertical-padding;
+        padding-bottom: Theme.row-vertical-padding;
+        alignment: center;
+        HorizontalLayout {
+            spacing: Theme.badge-spacing;
+            name-text := Text {
+                text: root.data.name;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if root.data.host-label != "": Rectangle {
+                background: Theme.badge-background;
+                border-radius: Theme.badge-radius;
+                horizontal-stretch: 0;
+                width: min(host-tag-text.preferred-width + 2 * Theme.badge-padding, Theme.host-tag-max-width);
+                HorizontalLayout {
+                    padding-left: Theme.badge-padding;
+                    padding-right: Theme.badge-padding;
+                    host-tag-text := Text {
+                        text: root.data.host-label;
+                        color: Theme.badge-text;
+                        font-size: Theme.badge-font-size;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: Theme.owner-spacing;
+            Rectangle {
+                width: Theme.owner-dot-size;
+                height: Theme.owner-dot-size;
+                border-radius: Theme.owner-dot-size / 2;
+                background: Theme.owner-color(root.data.owner-state);
+                y: (parent.height - self.height) / 2;
+            }
+            owner-text := Text {
+                text: root.data.owner-label;
+                color: Theme.owner-color(root.data.owner-state);
+                font-size: Theme.detail-font-size;
+                horizontal-stretch: 0;
+            }
+            state-text := Text {
+                text: (root.data.host-unreachable ? "host unreachable - " : "") + root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "");
+                color: Theme.detail;
+                font-size: Theme.detail-font-size;
+                horizontal-alignment: left;
+                overflow: elide;
+            }
+        }
+        if root.data.badge != "": HorizontalLayout {
+            spacing: Theme.badge-spacing;
+            Rectangle {
+                background: Theme.badge-background;
+                border-radius: Theme.badge-radius;
+                horizontal-stretch: 0;
+                HorizontalLayout {
+                    padding-left: Theme.badge-padding;
+                    padding-right: Theme.badge-padding;
+                    Text {
+                        text: root.data.badge;
+                        color: Theme.badge-text;
+                        font-size: Theme.badge-font-size;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if root.data.badge-role != "": Text {
+                text: root.data.badge-role;
+                color: Theme.detail;
+                font-size: Theme.badge-font-size;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Action icons, right-aligned over the row while the pointer is on it. The
+    // strip is opaque so the name underneath stays out of the way.
+    property <bool> icons-hovered: info-icon.hovered || open-folder-icon.hovered || open-link-icon.hovered || stop-icon.hovered || remove-icon.hovered;
+    property <string> active-tip: info-icon.hovered ? info-icon.tip
+        : open-folder-icon.hovered ? open-folder-icon.tip
+        : open-link-icon.hovered ? open-link-icon.tip
+        : stop-icon.hovered ? stop-icon.tip
+        : remove-icon.hovered ? remove-icon.tip : "";
+    action-strip := Rectangle {
+        visible: row-touch.has-hover || root.icons-hovered;
+        x: root.width - self.width;
+        y: 0;
+        width: strip-layout.preferred-width;
+        height: Theme.row-height;
+        background: root.background;
+        border-radius: Theme.row-radius;
+        strip-layout := HorizontalLayout {
+            info-icon := ActionIcon {
+                kind: "info";
+                tip: "Details";
+                activated => { root.details(); }
+            }
+            open-folder-icon := ActionIcon {
+                visible: root.data.open-folder;
+                width: root.data.open-folder ? Theme.action-icon-size : 0px;
+                kind: "folder";
+                tip: "Open folder";
+                activated => { root.open-folder(); }
+            }
+            open-link-icon := ActionIcon {
+                visible: root.data.open-link;
+                width: root.data.open-link ? Theme.action-icon-size : 0px;
+                kind: "link";
+                tip: "Open link";
+                activated => { root.open-link(); }
+            }
+            stop-icon := ActionIcon {
+                visible: root.data.can-stop;
+                width: root.data.can-stop ? Theme.action-icon-size : 0px;
+                kind: "stop";
+                tip: "Stop...";
+                activated => { root.stop(); }
+            }
+            remove-icon := ActionIcon {
+                visible: root.data.can-remove;
+                width: root.data.can-remove ? Theme.action-icon-size : 0px;
+                kind: "remove";
+                tip: "Remove...";
+                activated => { root.remove(); }
+            }
+        }
+    }
+    action-tip := Rectangle {
+        visible: root.active-tip != "";
+        x: root.width - action-strip.width - self.width;
+        y: 0;
+        width: tip-text.preferred-width + 2 * Theme.action-tip-padding;
+        height: Theme.row-height;
+        background: root.background;
+        tip-text := Text {
+            text: root.active-tip;
+            color: Theme.text;
+            font-size: Theme.detail-font-size;
+            vertical-alignment: center;
+        }
+    }
+
+    Rectangle {
+        visible: root.indicator-above;
+        y: 0;
+        height: Theme.drop-indicator-height;
+        background: Theme.drop-indicator;
+    }
+
+    Rectangle {
+        visible: root.indicator-below;
+        y: root.height - self.height;
+        height: Theme.drop-indicator-height;
+        background: Theme.drop-indicator;
+    }
+}
+
+component GroupHeader inherits Rectangle {
+    in property <string> name;
+    in property <int> count;
+    in property <bool> collapsed;
+    in property <color> name-color: Theme.group-text;
+    // False for the Needs-you section, which is derived and has no controls.
+    in property <bool> owner-group: true;
+    // False for the Needs-you section, which is always expanded.
+    in property <bool> collapsible: true;
+    // False for Inbox: no rename or delete.
+    in property <bool> editable: true;
+    pure callback payload() -> data-transfer;
+    callback toggle-collapse();
+    callback rename(string);
+    callback delete();
+    // The header is a group drop target on its upper or lower half.
+    callback group-dropped(data-transfer, bool);
+    pure callback is-group(data-transfer) -> bool;
+    // Owned by the window so a rebuilt group list keeps an open editor.
+    in property <bool> editing;
+    in-out property <string> edit-text;
+    callback set-editing(bool);
+    in-out property <bool> drop-after;
+
+    height: Theme.group-header-height;
+
+    header-drop := DropArea {
+        enabled: root.owner-group;
+        can-drop(event) => {
+            root.drop-after = event.position.y > self.height / 2;
+            root.is-group(event.data) ? DragAction.move : DragAction.none
+        }
+        dropped(event) => {
+            root.group-dropped(event.data, event.position.y > self.height / 2);
+            DragAction.move
+        }
+        header-drag := DragArea {
+            data: root.payload();
+            enabled: root.owner-group && !root.editing;
+            allow-move: true;
+            // Keeps a mouse-handling child, like the session rows.
+            header-touch := TouchArea { }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.row-padding;
+        padding-right: Theme.row-padding;
+        spacing: Theme.badge-spacing;
+        alignment: start;
+        if root.collapsible: collapse-touch := TouchArea {
+            width: Theme.group-button-width;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: root.collapsed ? "Expand " + root.name : "Collapse " + root.name;
+            clicked => { root.toggle-collapse(); }
+            Text {
+                text: root.collapsed ? "▸" : "▾";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.group-button;
+                font-size: Theme.group-font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        if !root.editing: name-text := Text {
+            text: root.name;
+            color: root.name-color;
+            font-size: Theme.group-font-size;
+            font-weight: 700;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if !root.editing: count-text := Text {
+            text: root.count;
+            color: Theme.detail;
+            font-size: Theme.group-font-size;
+            horizontal-stretch: 0;
+            vertical-alignment: center;
+        }
+        if root.editing: edit-scope := FocusScope {
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.set-editing(false);
+                    return accept;
+                }
+                reject
+            }
+            name-edit := ThemedSearchField {
+                field-height: Theme.group-edit-height;
+                text <=> root.edit-text;
+                label: "Group name";
+                init => { self.focus(); self.select-all(); }
+                accepted(value) => {
+                    root.set-editing(false);
+                    root.rename(value);
+                }
+            }
+        }
+        if root.owner-group && root.editable: rename-touch := TouchArea {
+            width: Theme.group-button-width;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Rename " + root.name;
+            clicked => { root.set-editing(!root.editing); }
+            Text {
+                text: "✎";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.group-button;
+                font-size: Theme.group-font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        if root.owner-group && root.editable: delete-touch := TouchArea {
+            width: Theme.group-button-width;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Delete " + root.name;
+            clicked => { root.delete(); }
+            Text {
+                text: "✕";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.group-button;
+                font-size: Theme.group-font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    Rectangle {
+        visible: header-drop.has-drag && !root.drop-after;
+        y: 0;
+        height: Theme.drop-indicator-height;
+        background: Theme.drop-indicator;
+    }
+
+    Rectangle {
+        visible: header-drop.has-drag && root.drop-after;
+        y: root.height - self.height;
+        height: Theme.drop-indicator-height;
+        background: Theme.drop-indicator;
+    }
+}
+
+global ConfirmTheme {
+    out property <length> padding: 16px;
+    out property <length> spacing: 12px;
+    out property <length> button-height: 30px;
+    out property <length> button-radius: 4px;
+    out property <length> button-padding: 6px;
+    out property <length> title-font-size: 15px;
+    out property <length> body-font-size: 13px;
+    out property <length> card-margin: 16px;
+    out property <length> card-radius: 8px;
+    out property <color> backdrop: #000000b3;
+    out property <color> card-background: #2b2d31;
+    out property <color> card-border: #4a4d54;
+}
+
+component DialogButton inherits Rectangle {
+    in property <string> label;
+    in property <color> accent;
+    // The button Enter activates.
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback clicked();
+    horizontal-stretch: 1;
+    height: ConfirmTheme.button-height;
+    border-radius: ConfirmTheme.button-radius;
+    background: touch.has-hover && root.enabled ? Theme.chip-hover-background : Theme.chip-background;
+    border-width: root.selected ? Theme.confirm-selected-border : Theme.confirm-border;
+    border-color: root.accent;
+    accessible-role: button;
+    accessible-label: root.label;
+    HorizontalLayout {
+        padding-left: ConfirmTheme.button-padding;
+        padding-right: ConfirmTheme.button-padding;
+        Text {
+            text: root.label;
+            color: root.enabled ? root.accent : Theme.detail;
+            font-size: ConfirmTheme.body-font-size;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Modal confirmation of a destructive session action, drawn over the whole
+// window. The backdrop swallows pointer and scroll input so the list behind
+// stays inert; a click on it cancels. The default button is Cancel: the
+// destructive button needs a click, or Tab and then Enter.
+component ConfirmModal inherits Rectangle {
+    // Window title word and the destructive button's label for the action.
+    in property <string> heading;
+    in property <string> confirm-label;
+    in property <string> name;
+    // What the action does, in plain words.
+    in property <string> consequence;
+    // The action is in flight.
+    in property <bool> busy;
+    // Why the last attempt failed; empty when none did.
+    in property <string> error;
+    // A completed action left something for the owner to handle; only Close is offered.
+    in property <string> notice;
+    in-out property <bool> confirm-selected;
+    callback confirm();
+    callback cancel();
+
+    pure function finished() -> bool {
+        root.notice != ""
+    }
+
+    function activate-selected() {
+        if root.busy {
+            return;
+        }
+        if root.finished() || !root.confirm-selected {
+            root.cancel();
+        } else {
+            root.confirm();
+        }
+    }
+
+    Rectangle { background: ConfirmTheme.backdrop; }
+    // Swallows every pointer and scroll event that reaches past the card.
+    backdrop := TouchArea {
+        mouse-cursor: default;
+        clicked => {
+            if !root.busy {
+                root.cancel();
+            }
+        }
+        scroll-event(event) => { accept }
+    }
+
+    keys := FocusScope {
+        init => { self.focus(); }
+        // Captured so a focused button never changes what Enter does.
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                if !root.busy {
+                    root.cancel();
+                }
+                return accept;
+            }
+            if root.busy || root.finished() {
+                if event.text == Key.Return {
+                    root.activate-selected();
+                    return accept;
+                }
+                return reject;
+            }
+            if event.text == Key.LeftArrow {
+                root.confirm-selected = false;
+                return accept;
+            }
+            if event.text == Key.RightArrow {
+                root.confirm-selected = true;
+                return accept;
+            }
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                root.confirm-selected = !root.confirm-selected;
+                return accept;
+            }
+            if event.text == Key.Return {
+                root.activate-selected();
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            padding: ConfirmTheme.card-margin;
+            card := Rectangle {
+                background: ConfirmTheme.card-background;
+                border-radius: ConfirmTheme.card-radius;
+                border-width: Theme.confirm-border;
+                border-color: ConfirmTheme.card-border;
+                accessible-role: groupbox;
+                accessible-label: root.heading + " " + root.name;
+                // Keeps clicks on the card from reaching the backdrop; a click
+                // clears the focus, so it is taken back for the keys.
+                TouchArea {
+                    clicked => { keys.focus(); }
+                }
+                VerticalLayout {
+                    padding: ConfirmTheme.padding;
+                    spacing: ConfirmTheme.spacing;
+                    VerticalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        title-text := Text {
+                            text: root.heading + " " + root.name + "?";
+                            color: Theme.text;
+                            font-size: ConfirmTheme.title-font-size;
+                            font-weight: 700;
+                            wrap: word-wrap;
+                        }
+                        consequence-text := Text {
+                            text: root.consequence;
+                            color: Theme.text;
+                            font-size: ConfirmTheme.body-font-size;
+                            wrap: word-wrap;
+                        }
+                        if root.error != "": modal-error-text := Text {
+                            text: root.error;
+                            color: Theme.error;
+                            font-size: ConfirmTheme.body-font-size;
+                            wrap: word-wrap;
+                        }
+                        if root.notice != "": modal-notice-text := Text {
+                            text: root.notice;
+                            color: Theme.detail;
+                            font-size: ConfirmTheme.body-font-size;
+                            wrap: word-wrap;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        cancel-button := DialogButton {
+                            label: root.finished() ? "Close" : "Cancel";
+                            accent: Theme.text;
+                            selected: root.finished() || !root.confirm-selected;
+                            enabled: !root.busy;
+                            clicked => {
+                                keys.focus();
+                                root.cancel();
+                            }
+                        }
+                        if !root.finished(): confirm-button := DialogButton {
+                            label: root.busy ? "Working..." : root.confirm-label;
+                            accent: Theme.error;
+                            selected: root.confirm-selected;
+                            enabled: !root.busy;
+                            clicked => {
+                                keys.focus();
+                                root.confirm();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Detail view of one session, drawn over the whole window: grouped facts, each
+// with a copy button; clicking a value copies it too. Esc, the close button and
+// a click on the backdrop close it.
+component DetailModal inherits Rectangle {
+    in property <string> name;
+    in property <string> host-label;
+    in property <OwnerStateKind> owner-state;
+    in property <string> owner-label;
+    in property <[DetailSectionData]> sections;
+    in property <string> copy-all;
+    callback close();
+    callback open-link();
+
+    // Section title and field label of the value copied last; empty when the
+    // confirmation is not showing.
+    property <string> copied;
+
+    // The clipboard is reached through a text input's copy(): Slint has no
+    // other clipboard call, and the platform backend owns the selection.
+    clipboard := TextInput {
+        visible: false;
+        width: 0px;
+        height: 0px;
+    }
+    function copy-text(key: string, text: string) {
+        clipboard.text = text;
+        clipboard.select-all();
+        clipboard.copy();
+        root.copied = key;
+    }
+
+    Timer {
+        interval: Theme.detail-copied-duration;
+        running: root.copied != "";
+        triggered => { root.copied = ""; }
+    }
+
+    Rectangle { background: ConfirmTheme.backdrop; }
+    backdrop := TouchArea {
+        mouse-cursor: default;
+        clicked => { root.close(); }
+        scroll-event(event) => { accept }
+    }
+
+    keys := FocusScope {
+        init => { self.focus(); }
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: Theme.detail-card-margin;
+            alignment: center;
+            card := Rectangle {
+                background: ConfirmTheme.card-background;
+                border-radius: ConfirmTheme.card-radius;
+                border-width: Theme.confirm-border;
+                border-color: ConfirmTheme.card-border;
+                accessible-role: groupbox;
+                accessible-label: "Details of " + root.name;
+                TouchArea {
+                    clicked => { keys.focus(); }
+                }
+                VerticalLayout {
+                    padding: Theme.detail-card-padding;
+                    spacing: ConfirmTheme.spacing;
+                    HorizontalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        VerticalLayout {
+                            spacing: Theme.confirm-spacing;
+                            HorizontalLayout {
+                                spacing: Theme.badge-spacing;
+                                title-text := Text {
+                                    text: root.name;
+                                    color: Theme.text;
+                                    font-size: ConfirmTheme.title-font-size;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
+                                if root.host-label != "": Rectangle {
+                                    background: Theme.badge-background;
+                                    border-radius: Theme.badge-radius;
+                                    horizontal-stretch: 0;
+                                    width: min(host-tag.preferred-width + 2 * Theme.badge-padding, Theme.host-tag-max-width);
+                                    height: Theme.badge-row-height;
+                                    y: (parent.height - self.height) / 2;
+                                    HorizontalLayout {
+                                        padding-left: Theme.badge-padding;
+                                        padding-right: Theme.badge-padding;
+                                        host-tag := Text {
+                                            text: root.host-label;
+                                            color: Theme.badge-text;
+                                            font-size: Theme.badge-font-size;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.owner-spacing;
+                                Rectangle {
+                                    width: Theme.owner-dot-size;
+                                    height: Theme.owner-dot-size;
+                                    border-radius: Theme.owner-dot-size / 2;
+                                    background: Theme.owner-color(root.owner-state);
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: root.owner-label;
+                                    color: Theme.owner-color(root.owner-state);
+                                    font-size: Theme.detail-font-size;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        close-icon := ActionIcon {
+                            kind: "remove";
+                            tip: "Close";
+                            size: Theme.detail-icon-size;
+                            glyph: Theme.detail-icon-glyph;
+                            horizontal-stretch: 0;
+                            y: 0;
+                            activated => { root.close(); }
+                        }
+                    }
+                    ScrollView {
+                        preferred-height: sections-layout.preferred-height;
+                        sections-layout := VerticalLayout {
+                            padding-right: Theme.detail-scrollbar-gap;
+                            spacing: Theme.detail-section-gap;
+                            alignment: start;
+                            for section in root.sections: VerticalLayout {
+                                spacing: Theme.row-spacing;
+                                Text {
+                                    text: section.title;
+                                    color: Theme.group-text;
+                                    font-size: Theme.group-font-size;
+                                    font-weight: 700;
+                                }
+                                for field in section.fields: field-row := Rectangle {
+                                    property <string> key: section.title + "/" + field.label;
+                                    property <bool> was-copied: root.copied == self.key;
+                                    height: Theme.detail-field-height;
+                                    border-radius: Theme.row-radius;
+                                    background: value-touch.has-hover ? Theme.chip-background : transparent;
+                                    value-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        accessible-role: button;
+                                        accessible-label: "Copy " + field.label;
+                                        clicked => { root.copy-text(field-row.key, field.value); }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: Theme.row-padding;
+                                        spacing: 0px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: field.label;
+                                                color: Theme.detail;
+                                                font-size: Theme.detail-label-font-size;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: field.shown;
+                                                color: Theme.text;
+                                                font-size: Theme.detail-value-font-size;
+                                                overflow: elide;
+                                            }
+                                        }
+                                        if field.link: link-icon := ActionIcon {
+                                            kind: "link";
+                                            tip: "Open link";
+                                            size: Theme.detail-icon-size;
+                                            glyph: Theme.detail-icon-glyph;
+                                            horizontal-stretch: 0;
+                                            activated => { root.open-link(); }
+                                        }
+                                        ActionIcon {
+                                            kind: "copy";
+                                            tip: "Copy " + field.label;
+                                            size: Theme.detail-icon-size;
+                                            glyph: Theme.detail-icon-glyph;
+                                            horizontal-stretch: 0;
+                                            activated => { root.copy-text(field-row.key, field.value); }
+                                        }
+                                    }
+                                    // Over the end of the value, clear of the copy button.
+                                    if field-row.was-copied: Rectangle {
+                                        x: parent.width - Theme.detail-icon-size - self.width;
+                                        y: (parent.height - self.height) / 2;
+                                        width: copied-text.preferred-width + 2 * Theme.badge-padding;
+                                        height: Theme.badge-row-height;
+                                        background: Theme.chip-hover-background;
+                                        border-radius: Theme.badge-radius;
+                                        copied-text := Text {
+                                            text: "Copied";
+                                            color: Theme.detail-copied;
+                                            font-size: Theme.detail-label-font-size;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        DialogButton {
+                            label: root.copied == "all" ? "Copied" : "Copy all";
+                            accent: Theme.text;
+                            clicked => {
+                                keys.focus();
+                                root.copy-text("all", root.copy-all);
+                            }
+                        }
+                        DialogButton {
+                            label: "Close";
+                            accent: Theme.text;
+                            clicked => { root.close(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Pohunek Companion";
+    icon: @image-url("../../../assets/icons/pohunek-app-256.png");
+    preferred-width: 320px;
+    preferred-height: 800px;
+    background: Theme.background;
+
+    // The owner's groups in order, each with its sessions in order.
+    in property <[GroupData]> groups;
+    // Typed connection or protocol error; empty when the list is valid.
+    in property <string> error;
+    // Daemon connection status; empty while connected.
+    in property <string> status;
+    // Why the layout file could not be used or saved; empty when it works.
+    in property <string> layout-error;
+    // Why logging is unavailable; empty when log output is working.
+    in property <string> log-error;
+    // Outcome of the last attach click; empty when it launched.
+    in property <string> attach-error;
+    // Why the new-session dialog could not be started; empty when it started.
+    in property <string> launch-error;
+    // Id of the project the active project filter selects; empty for "All" and
+    // "No project".
+    in property <string> filter-project-id;
+    // Opens the new-session dialog as its own window; the arguments are the
+    // host to preselect, the project to preselect and the My groups group to
+    // place the session in, each empty for none.
+    callback new-session(string, string, string);
+    // Opens the assistant dialog as its own window; the argument is the project
+    // id to preselect, empty for none.
+    callback assistant(string);
+    // Labels of the selectable views, in order.
+    in property <[string]> view-names;
+    in-out property <int> view-index;
+    // Whether the selected view lets the owner rearrange sessions by drag and
+    // drop and manage groups; derived views only offer the row menu's layout
+    // actions.
+    in property <bool> editable;
+    callback attach(string, string, string);
+    // Opens the folder / the Work link of the session (host, id).
+    callback open-folder(string, string);
+    callback open-link(string, string);
+    // Hands a manually placed session (host, id) back to the placement rules.
+    callback return-to-rule(string, string);
+    // Moves a session (host, id) to the end of an owner group.
+    callback move-to-group(string, string, string);
+    // Owner groups in display order.
+    in property <[OwnerGroupData]> owner-groups;
+    callback view-selected(int);
+    // The project chips: labels, the keys sent back on a click, and the
+    // selected position.
+    in property <[string]> project-names;
+    in property <[string]> project-keys;
+    in-out property <int> project-index;
+    callback project-selected(string);
+    // The Hosts dropdown: labels with connection state, the keys sent back on
+    // a pick (empty for all hosts), and which entry is selected. No entries
+    // while only the local host exists, which hides the button.
+    in property <[string]> host-names;
+    in property <[string]> host-keys;
+    in property <[bool]> host-checked;
+    // Name of the host the list is narrowed to; empty for all hosts.
+    in property <string> host-active-name;
+    callback host-selected(string);
+    // The state chips: labels, the keys sent back on a click, and whether each
+    // state is shown.
+    in property <[string]> state-names;
+    in property <[string]> state-keys;
+    in property <[bool]> state-checked;
+    callback state-toggled(string);
+    // Payload of a dragged row: its session.
+    pure callback payload(SessionRowData) -> data-transfer;
+    // Dropped payload, target group id, anchor session host and id (empty for
+    // the end of the group), and whether it lands after the anchor.
+    callback drop(data-transfer, string, string, string, bool);
+    // Whether the drag is over the lower half of the row under it.
+    in-out property <bool> indicator-after;
+    // Why the last group operation was refused; empty when it succeeded.
+    in property <string> group-error;
+    callback create-group(string);
+    // Creates a group and moves the session (host, id) to its end.
+    callback create-group-and-move(string, string, string);
+    callback rename-group(string, string);
+    callback toggle-group(string, bool);
+    callback delete-group(string);
+    // Payload of a dragged group header: its group id.
+    pure callback group-payload(string) -> data-transfer;
+    pure callback is-group(data-transfer) -> bool;
+    // Dropped group payload, the group it landed on, and whether after it.
+    callback drop-group(data-transfer, string, bool);
+    in-out property <bool> creating-group;
+    // The session (host, id) a "New group..." menu entry is creating the group
+    // for; empty when the editor was opened by "+ New group".
+    in-out property <string> pending-host;
+    in-out property <string> pending-id;
+    // Why the last rename was refused; empty when it succeeded or none ran.
+    in-out property <string> rename-error;
+    // Renames the session (host, id); an empty name clears it.
+    callback rename-session(string, string, string);
+    // The session (host, id) whose name is being edited; empty when none is.
+    in-out property <string> renaming-host;
+    in-out property <string> renaming-id;
+    in-out property <string> rename-text;
+    // Why the last "Open folder" or "Open link" failed; empty when it succeeded or none ran.
+    in-out property <string> open-error;
+    // Asks to stop or remove the session (host, id, name); `kind` is "stop" or "remove".
+    callback request-action(string, string, string, string);
+    // Asks for the detail view of the session (host, id); the host fills the
+    // detail-* properties and sets detail-open.
+    callback request-details(string, string);
+    in-out property <bool> detail-open;
+    in property <string> detail-name;
+    in property <string> detail-host-label;
+    in property <OwnerStateKind> detail-owner-state;
+    in property <string> detail-owner-label;
+    in property <string> detail-host;
+    in property <string> detail-id;
+    in property <[DetailSectionData]> detail-sections;
+    // The plain-text block "Copy all" puts on the clipboard.
+    in property <string> detail-copy-all;
+    changed detail-open => {
+        if !self.detail-open {
+            window-keys.focus();
+        }
+    }
+    // The in-app confirmation modal; its text and state are set by the host.
+    in-out property <bool> confirm-open;
+    in property <string> confirm-heading;
+    in property <string> confirm-label;
+    in property <string> confirm-name;
+    in property <string> confirm-consequence;
+    in property <bool> confirm-busy;
+    in property <string> confirm-error;
+    in property <string> confirm-notice;
+    in-out property <bool> confirm-selected;
+    callback confirm-accepted();
+    callback confirm-cancelled();
+    changed confirm-open => {
+        if !self.confirm-open {
+            window-keys.focus();
+        }
+    }
+    // A standalone group name editor ("+ New group") belongs to the editable
+    // view; leaving it ends that edit. A row menu's edit stays open.
+    changed editable => {
+        if !self.editable && self.pending-id == "" {
+            self.creating-group = false;
+            self.pending-host = "";
+            self.pending-id = "";
+        }
+    }
+    // Id of the group whose name is being edited; empty when none is.
+    in-out property <string> editing-group;
+    // The text typed into that group's name editor.
+    in-out property <string> edit-text;
+    // The text of the filter field; empty shows every session.
+    in-out property <string> filter-text;
+    // A filter is active and no session matches it.
+    in property <bool> filter-empty;
+    // The filter text changed by typing or clearing.
+    callback filter-changed(string);
+
+    // Ctrl+F (Cmd+F on macOS) focuses the filter field from anywhere.
+    window-keys := FocusScope {
+      init => { self.focus(); }
+      capture-key-pressed(event) => {
+        if (event.modifiers.control || event.modifiers.meta) && event.text == "f" {
+            filter-edit.focus();
+            return accept;
+        }
+        reject
+      }
+    VerticalLayout {
+        padding: Theme.window-padding;
+        spacing: Theme.row-spacing;
+        HorizontalLayout {
+            spacing: Theme.chip-spacing;
+            view-select := ChoiceChips {
+                model: root.view-names;
+                selected-index <=> root.view-index;
+                chip-height: Theme.chip-height;
+                chip-padding: Theme.chip-padding;
+                chip-radius: Theme.chip-radius;
+                chip-spacing: Theme.chip-spacing;
+                font-size: Theme.chip-font-size;
+                chip-background: Theme.chip-background;
+                chip-hover-background: Theme.chip-hover-background;
+                chip-selected-background: Theme.chip-selected-background;
+                text-color: Theme.detail;
+                selected-text-color: Theme.text;
+                selected(index) => { root.view-selected(index); }
+            }
+            if root.host-names.length > 0: hosts-button := Rectangle {
+                width: min(hosts-label.preferred-width + 2 * Theme.chip-padding, Theme.hosts-button-max-width);
+                height: Theme.chip-height;
+                border-radius: Theme.chip-radius;
+                background: root.host-active-name != "" ? Theme.chip-selected-background : hosts-touch.has-hover ? Theme.chip-hover-background : Theme.chip-background;
+                hosts-label := Text {
+                    text: (root.host-active-name != "" ? root.host-active-name : "Hosts") + " \u{25be}";
+                    font-size: Theme.chip-font-size;
+                    color: root.host-active-name != "" ? Theme.text : Theme.detail;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+                hosts-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    accessible-role: button;
+                    accessible-label: "Hosts";
+                    clicked => { hosts-menu.show({ x: self.absolute-position.x, y: self.absolute-position.y + self.height }); }
+                }
+                hosts-menu := ContextMenuArea {
+                    width: 0px;
+                    height: 0px;
+                    Menu {
+                        for name[index] in root.host-names: MenuItem {
+                            title: name;
+                            checkable: true;
+                            checked: root.host-checked[index];
+                            activated => { root.host-selected(root.host-keys[index]); }
+                        }
+                    }
+                }
+            }
+        }
+        project-select := ChoiceChips {
+            model: root.project-names;
+            selected-index <=> root.project-index;
+            chip-height: Theme.chip-height;
+            chip-padding: Theme.chip-padding;
+            chip-radius: Theme.chip-radius;
+            chip-spacing: Theme.chip-spacing;
+            font-size: Theme.chip-font-size;
+            chip-background: Theme.chip-background;
+            chip-hover-background: Theme.chip-hover-background;
+            chip-selected-background: Theme.chip-selected-background;
+            text-color: Theme.detail;
+            selected-text-color: Theme.text;
+            selected(index) => { root.project-selected(root.project-keys[index]); }
+        }
+        state-select := ChoiceChips {
+            model: root.state-names;
+            multi: true;
+            checked: root.state-checked;
+            chip-height: Theme.chip-height;
+            chip-padding: Theme.chip-padding;
+            chip-radius: Theme.chip-radius;
+            chip-spacing: Theme.chip-spacing;
+            font-size: Theme.chip-font-size;
+            chip-background: Theme.chip-background;
+            chip-hover-background: Theme.chip-hover-background;
+            chip-selected-background: Theme.chip-selected-background;
+            text-color: Theme.detail;
+            selected-text-color: Theme.text;
+            selected(index) => { root.state-toggled(root.state-keys[index]); }
+        }
+        filter-scope := FocusScope {
+            height: Theme.field-height + 2 * Theme.field-margin;
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape && root.filter-text != "" {
+                    root.filter-text = "";
+                    root.filter-changed("");
+                    return accept;
+                }
+                reject
+            }
+            filter-edit := ThemedSearchField {
+                y: Theme.field-margin;
+                width: parent.width;
+                placeholder: "Filter sessions (Ctrl+F)";
+                label: "Filter sessions";
+                search-glyph: true;
+                clearable: true;
+                clear-label: "Clear filter";
+                text <=> root.filter-text;
+                edited(value) => { root.filter-changed(value); }
+            }
+        }
+        if root.error != "": error-text := Text {
+            text: root.error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.status != "": status-text := Text {
+            text: root.status;
+            color: Theme.detail;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.layout-error != "": layout-error-text := Text {
+            text: root.layout-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.log-error != "": log-error-text := Text {
+            text: root.log-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.attach-error != "": attach-error-text := Text {
+            text: root.attach-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.launch-error != "": launch-error-text := Text {
+            text: root.launch-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            height: Theme.new-group-height;
+            alignment: start;
+            new-session-touch := TouchArea {
+                width: new-session-text.preferred-width + 2 * Theme.row-padding;
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: "New session";
+                clicked => { root.new-session("", root.filter-project-id, ""); }
+                new-session-text := Text {
+                    x: Theme.row-padding;
+                    text: "+ New session";
+                    color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
+                    font-size: Theme.group-font-size;
+                    vertical-alignment: center;
+                }
+            }
+            assistant-touch := TouchArea {
+                width: assistant-text.preferred-width + 2 * Theme.row-padding;
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: "Assistant";
+                clicked => { root.assistant(root.filter-project-id); }
+                assistant-text := Text {
+                    x: Theme.row-padding;
+                    text: "+ Assistant";
+                    color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
+                    font-size: Theme.group-font-size;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        if root.group-error != "": group-error-text := Text {
+            text: root.group-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.editable && !root.creating-group: new-group-touch := TouchArea {
+            height: Theme.new-group-height;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "New group";
+            clicked => { root.creating-group = true; }
+            Text {
+                x: Theme.row-padding;
+                text: "+ New group";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
+                font-size: Theme.group-font-size;
+                vertical-alignment: center;
+            }
+        }
+        if root.creating-group: new-group-scope := FocusScope {
+            height: Theme.field-height;
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.creating-group = false;
+                    root.pending-host = "";
+                    root.pending-id = "";
+                    return accept;
+                }
+                reject
+            }
+            new-group-edit := ThemedSearchField {
+                placeholder: "Group name";
+                label: "New group name";
+                init => { self.focus(); }
+                accepted(value) => {
+                    root.creating-group = false;
+                    if root.pending-id != "" {
+                        root.create-group-and-move(value, root.pending-host, root.pending-id);
+                    } else {
+                        root.create-group(value);
+                    }
+                    root.pending-host = "";
+                    root.pending-id = "";
+                }
+            }
+        }
+        if root.open-error != "": open-error-text := Text {
+            text: root.open-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.rename-error != "": rename-error-text := Text {
+            text: root.rename-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.renaming-id != "": rename-scope := FocusScope {
+            height: Theme.field-height;
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.renaming-id = "";
+                    return accept;
+                }
+                reject
+            }
+            rename-edit := ThemedSearchField {
+                placeholder: "Session name (empty clears)";
+                label: "Session name";
+                text <=> root.rename-text;
+                init => { self.focus(); }
+                accepted(value) => {
+                    root.rename-session(root.renaming-host, root.renaming-id, value);
+                    root.renaming-id = "";
+                }
+            }
+        }
+        if root.filter-empty: no-match-text := Text {
+            text: "No sessions match";
+            color: Theme.detail;
+            font-size: Theme.error-font-size;
+            horizontal-alignment: center;
+        }
+        session-list := ScrollView {
+            VerticalLayout {
+                padding-right: Theme.scrollbar-gap;
+                spacing: Theme.group-spacing;
+                alignment: start;
+                for group in root.groups: VerticalLayout {
+                    spacing: Theme.row-spacing;
+                    alignment: start;
+                    if group.needs-you: needs-you-header := GroupHeader {
+                        name: group.name;
+                        count: group.count;
+                        name-color: Theme.owner-needs-owner;
+                        owner-group: false;
+                        collapsible: false;
+                        is-group(data) => { root.is-group(data) }
+                    }
+                    if !group.needs-you: GroupHeader {
+                        name: group.name;
+                        count: group.count;
+                        collapsed: group.collapsed;
+                        owner-group: root.editable;
+                        editing: root.editing-group == group.id;
+                        edit-text <=> root.edit-text;
+                        set-editing(on) => {
+                            root.editing-group = on ? group.id : "";
+                            if on { root.edit-text = group.name; }
+                        }
+                        editable: !group.fixed;
+                        payload() => { root.group-payload(group.id) }
+                        is-group(data) => { root.is-group(data) }
+                        toggle-collapse => { root.toggle-group(group.id, !group.collapsed); }
+                        rename(value) => { root.rename-group(group.id, value); }
+                        delete => { root.delete-group(group.id); }
+                        group-dropped(data, after) => { root.drop-group(data, group.id, after); }
+                    }
+                    if !group.collapsed: VerticalLayout {
+                        spacing: Theme.row-spacing;
+                        alignment: start;
+                        for session in group.rows: row-drop := DropArea {
+                            enabled: root.editable && !group.needs-you;
+                            can-drop(event) => {
+                                root.indicator-after = event.position.y > self.height / 2;
+                                root.is-group(event.data) ? DragAction.none : DragAction.move
+                            }
+                            dropped(event) => {
+                                root.drop(event.data, group.id, session.host, session.id, event.position.y > self.height / 2);
+                                DragAction.move
+                            }
+                            SessionRow {
+                                data: session;
+                                draggable: root.editable && !group.needs-you;
+                                indicator-above: row-drop.has-drag && !root.indicator-after;
+                                indicator-below: row-drop.has-drag && root.indicator-after;
+                                payload(row) => { root.payload(row) }
+                                owner-groups: root.owner-groups;
+                                clicked => { root.attach(session.host, session.id, session.attach-refusal); }
+                                move-to-group(target) => { root.move-to-group(session.host, session.id, target); }
+                                new-group => {
+                                    root.pending-host = session.host;
+                                    root.pending-id = session.id;
+                                    root.creating-group = true;
+                                }
+                                rename => {
+                                    root.rename-error = "";
+                                    root.rename-text = session.name == session.id ? "" : session.name;
+                                    root.renaming-host = session.host;
+                                    root.renaming-id = session.id;
+                                }
+                                stop => { root.request-action("stop", session.host, session.id, session.name); }
+                                remove => { root.request-action("remove", session.host, session.id, session.name); }
+                                open-folder => { root.open-folder(session.host, session.id); }
+                                open-link => { root.open-link(session.host, session.id); }
+                                details => { root.request-details(session.host, session.id); }
+                                return-to-rule => { root.return-to-rule(session.host, session.id); }
+                                new-session-in-project(host, project, group) => { root.new-session(host, project, group); }
+                            }
+                        }
+                        // Below the last row (the only target of an empty group):
+                        // dropping here appends to the group.
+                        group-end := DropArea {
+                            enabled: root.editable && !group.needs-you;
+                            visible: root.editable && !group.needs-you;
+                            height: !root.editable || group.needs-you ? 0px : Theme.group-end-drop-height + (group.rows.length == 0 ? Theme.row-height : 0px);
+                            can-drop(event) => {
+                                root.is-group(event.data) ? DragAction.none : DragAction.move
+                            }
+                            dropped(event) => {
+                                root.drop(event.data, group.id, "", "", true);
+                                DragAction.move
+                            }
+                            Rectangle {
+                                Rectangle {
+                                    visible: group-end.has-drag;
+                                    y: 0;
+                                    height: Theme.drop-indicator-height;
+                                    background: Theme.drop-indicator;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    }
+    if root.detail-open: detail-modal := DetailModal {
+        width: root.width;
+        height: root.height;
+        name: root.detail-name;
+        host-label: root.detail-host-label;
+        owner-state: root.detail-owner-state;
+        owner-label: root.detail-owner-label;
+        sections: root.detail-sections;
+        copy-all: root.detail-copy-all;
+        close => { root.detail-open = false; }
+        open-link => { root.open-link(root.detail-host, root.detail-id); }
+    }
+    if root.confirm-open: confirm-modal := ConfirmModal {
+        width: root.width;
+        height: root.height;
+        heading: root.confirm-heading;
+        confirm-label: root.confirm-label;
+        name: root.confirm-name;
+        consequence: root.confirm-consequence;
+        busy: root.confirm-busy;
+        error: root.confirm-error;
+        notice: root.confirm-notice;
+        confirm-selected <=> root.confirm-selected;
+        confirm => { root.confirm-accepted(); }
+        cancel => { root.confirm-cancelled(); }
+    }
+}
+
+export struct TrayEntryData {
+    label: string,
+    host: string,
+    id: string,
+    // Why the session cannot be attached; empty when it can.
+    attach-refusal: string,
+}
+
+export component AboutCompanionWindow inherits Window {
+    title: "About Pohunek Companion";
+    icon: @image-url("../../../assets/icons/pohunek-app-256.png");
+    preferred-width: Theme.about-width;
+    preferred-height: Theme.about-height;
+    background: Theme.background;
+    in property <string> version;
+    VerticalLayout {
+        alignment: center;
+        spacing: Theme.about-spacing;
+        Image {
+            source: @image-url("../../../assets/icons/pohunek-app-256.png");
+            width: Theme.about-logo-size;
+            height: Theme.about-logo-size;
+        }
+        Text {
+            text: "Pohunek Companion";
+            color: Theme.text;
+            font-size: Theme.about-title-font-size;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Version " + root.version;
+            color: Theme.detail;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Icon artwork derived from the Pohunek assets (MIT)";
+            color: Theme.detail;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component AboutWindow inherits Window {
+    title: "About Slint";
+    preferred-width: Theme.about-width;
+    preferred-height: Theme.about-height;
+    background: Theme.about-background;
+    AboutSlint {}
+}
+
+export component Tray inherits SystemTrayIcon {
+    in property <image> tray-icon;
+    in property <string> tray-tooltip;
+    in property <[TrayEntryData]> entries;
+    in property <string> empty-label;
+    callback attach-entry(string, string, string);
+    callback show-window();
+    callback show-about();
+    callback show-about-companion();
+    callback new-session();
+    callback assistant();
+    callback quit();
+
+    icon: root.tray-icon;
+    tooltip: root.tray-tooltip;
+
+    Menu {
+        if root.entries.length == 0: MenuItem {
+            title: root.empty-label;
+            enabled: false;
+        }
+        for entry in root.entries: MenuItem {
+            title: entry.label;
+            activated => { root.attach-entry(entry.host, entry.id, entry.attach-refusal); }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "New session...";
+            activated => { root.new-session(); }
+        }
+        MenuItem {
+            title: "Assistant...";
+            activated => { root.assistant(); }
+        }
+        MenuItem {
+            title: "Show window";
+            activated => { root.show-window(); }
+        }
+        MenuItem {
+            title: "About Pohunek Companion";
+            activated => { root.show-about-companion(); }
+        }
+        MenuItem {
+            title: "About Slint";
+            activated => { root.show-about(); }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit(); }
+        }
+    }
+    clicked => { root.show-window(); }
+}

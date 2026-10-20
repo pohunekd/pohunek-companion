@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Regenerate every derived icon file under assets/icons/ from the SVG master
+# assets/pohunek-icon-master.svg.
+#
+# usage: scripts/build-icons
+#
+# Needs rsvg-convert, ImageMagick (magick) and python3. The outputs are
+# committed, so a normal build needs none of these tools.
+#
+#   pohunek-app-256.png          window icon and About logo (Slint @image-url)
+#   pohunek-companion.icns       macOS app bundle icon (Apple icon grid margin)
+#   hicolor/             freedesktop hicolor theme: PNGs at 16 to 512 px and the SVG
+#                        master as scalable/apps, installed on Linux as pohunek-companion
+#   pohunek-tray-mask-128.gray   128x128 8-bit coverage mask of the herder figure
+#                                for the tray icon: no prompt, no field lines,
+#                                thickened whip and outline so it survives 16-32 px
+
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+master=$root/assets/pohunek-icon-master.svg
+out=$root/assets/icons
+for tool in rsvg-convert magick python3; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "build-icons: $tool is required" >&2; exit 1; }
+done
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+mkdir -p "$out"
+
+rsvg-convert -w 256 -h 256 "$master" -o "$out/pohunek-app-256.png"
+
+# Linux icon theme: full-bleed renders, one directory per size.
+for size in 16 32 48 64 128 256 512; do
+    dir=$out/hicolor/${size}x${size}/apps
+    mkdir -p "$dir"
+    rsvg-convert -w "$size" -h "$size" "$master" -o "$dir/pohunek-companion.png"
+done
+mkdir -p "$out/hicolor/scalable/apps"
+cp "$master" "$out/hicolor/scalable/apps/pohunek-companion.svg"
+
+# macOS draws icons inside an 824 px square of a 1024 px canvas.
+for size in 16 32 64 128 256 512 1024; do
+    inner=$((size * 824 / 1024))
+    rsvg-convert -w "$inner" -h "$inner" "$master" -o "$work/inner.png"
+    magick -size "${size}x${size}" xc:none +set date:create +set date:modify -define png:exclude-chunk=date,time "$work/inner.png" -gravity center -composite \
+        "PNG32:$work/icon_$size.png"
+done
+python3 -I - "$work" "$out/pohunek-companion.icns" <<'PY'
+import struct
+import sys
+
+work, target = sys.argv[1], sys.argv[2]
+# (icns type, pixel size): the PNG-based icon types macOS reads.
+entries = [(b"icp4", 16), (b"icp5", 32), (b"icp6", 64), (b"ic07", 128),
+           (b"ic08", 256), (b"ic09", 512), (b"ic10", 1024)]
+chunks = []
+for kind, size in entries:
+    with open(f"{work}/icon_{size}.png", "rb") as handle:
+        data = handle.read()
+    chunks.append(kind + struct.pack(">I", len(data) + 8) + data)
+body = b"".join(chunks)
+with open(target, "wb") as handle:
+    handle.write(b"icns" + struct.pack(">I", len(body) + 8) + body)
+PY
+
+# Tray mask: render the dark layer (the master's second path) black on white at
+# 1060 px, then erase the prompt and the ropes/field, thicken, centre, and
+# downscale. Pixel coordinates are in that 1060 px render.
+python3 -I - "$master" "$work/dark.svg" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1]).read()
+path = re.findall(r'fill="#19120a"[^>]*d="([^"]*)"', text)[0]
+open(sys.argv[2], "w").write(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2120 2120" width="1060" height="1060">'
+    '<rect width="2120" height="2120" fill="#fff"/>'
+    '<g transform="translate(0,2080) scale(0.1,-0.1)">'
+    f'<path fill="#000" fill-rule="evenodd" d="{path}"/></g></svg>'
+)
+PY
+rsvg-convert "$work/dark.svg" -o "$work/dark.png"
+magick "$work/dark.png" -colorspace gray -threshold 50% -negate "$work/figure.png"
+magick "$work/figure.png" \
+    -fill black -draw "rectangle 700,100 1000,290" \
+    -draw "rectangle 455,650 1060,1060" \
+    -draw "rectangle 0,935 460,1060" "$work/cut.png"
+magick "$work/cut.png" \
+    \( "$work/cut.png" -crop 420x260+640+380 +repage -morphology Dilate Disk:13 \) \
+    -geometry +640+380 -compose lighten -composite "$work/whip.png"
+magick "$work/whip.png" -morphology Dilate Disk:6 -trim +repage \
+    -gravity center -background black -extent 1000x1000 -resize 128x128 \
+    -depth 8 "gray:$out/pohunek-tray-mask-128.gray"
