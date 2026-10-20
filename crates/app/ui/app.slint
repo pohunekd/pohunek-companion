@@ -1464,12 +1464,14 @@ export component AppWindow inherits Window {
         }
         HorizontalLayout {
             height: Theme.new-group-height;
+            alignment: start;
             new-session-touch := TouchArea {
+                width: new-session-text.preferred-width + 2 * Theme.row-padding;
                 mouse-cursor: pointer;
                 accessible-role: button;
                 accessible-label: "New session";
                 clicked => { root.new-session("", root.filter-project-id, ""); }
-                Text {
+                new-session-text := Text {
                     x: Theme.row-padding;
                     text: "+ New session";
                     color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
@@ -1478,11 +1480,12 @@ export component AppWindow inherits Window {
                 }
             }
             assistant-touch := TouchArea {
+                width: assistant-text.preferred-width + 2 * Theme.row-padding;
                 mouse-cursor: pointer;
                 accessible-role: button;
                 accessible-label: "Assistant";
                 clicked => { root.assistant(root.filter-project-id); }
-                Text {
+                assistant-text := Text {
                     x: Theme.row-padding;
                     text: "+ Assistant";
                     color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;

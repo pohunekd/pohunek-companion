@@ -1,6 +1,6 @@
-import { CheckBox, TextEdit } from "std-widgets.slint";
+import { CheckBox, Palette } from "std-widgets.slint";
 import { Theme } from "app.slint";
-import { ChipField, DialogTheme, FieldLabel, SearchSelect } from "dialog_fields.slint";
+import { ChipField, DialogTheme, FieldLabel, MultiLineField, SearchSelect } from "dialog_fields.slint";
 
 export component AssistantWindow inherits Window {
     title: "Pohunek assistant";
@@ -9,6 +9,9 @@ export component AssistantWindow inherits Window {
     preferred-height: 560px;
     background: Theme.background;
     forward-focus: request-edit;
+
+    // The window background is dark; the stock checkbox label follows it.
+    init => { Palette.color-scheme = ColorScheme.dark; }
 
     // Host labels, Local first.
     in property <[string]> host-names;
@@ -37,8 +40,10 @@ export component AssistantWindow inherits Window {
     // A launch is in flight, or its outcome is unknown and it must not be
     // repeated.
     in property <bool> busy;
-    // Why the choices or the launch failed; empty when there is nothing to show.
+    // Why the choices or the launch failed (first line of the message), and the
+    // recovery hint that follows it; empty when there is nothing to show.
     in property <string> error;
+    in property <string> error-hint;
     // The session exists but could not be attached; Start is not offered again.
     in property <bool> created;
     in-out property <bool> attach-after-create: true;
@@ -60,6 +65,8 @@ export component AssistantWindow inherits Window {
     }
 
     FocusScope {
+        // Only routes keys; Tab skips it.
+        focus-on-tab-navigation: false;
         // Captured before the focused field sees the key: `TextEdit` consumes
         // Enter itself, and a select consumes it to pick.
         capture-key-pressed(event) => {
@@ -78,7 +85,7 @@ export component AssistantWindow inherits Window {
             }
             // Enter starts everywhere except in the request, where it types a
             // newline and Ctrl+Enter starts.
-            if event.text == Key.Return && (event.modifiers.control || !request-edit.has-focus) {
+            if event.text == Key.Return && (event.modifiers.control || !request-edit.focused) {
                 root.try-submit();
                 return accept;
             }
@@ -150,10 +157,8 @@ export component AssistantWindow inherits Window {
                 vertical-stretch: 1;
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Request (optional, Ctrl+Enter starts)"; }
-                request-edit := TextEdit {
+                request-edit := MultiLineField {
                     text <=> root.request;
-                    min-height: DialogTheme.prompt-height;
-                    wrap: word-wrap;
                 }
             }
             attach-checkbox := CheckBox {
@@ -165,6 +170,12 @@ export component AssistantWindow inherits Window {
                 text: root.error;
                 color: Theme.error;
                 font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
+            if root.error-hint != "": error-hint-text := Text {
+                text: root.error-hint;
+                color: Theme.detail;
+                font-size: Theme.detail-font-size;
                 wrap: word-wrap;
             }
             if root.blocker != "": blocker-text := Text {
@@ -201,8 +212,9 @@ export component AssistantWindow inherits Window {
                     }
                     Rectangle {
                         border-radius: DialogTheme.button-radius;
-                        border-width: start-button.has-focus ? DialogTheme.focus-border-width : 0px;
-                        border-color: DialogTheme.focus-border;
+                        // The ring is light: the button itself is the focus colour.
+                        border-width: start-button.has-focus ? 2 * DialogTheme.focus-border-width : 0px;
+                        border-color: Theme.text;
                         background: !root.can-submit() ? DialogTheme.button-disabled
                             : start-touch.has-hover ? Theme.chip-selected-background.brighter(0.2)
                             : Theme.chip-selected-background;

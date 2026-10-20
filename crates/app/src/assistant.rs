@@ -102,6 +102,13 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
     Ok(parsed)
 }
 
+/// Shows `text` with its first line as the message and the rest as the hint.
+fn show_error(window: &AssistantWindow, text: &str) {
+    let (message, hint) = text.split_once('\n').unwrap_or((text, ""));
+    window.set_error(message.into());
+    window.set_error_hint(hint.trim().into());
+}
+
 /// Capitalized label of an intent chip.
 fn intent_label(intent: Intent) -> String {
     let name = intent.as_str();
@@ -247,7 +254,7 @@ impl Dialog {
         self.load_failed.store(false, Ordering::SeqCst);
         let token = self.host_generation.advance();
         *lock(&self.choices) = Choices::default();
-        window.set_error("".into());
+        show_error(&window, "");
         window.set_loading(true);
         window.set_projects_ready(false);
         show_projects(window, &[], None);
@@ -330,7 +337,7 @@ fn load_in_background(
                 }
                 Err(message) => {
                     dialog.load_failed.store(true, Ordering::SeqCst);
-                    window.set_error(message.into());
+                    show_error(&window, &message);
                 }
             }
             dialog.refresh_blocker(&window);
@@ -459,7 +466,7 @@ fn submit_in_background(
             (Ok(_), Err(message)) => {
                 window.set_busy(false);
                 window.set_created(true);
-                window.set_error(message.into());
+                show_error(&window, &message);
             }
             (Err(err), _) => {
                 // An unknown outcome or an unconfirmed prompt keeps the window
@@ -468,7 +475,7 @@ fn submit_in_background(
                     err,
                     CreateError::Unconfirmed | CreateError::PromptUnconfirmed
                 ));
-                window.set_error(err.to_string().into());
+                show_error(&window, &err.to_string());
                 dialog.refresh_blocker(&window);
             }
         });
@@ -622,11 +629,11 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                     is_remote_host(&dialog.host()),
                     Dialog::activity(&window),
                 ) {
-                    window.set_error(blocker.to_string().into());
+                    show_error(&window, &blocker.to_string());
                     return;
                 }
                 info!(intent = %form.intent, "assistant start requested");
-                window.set_error("".into());
+                show_error(&window, "");
                 window.set_busy(true);
                 dialog.refresh_blocker(&window);
                 let attach_after = window.get_attach_after_create().then(|| AttachAfter {
@@ -646,7 +653,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
             error!(error = %err, "load companion.toml");
             window.set_loading(false);
             window.set_blocker(CONFIG_UNREADABLE.into());
-            window.set_error(err.to_string().into());
+            show_error(&window, &err.to_string());
         }
     }
     let weak = window.as_weak();

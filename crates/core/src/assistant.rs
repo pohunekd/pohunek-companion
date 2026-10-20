@@ -48,7 +48,7 @@ pub enum AssistantFormError {
     Loading,
     #[error("A launch is in progress.")]
     InFlight,
-    #[error("A remote host needs a project: choose one.")]
+    #[error("A remote host needs a project: choose one (upstream limitation, zajca/pohunek#1398).")]
     RemoteNeedsProject,
     #[error("The agent `{0}` cannot host an assistant session on this host.")]
     AgentNotCapable(String),

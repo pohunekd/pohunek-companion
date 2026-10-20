@@ -27,6 +27,7 @@ export global DialogTheme {
     out property <color> list-background: #26282c;
     out property <color> list-border: #3a3d44;
     out property <length> field-font-size: 13px;
+    out property <length> multiline-min-height: 60px;
 }
 
 // Fuzzy matching lives in Rust (`pohunek_companion_core::fuzzy_matches`): the
@@ -235,20 +236,20 @@ export component SearchSelect inherits Rectangle {
     }
 }
 
-// A single-choice chip row that takes keyboard focus: Left and Right move the
-// selection.
+// A single-choice chip row that takes keyboard focus: Left/Up and Right/Down
+// move the selection.
 export component ChipField inherits FocusScope {
     in property <[string]> model;
     in-out property <int> selected-index: -1;
     callback selected(int);
 
     key-pressed(event) => {
-        if event.text == Key.RightArrow && root.selected-index < root.model.length - 1 {
+        if (event.text == Key.RightArrow || event.text == Key.DownArrow) && root.selected-index < root.model.length - 1 {
             root.selected-index += 1;
             root.selected(root.selected-index);
             return accept;
         }
-        if event.text == Key.LeftArrow && root.selected-index > 0 {
+        if (event.text == Key.LeftArrow || event.text == Key.UpArrow) && root.selected-index > 0 {
             root.selected-index -= 1;
             root.selected(root.selected-index);
             return accept;
@@ -286,4 +287,34 @@ export component FieldLabel inherits Text {
     max-height: self.preferred-height;
     font-size: DialogTheme.label-font-size;
     color: Theme.detail;
+}
+
+// A multi-line text field styled like the selects: it wraps, scrolls with its
+// text, and Enter types a newline.
+export component MultiLineField inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    out property <bool> focused: input.has-focus;
+
+    min-height: DialogTheme.multiline-min-height;
+    forward-focus: input;
+    background: Theme.chip-background;
+    border-radius: DialogTheme.field-radius;
+    border-width: input.has-focus ? DialogTheme.focus-border-width : 0px;
+    border-color: DialogTheme.focus-border;
+
+    flick := Flickable {
+        x: DialogTheme.field-padding;
+        y: DialogTheme.field-padding;
+        width: parent.width - 2 * DialogTheme.field-padding;
+        height: parent.height - 2 * DialogTheme.field-padding;
+        content-height: input.height;
+        input := TextInput {
+            width: flick.width;
+            height: max(self.preferred-height, flick.height);
+            color: Theme.text;
+            font-size: DialogTheme.field-font-size;
+            wrap: word-wrap;
+            single-line: false;
+        }
+    }
 }
