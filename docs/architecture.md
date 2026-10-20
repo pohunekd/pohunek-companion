@@ -155,7 +155,8 @@ desktop notifications stay with Pohunek's own notification command.
 
 ## Creating a session
 
-Creating a session is the companion's only mutation of daemon state. It runs
+Creating a session and renaming one are the companion's only mutations of
+daemon state (renaming is described under "Renaming a session"). Creation runs
 from `pohunek-companion new-session [--project <id>]`, a subcommand of the
 same binary that runs as its own process: `slint::set_xdg_app_id` is per
 process, so the dialog sets the app id `pohunek-companion-new-session` and a
@@ -176,6 +177,18 @@ and does not follow the session stream.
   the outcome unknown: the dialog says so, and Create stays disabled until the
   window is reopened, after the owner checked the sidebar.
 - Log lines carry the session id and the error code, never the name or prompt.
+
+## Renaming a session
+
+The session row's context menu has "Rename...". It opens a name editor in the
+sidebar prefilled with the current name (empty when the session shows its id).
+Accepting sends one `session.rename`: the trimmed text is the name, blank
+clears it so the row falls back to the session id. The editor keeps no local
+copy of the result: the row changes when the daemon's session event arrives. A
+daemon refusal (for example an external read-only session or a control
+character) or a failure to reach the daemon is shown in the window as
+"Cannot rename <id>: <message>" and nothing changes. Log lines carry the
+session id and the error code, never the name.
 
 ## Window placement
 
