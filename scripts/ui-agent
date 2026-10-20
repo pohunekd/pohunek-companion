@@ -398,24 +398,26 @@ create_synthetic_session() {
 # it the owner's real overlay hosts would join the isolated run. The stub
 # fails `status --json` (discovery reports netbird_state_unavailable) unless a
 # synthetic remote host is running; then it forwards the real status with
-# every peer except that host's fqdn removed. Any other subcommand fails.
+# only a minimal projection (own address, that peer). Any other subcommand fails.
 write_netbird_stub() {
     local stub=$1 real
+    need jq
     real=$(command -v netbird 2>/dev/null || true)
     {
         printf '#!/usr/bin/env bash\nset -o pipefail\n'
         printf 'real=%q\nroute_file=%q\n' "$real" "$remote_route_file"
         cat <<'EOF'
 [ "${1:-}" = status ] && [ "${2:-}" = --json ] && [ $# -eq 2 ] || exit 1
-[ -n "$real" ] && [ -r "$route_file" ] || exit 1
+[ -n "$real" ] && [ -r "$route_file" ] || { echo "netbird stub: no real netbird or no synthetic remote host" >&2; exit 1; }
 route=$(cat "$route_file")
 fqdn=${route#netbird:}
 fqdn=${fqdn%@*}
 [ -n "$fqdn" ] || exit 1
 "$real" status --json | jq -c --arg fqdn "$fqdn" '
-    walk(if type == "array"
-         then map(select((type != "object") or (has("netbirdIp") | not) or (.fqdn == $fqdn)))
-         else . end)'
+    def only: map(select(type == "object" and .fqdn == $fqdn));
+    {daemonStatus, fqdn, netbirdIp,
+     peers: {details: ((if (.peers | type) == "array" then .peers else (.peers.details // []) end) | only)}}' ||
+    { echo "netbird stub: cannot read or filter the real status" >&2; exit 1; }
 EOF
     } >"$stub" && chmod 700 "$stub"
 }
