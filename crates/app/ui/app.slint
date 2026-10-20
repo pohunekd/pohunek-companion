@@ -75,9 +75,12 @@ export global Theme {
     out property <length> group-button-width: 22px;
     out property <color> group-button: #8a8f98;
     out property <color> group-button-hover: #e6e6e6;
-    out property <length> action-icon-size: 22px;
-    out property <length> action-icon-glyph: 12px;
-    out property <length> action-icon-stroke: 1.5px;
+    // Hit target of a row action icon (fits inside row-height); the glyph is centred, so
+    // neighbouring glyphs are separated by the difference.
+    out property <length> action-icon-size: 28px;
+    out property <length> action-icon-glyph: 20px;
+    out property <length> action-icon-stroke: 2px;
+    out property <length> action-stop-size: 15px;
     out property <length> action-tip-padding: 4px;
     out property <color> action-icon: #8a8f98;
     out property <color> action-icon-hover: #e6e6e6;
@@ -148,7 +151,7 @@ component ActionIcon inherits Rectangle {
     callback activated();
     out property <bool> hovered: icon-touch.has-hover;
     width: Theme.action-icon-size;
-    height: Theme.action-icon-size;
+    min-height: Theme.action-icon-size;
 
     icon-touch := TouchArea {
         mouse-cursor: pointer;
@@ -162,7 +165,7 @@ component ActionIcon inherits Rectangle {
     if root.kind == "stop": Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: Theme.action-icon-glyph - 3px;
+        width: Theme.action-stop-size;
         height: self.width;
         background: root.tint;
     }
