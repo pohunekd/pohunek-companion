@@ -380,11 +380,13 @@ export component NewSessionWindow inherits Window {
             spacing: DialogTheme.spacing;
 
             VerticalLayout {
-                // Above the fields below, which the open list overlaps.
+                // Above the fields below, which the open list overlaps; each select
+                // is raised over its own notes the same way.
                 z: host-field.list-open ? 3 : 0;
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Host"; }
                 host-field := SearchSelect {
+                    z: self.list-open ? 1 : 0;
                     model: root.host-names;
                     disabled: root.host-disabled;
                     selected-index <=> root.host-index;
@@ -402,6 +404,7 @@ export component NewSessionWindow inherits Window {
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Project"; }
                 project-field := SearchSelect {
+                    z: self.list-open ? 1 : 0;
                     loading: root.loading;
                     model: root.project-names;
                     selected-index <=> root.project-index;
@@ -413,6 +416,7 @@ export component NewSessionWindow inherits Window {
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Agent"; }
                 agent-field := SearchSelect {
+                    z: self.list-open ? 1 : 0;
                     loading: root.loading;
                     model: root.agent-names;
                     disabled: root.agent-disabled;
