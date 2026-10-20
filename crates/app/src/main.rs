@@ -580,6 +580,17 @@ impl HostsView {
             .collect()
     }
 
+    /// Every host has delivered a list at least once; derived collapsed
+    /// sections are pruned only then, because an unseeded host's sections are
+    /// not yet known.
+    fn all_seeded(&self) -> bool {
+        self.rows.iter().all(|(_, rows)| rows.is_some())
+    }
+
+    fn is_down(&self, host: &str) -> bool {
+        self.down.iter().any(|(target, _)| target == host)
+    }
+
     fn set_down(&mut self, host: &str, line: Option<String>) {
         self.down.retain(|(target, _)| target != host);
         if let Some(line) = line {
@@ -599,6 +610,21 @@ impl HostsView {
 }
 
 impl Publisher {
+    /// Shows why `host` is not followed; its rows stay out of the list.
+    fn refuse(&self, host: &LiveHost, message: &str) {
+        let label = host.label.as_deref().unwrap_or(&host.target);
+        let status = {
+            let mut hosts = self.hosts.borrow_mut();
+            hosts.set_down(&host.target, Some(format!("{label}: {message}")));
+            hosts.status()
+        };
+        if let Err(err) = self.window.upgrade_in_event_loop(move |window| {
+            window.set_status(status.into());
+        }) {
+            error!(error = %err, "deliver the hosts error to the UI");
+        }
+    }
+
     /// Applies one update of `host` to the layout and queues the window update.
     fn publish(&self, host: &LiveHost, update: LiveUpdate) {
         let local = host.target == LOCAL_HOST;
@@ -628,7 +654,13 @@ impl Publisher {
             }
             LiveUpdate::Sessions(_) => None,
         };
-        let summary = union.as_deref().map(TraySummary::from_rows);
+        // The tray reflects the local daemon: while it is down the tray stays
+        // offline whatever a remote host reports.
+        let summary = union
+            .as_deref()
+            .filter(|_| !self.hosts.borrow().is_down(LOCAL_HOST))
+            .map(TraySummary::from_rows);
+        let all_seeded = self.hosts.borrow().all_seeded();
         // Reconciled and saved here so the UI thread never waits on disk;
         // the lock is held until the update is queued.
         let mut guard = None;
@@ -643,7 +675,9 @@ impl Publisher {
                 }
                 state.store.apply_rules(all, &self.rules);
                 let title_max_chars = state.title_max_chars;
-                state.store.prune_collapsed_sections(all, title_max_chars);
+                if all_seeded {
+                    state.store.prune_collapsed_sections(all, title_max_chars);
+                }
                 let layout_error = save_layout(&mut state);
                 state.rows = all.clone();
                 let arranged = arrange(&state);
@@ -727,24 +761,6 @@ fn follow_daemons(
                 return;
             }
         };
-        let targets: Vec<String> = remotes.iter().map(|host| host.target.clone()).collect();
-        let refusal = match runtime.block_on(host_naming_this_machine(&targets, &daemon)) {
-            Ok(None) => None,
-            Ok(Some(target)) => Some(format!(
-                "invalid `hosts` entry {target:?}: it names this machine, whose sessions are \
-                 already listed as local"
-            )),
-            Err(err) => Some(format!("cannot check the `hosts` entries: {err}")),
-        };
-        if let Some(message) = refusal {
-            error!(error = %message, "refusing the configured hosts");
-            if let Err(err) = window.upgrade_in_event_loop(move |window| {
-                window.set_error(message.into());
-            }) {
-                error!(error = %err, "deliver the hosts error to the UI");
-            }
-            return;
-        }
         let hosts: Vec<LiveHost> = std::iter::once(LiveHost::local())
             .chain(remotes.iter().map(LiveHost::remote))
             .collect();
@@ -763,6 +779,23 @@ fn follow_daemons(
                 .map(|host| {
                     let (daemon, publisher) = (daemon.clone(), publisher.clone());
                     tokio::task::spawn_local(async move {
+                        if host.label.is_some() {
+                            let target = std::slice::from_ref(&host.target);
+                            let refusal = match host_naming_this_machine(target, &daemon).await {
+                                Ok(None) => None,
+                                Ok(Some(_)) => Some(
+                                    "invalid `hosts` entry: it names this machine, whose \
+                                     sessions are already listed as local"
+                                        .to_owned(),
+                                ),
+                                Err(err) => Some(format!("cannot check the `hosts` entry: {err}")),
+                            };
+                            if let Some(message) = refusal {
+                                error!(host = %host.target, error = %message, "refusing the configured host");
+                                publisher.refuse(&host, &message);
+                                return;
+                            }
+                        }
                         run_live(&host, &daemon, idle_threshold, |update| {
                             publisher.publish(&host, update);
                         })
