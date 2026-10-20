@@ -40,6 +40,20 @@ export struct SessionRowData {
     open-link: bool,
 }
 
+export struct DetailFieldData {
+    label: string,
+    // Middle-clipped for display; `value` is what is copied.
+    shown: string,
+    value: string,
+    // The value is a Work link that can be opened.
+    link: bool,
+}
+
+export struct DetailSectionData {
+    title: string,
+    fields: [DetailFieldData],
+}
+
 export struct OwnerGroupData {
     id: string,
     name: string,
@@ -94,6 +108,17 @@ export global Theme {
     out property <length> action-tip-padding: 4px;
     out property <color> action-icon: #8a8f98;
     out property <color> action-icon-hover: #e6e6e6;
+    out property <length> detail-icon-size: 24px;
+    out property <length> detail-icon-glyph: 14px;
+    out property <length> detail-field-height: 38px;
+    out property <length> detail-label-font-size: 10px;
+    out property <length> detail-value-font-size: 12px;
+    out property <length> detail-section-gap: 14px;
+    out property <length> detail-scrollbar-gap: 8px;
+    out property <length> detail-card-margin: 8px;
+    out property <length> detail-card-padding: 12px;
+    out property <duration> detail-copied-duration: 1200ms;
+    out property <color> detail-copied: #4caf6e;
     out property <length> group-edit-height: 22px;
     out property <length> new-group-height: 26px;
     out property <length> confirm-spacing: 4px;
@@ -186,14 +211,17 @@ component ThemedSearchField inherits SearchField {
 }
 
 component ActionIcon inherits Rectangle {
-    // "stop", "remove", "folder" or "link".
+    // "info", "stop", "remove", "folder", "link" or "copy".
     in property <string> kind;
+    // Hit target and glyph size; the row action defaults.
+    in property <length> size: Theme.action-icon-size;
+    in property <length> glyph: Theme.action-icon-glyph;
     // Tooltip and accessible label.
     in property <string> tip;
     callback activated();
     out property <bool> hovered: icon-touch.has-hover;
-    width: Theme.action-icon-size;
-    min-height: Theme.action-icon-size;
+    width: root.size;
+    min-height: root.size;
 
     icon-touch := TouchArea {
         mouse-cursor: pointer;
@@ -211,11 +239,33 @@ component ActionIcon inherits Rectangle {
         height: self.width;
         background: root.tint;
     }
+    if root.kind == "info": Path {
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 6 1 A 5 5 0 1 0 6 11 A 5 5 0 1 0 6 1 Z M 6 5.2 L 6 8.6 M 6 3.3 L 6 3.5";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+    if root.kind == "copy": Path {
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 4 4 L 10.5 4 L 10.5 10.5 L 4 10.5 Z M 2.5 8 L 1.5 8 L 1.5 1.5 L 8 1.5 L 8 2.5";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
     if root.kind == "remove": Path {
-        x: (parent.width - Theme.action-icon-glyph) / 2;
-        y: (parent.height - Theme.action-icon-glyph) / 2;
-        width: Theme.action-icon-glyph;
-        height: Theme.action-icon-glyph;
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
         viewbox-width: 12;
         viewbox-height: 12;
         commands: "M 2 2 L 10 10 M 10 2 L 2 10";
@@ -223,10 +273,10 @@ component ActionIcon inherits Rectangle {
         stroke-width: Theme.action-icon-stroke;
     }
     if root.kind == "folder": Path {
-        x: (parent.width - Theme.action-icon-glyph) / 2;
-        y: (parent.height - Theme.action-icon-glyph) / 2;
-        width: Theme.action-icon-glyph;
-        height: Theme.action-icon-glyph;
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
         viewbox-width: 12;
         viewbox-height: 12;
         commands: "M 1 2.5 L 4.5 2.5 L 6 4 L 11 4 L 11 10 L 1 10 Z";
@@ -234,10 +284,10 @@ component ActionIcon inherits Rectangle {
         stroke-width: Theme.action-icon-stroke;
     }
     if root.kind == "link": Path {
-        x: (parent.width - Theme.action-icon-glyph) / 2;
-        y: (parent.height - Theme.action-icon-glyph) / 2;
-        width: Theme.action-icon-glyph;
-        height: Theme.action-icon-glyph;
+        x: (parent.width - root.glyph) / 2;
+        y: (parent.height - root.glyph) / 2;
+        width: root.glyph;
+        height: root.glyph;
         viewbox-width: 12;
         viewbox-height: 12;
         commands: "M 7 1.5 L 10.5 1.5 L 10.5 5 M 10.5 1.5 L 5.5 6.5 M 9 7.5 L 9 10.5 L 1.5 10.5 L 1.5 3 L 4.5 3";
@@ -267,6 +317,7 @@ component SessionRow inherits Rectangle {
     callback remove();
     callback open-folder();
     callback open-link();
+    callback details();
 
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: row-drag.dragging ? Theme.row-dragging : Theme.row;
@@ -295,6 +346,10 @@ component SessionRow inherits Rectangle {
                 // A refused row still opens: the attach shows the refusal.
                 title: "Open";
                 activated => { root.clicked(); }
+            }
+            MenuItem {
+                title: "Details";
+                activated => { root.details(); }
             }
             if !root.data.host-unreachable: MenuItem {
                 title: "Rename...";
@@ -430,14 +485,14 @@ component SessionRow inherits Rectangle {
 
     // Action icons, right-aligned over the row while the pointer is on it. The
     // strip is opaque so the name underneath stays out of the way.
-    property <bool> any-action: root.data.can-stop || root.data.can-remove || root.data.open-folder || root.data.open-link;
-    property <bool> icons-hovered: open-folder-icon.hovered || open-link-icon.hovered || stop-icon.hovered || remove-icon.hovered;
-    property <string> active-tip: open-folder-icon.hovered ? open-folder-icon.tip
+    property <bool> icons-hovered: info-icon.hovered || open-folder-icon.hovered || open-link-icon.hovered || stop-icon.hovered || remove-icon.hovered;
+    property <string> active-tip: info-icon.hovered ? info-icon.tip
+        : open-folder-icon.hovered ? open-folder-icon.tip
         : open-link-icon.hovered ? open-link-icon.tip
         : stop-icon.hovered ? stop-icon.tip
         : remove-icon.hovered ? remove-icon.tip : "";
     action-strip := Rectangle {
-        visible: root.any-action && (row-touch.has-hover || root.icons-hovered);
+        visible: row-touch.has-hover || root.icons-hovered;
         x: root.width - self.width;
         y: 0;
         width: strip-layout.preferred-width;
@@ -445,6 +500,11 @@ component SessionRow inherits Rectangle {
         background: root.background;
         border-radius: Theme.row-radius;
         strip-layout := HorizontalLayout {
+            info-icon := ActionIcon {
+                kind: "info";
+                tip: "Details";
+                activated => { root.details(); }
+            }
             open-folder-icon := ActionIcon {
                 visible: root.data.open-folder;
                 width: root.data.open-folder ? Theme.action-icon-size : 0px;
@@ -855,6 +915,239 @@ component ConfirmModal inherits Rectangle {
     }
 }
 
+// Detail view of one session, drawn over the whole window: grouped facts, each
+// with a copy button; clicking a value copies it too. Esc, the close button and
+// a click on the backdrop close it.
+component DetailModal inherits Rectangle {
+    in property <string> name;
+    in property <string> host-label;
+    in property <OwnerStateKind> owner-state;
+    in property <string> owner-label;
+    in property <[DetailSectionData]> sections;
+    in property <string> copy-all;
+    callback close();
+    callback open-link();
+
+    // Section title and field label of the value copied last; empty when the
+    // confirmation is not showing.
+    property <string> copied;
+
+    // The clipboard is reached through a text input's copy(): Slint has no
+    // other clipboard call, and the platform backend owns the selection.
+    clipboard := TextInput {
+        visible: false;
+        width: 0px;
+        height: 0px;
+    }
+    function copy-text(key: string, text: string) {
+        clipboard.text = text;
+        clipboard.select-all();
+        clipboard.copy();
+        root.copied = key;
+    }
+
+    Timer {
+        interval: Theme.detail-copied-duration;
+        running: root.copied != "";
+        triggered => { root.copied = ""; }
+    }
+
+    Rectangle { background: ConfirmTheme.backdrop; }
+    backdrop := TouchArea {
+        mouse-cursor: default;
+        clicked => { root.close(); }
+        scroll-event(event) => { accept }
+    }
+
+    keys := FocusScope {
+        init => { self.focus(); }
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: Theme.detail-card-margin;
+            alignment: center;
+            card := Rectangle {
+                background: ConfirmTheme.card-background;
+                border-radius: ConfirmTheme.card-radius;
+                border-width: Theme.confirm-border;
+                border-color: ConfirmTheme.card-border;
+                accessible-role: groupbox;
+                accessible-label: "Details of " + root.name;
+                TouchArea {
+                    clicked => { keys.focus(); }
+                }
+                VerticalLayout {
+                    padding: Theme.detail-card-padding;
+                    spacing: ConfirmTheme.spacing;
+                    HorizontalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        VerticalLayout {
+                            spacing: Theme.confirm-spacing;
+                            HorizontalLayout {
+                                spacing: Theme.badge-spacing;
+                                title-text := Text {
+                                    text: root.name;
+                                    color: Theme.text;
+                                    font-size: ConfirmTheme.title-font-size;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
+                                if root.host-label != "": Rectangle {
+                                    background: Theme.badge-background;
+                                    border-radius: Theme.badge-radius;
+                                    horizontal-stretch: 0;
+                                    width: min(host-tag.preferred-width + 2 * Theme.badge-padding, Theme.host-tag-max-width);
+                                    height: Theme.badge-row-height;
+                                    y: (parent.height - self.height) / 2;
+                                    HorizontalLayout {
+                                        padding-left: Theme.badge-padding;
+                                        padding-right: Theme.badge-padding;
+                                        host-tag := Text {
+                                            text: root.host-label;
+                                            color: Theme.badge-text;
+                                            font-size: Theme.badge-font-size;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.owner-spacing;
+                                Rectangle {
+                                    width: Theme.owner-dot-size;
+                                    height: Theme.owner-dot-size;
+                                    border-radius: Theme.owner-dot-size / 2;
+                                    background: Theme.owner-color(root.owner-state);
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: root.owner-label;
+                                    color: Theme.owner-color(root.owner-state);
+                                    font-size: Theme.detail-font-size;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        close-icon := ActionIcon {
+                            kind: "remove";
+                            tip: "Close";
+                            size: Theme.detail-icon-size;
+                            glyph: Theme.detail-icon-glyph;
+                            horizontal-stretch: 0;
+                            y: 0;
+                            activated => { root.close(); }
+                        }
+                    }
+                    ScrollView {
+                        preferred-height: sections-layout.preferred-height;
+                        sections-layout := VerticalLayout {
+                            padding-right: Theme.detail-scrollbar-gap;
+                            spacing: Theme.detail-section-gap;
+                            alignment: start;
+                            for section in root.sections: VerticalLayout {
+                                spacing: Theme.row-spacing;
+                                Text {
+                                    text: section.title;
+                                    color: Theme.group-text;
+                                    font-size: Theme.group-font-size;
+                                    font-weight: 700;
+                                }
+                                for field in section.fields: field-row := Rectangle {
+                                    property <string> key: section.title + "/" + field.label;
+                                    property <bool> was-copied: root.copied == self.key;
+                                    height: Theme.detail-field-height;
+                                    border-radius: Theme.row-radius;
+                                    background: value-touch.has-hover ? Theme.chip-background : transparent;
+                                    value-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        accessible-role: button;
+                                        accessible-label: "Copy " + field.label;
+                                        clicked => { root.copy-text(field-row.key, field.value); }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: Theme.row-padding;
+                                        spacing: 0px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: field.label;
+                                                color: Theme.detail;
+                                                font-size: Theme.detail-label-font-size;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: field.shown;
+                                                color: Theme.text;
+                                                font-size: Theme.detail-value-font-size;
+                                                overflow: elide;
+                                            }
+                                        }
+                                        if field.link: link-icon := ActionIcon {
+                                            kind: "link";
+                                            tip: "Open link";
+                                            size: Theme.detail-icon-size;
+                                            glyph: Theme.detail-icon-glyph;
+                                            horizontal-stretch: 0;
+                                            activated => { root.open-link(); }
+                                        }
+                                        ActionIcon {
+                                            kind: "copy";
+                                            tip: "Copy " + field.label;
+                                            size: Theme.detail-icon-size;
+                                            glyph: Theme.detail-icon-glyph;
+                                            horizontal-stretch: 0;
+                                            activated => { root.copy-text(field-row.key, field.value); }
+                                        }
+                                    }
+                                    // Over the end of the value, clear of the copy button.
+                                    if field-row.was-copied: Rectangle {
+                                        x: parent.width - Theme.detail-icon-size - self.width;
+                                        y: (parent.height - self.height) / 2;
+                                        width: copied-text.preferred-width + 2 * Theme.badge-padding;
+                                        height: Theme.badge-row-height;
+                                        background: Theme.chip-hover-background;
+                                        border-radius: Theme.badge-radius;
+                                        copied-text := Text {
+                                            text: "Copied";
+                                            color: Theme.detail-copied;
+                                            font-size: Theme.detail-label-font-size;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        DialogButton {
+                            label: root.copied == "all" ? "Copied" : "Copy all";
+                            accent: Theme.text;
+                            clicked => {
+                                keys.focus();
+                                root.copy-text("all", root.copy-all);
+                            }
+                        }
+                        DialogButton {
+                            label: "Close";
+                            accent: Theme.text;
+                            clicked => { root.close(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Pohunek Companion";
     icon: @image-url("../../../assets/icons/pohunek-app-256.png");
@@ -959,6 +1252,24 @@ export component AppWindow inherits Window {
     in-out property <string> open-error;
     // Asks to stop or remove the session (host, id, name); `kind` is "stop" or "remove".
     callback request-action(string, string, string, string);
+    // Asks for the detail view of the session (host, id); the host fills the
+    // detail-* properties and sets detail-open.
+    callback request-details(string, string);
+    in-out property <bool> detail-open;
+    in property <string> detail-name;
+    in property <string> detail-host-label;
+    in property <OwnerStateKind> detail-owner-state;
+    in property <string> detail-owner-label;
+    in property <string> detail-host;
+    in property <string> detail-id;
+    in property <[DetailSectionData]> detail-sections;
+    // The plain-text block "Copy all" puts on the clipboard.
+    in property <string> detail-copy-all;
+    changed detail-open => {
+        if !self.detail-open {
+            window-keys.focus();
+        }
+    }
     // The in-app confirmation modal; its text and state are set by the host.
     in-out property <bool> confirm-open;
     in property <string> confirm-heading;
@@ -1319,6 +1630,7 @@ export component AppWindow inherits Window {
                                 remove => { root.request-action("remove", session.host, session.id, session.name); }
                                 open-folder => { root.open-folder(session.host, session.id); }
                                 open-link => { root.open-link(session.host, session.id); }
+                                details => { root.request-details(session.host, session.id); }
                                 return-to-rule => { root.return-to-rule(session.host, session.id); }
                                 new-session-in-project(host, project, group) => { root.new-session(host, project, group); }
                             }
@@ -1350,6 +1662,18 @@ export component AppWindow inherits Window {
             }
         }
     }
+    }
+    if root.detail-open: detail-modal := DetailModal {
+        width: root.width;
+        height: root.height;
+        name: root.detail-name;
+        host-label: root.detail-host-label;
+        owner-state: root.detail-owner-state;
+        owner-label: root.detail-owner-label;
+        sections: root.detail-sections;
+        copy-all: root.detail-copy-all;
+        close => { root.detail-open = false; }
+        open-link => { root.open-link(root.detail-host, root.detail-id); }
     }
     if root.confirm-open: confirm-modal := ConfirmModal {
         width: root.width;

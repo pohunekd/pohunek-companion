@@ -1,5 +1,6 @@
 use crate::attach::AttachRefusal;
 use crate::badge::{WorkBadge, WorkFacts, sanitize};
+use crate::detail::{DetailSource, SessionDetails};
 use crate::open::OpenTargets;
 use crate::owner_state::OwnerState;
 use pohunek_client::is_local_host;
@@ -58,6 +59,8 @@ pub struct SessionRow {
     /// The session's remote host is not connected: the row shows the last
     /// known facts, which may be stale.
     pub host_unreachable: bool,
+    /// Grouped, copyable facts for the detail view.
+    pub details: SessionDetails,
 }
 
 /// Whether the session's runtime is in the given state.
@@ -111,7 +114,7 @@ impl SessionRow {
         let (can_stop, can_remove) = (offer_stop(&info), offer_remove(&info));
         let runtime_detail = runtime_detail(&info);
         let open = OpenTargets::from_info(&info, !is_local_host(host));
-        let display_name = info.name.unwrap_or_else(|| info.id.0.clone());
+        let display_name = info.name.clone().unwrap_or_else(|| info.id.0.clone());
         let project = info.project_id.as_deref().map(|id| {
             let label = [info.project_label.as_deref(), known_label]
                 .into_iter()
@@ -124,13 +127,23 @@ impl SessionRow {
             }
         });
         let work = WorkFacts::from_metadata(&info.metadata);
+        let details = SessionDetails::build(&DetailSource {
+            info: &info,
+            host,
+            host_label,
+            runtime_detail: &runtime_detail,
+            waiting_since,
+            project: project.as_ref(),
+            work: work.as_ref(),
+            link: open.link.as_deref(),
+        });
         Self {
             key: SessionKey {
                 host: host.to_owned(),
-                session_id: info.id.0,
+                session_id: info.id.0.clone(),
             },
             display_name,
-            agent: info.agent,
+            agent: info.agent.clone(),
             state: info.state.as_str().to_owned(),
             owner_state,
             waiting_since,
@@ -144,6 +157,7 @@ impl SessionRow {
             open,
             host_label: host_label.map(str::to_owned),
             host_unreachable: false,
+            details,
         }
     }
 }

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 mod confirm;
+mod detail;
 mod launch;
 mod logging;
 mod new_session;
@@ -1508,6 +1509,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         }
     }
     confirm::install(&window, rename_daemon.clone(), layout.clone());
+    detail::install(&window, layout.clone());
     {
         let weak = window.as_weak();
         let layout = layout.clone();
