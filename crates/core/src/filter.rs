@@ -363,6 +363,23 @@ fn is_subsequence(needle: &[char], haystack: &[char]) -> bool {
     needle.iter().all(|n| rest.any(|h| h == n))
 }
 
+/// Indices of the items that match every whitespace-separated token of
+/// `query` as a case-insensitive subsequence, in their original order. An
+/// empty query matches every item. Drives the New session dialog's searchable
+/// selects.
+pub fn fuzzy_matches<S: AsRef<str>>(query: &str, items: &[S]) -> Vec<usize> {
+    let tokens: Vec<Vec<char>> = query.split_whitespace().map(lowercase_chars).collect();
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            let text = lowercase_chars(item.as_ref());
+            tokens.iter().all(|token| is_subsequence(token, &text))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
 /// Keeps only the matching rows of each section, in their order. While a
 /// query or project is selected, sections left without a row are dropped and
 /// the rest are shown expanded so their matches are visible. With only a state
@@ -440,6 +457,17 @@ mod tests {
         assert!(!filter.matches(&row("s-2", "alpha-agent")));
         assert!(SessionFilter::new("ŽEL").matches(&row("s-3", "železná")));
         assert!(SessionFilter::new("žel").matches(&row("s-3", "ŽELEZNÁ")));
+    }
+
+    #[test]
+    fn fuzzy_matches_keeps_order_and_ignores_case_and_blank_queries() {
+        let items = ["Proj-Alpha", "proj-beta", "gamma", "delta-build"];
+        assert_eq!(fuzzy_matches("", &items), [0, 1, 2, 3]);
+        assert_eq!(fuzzy_matches("  ", &items), [0, 1, 2, 3]);
+        assert_eq!(fuzzy_matches("PRB", &items), [1]);
+        assert_eq!(fuzzy_matches("a", &items), [0, 1, 2, 3]);
+        assert_eq!(fuzzy_matches("pj al", &items), [0]);
+        assert!(fuzzy_matches("zzz", &items).is_empty());
     }
 
     #[test]
