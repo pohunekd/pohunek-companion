@@ -94,15 +94,16 @@ impl View {
 }
 
 /// The sections of the By state view, in display order after Needs you.
-const STATE_SECTIONS: [(OwnerState, &str); 4] = [
+const STATE_SECTIONS: [(OwnerState, &str); 5] = [
     (OwnerState::Working, "working"),
     (OwnerState::Idle, "idle"),
+    (OwnerState::RuntimeProblem, "runtime-problem"),
     (OwnerState::Ended, "ended"),
     (OwnerState::NoAgentState, "no-agent-state"),
 ];
 
 /// Regroups the arranged sessions by owner state: Needs you, Working, Idle,
-/// Ended, No agent state. Inside a section sessions keep their My groups order
+/// Runtime problem, Ended, No agent state. Inside a section sessions keep their My groups order
 /// (groups in order, then items in order); empty sections are omitted.
 pub fn by_state(arranged: Vec<GroupSection>) -> Vec<GroupSection> {
     let all = GroupSection {
@@ -260,6 +261,7 @@ mod tests {
             attach_refusal: None,
             can_stop: false,
             can_remove: false,
+            runtime_detail: String::new(),
             open: crate::open::OpenTargets::default(),
         }
     }

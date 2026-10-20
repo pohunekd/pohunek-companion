@@ -160,10 +160,14 @@ Storage and reconciliation:
 | Needs owner | open attention notification (`agent_blocked`, `approval_required`), or `activity = blocked` as a fallback |
 | Working | `activity = working`, or `idle` while subagents or background tasks still run |
 | Idle | `idle` with no subagent or background work for longer than the configured threshold |
+| Runtime problem | runtime state `conflict` or `incompatible` (not running as far as the daemon can tell, not lost); wins over activity and attention. `reconnecting` stays with its activity |
 | Ended / lost | `stopped`, `done`, `failed`, or `session_runtime_lost` |
 
 The icon shows the most urgent state and the count of sessions needing the
-owner; the menu lists them and attaches on click. The tray is a passive summary:
+owner; the menu lists them and attaches on click. Runtime problem, Ended and
+no-agent-state sessions never count in the tray. The state filter shows a
+"Problem" chip while some session is in that state, and the row's detail line
+adds the runtime state and its `loss_reason`. The tray is a passive summary:
 desktop notifications stay with Pohunek's own notification command.
 
 ## Creating a session
@@ -209,8 +213,11 @@ session id and the error code, never the name.
 The session row's context menu has "Stop..." and "Remove...". An entry is
 shown only when the daemon's own rule allows it for the session
 (`SessionInfo::can_stop`, `SessionInfo::can_remove`): an external read-only
-session, an ended session (no Stop) or a session with an unresolved runtime
-(no Remove) gets no entry. Choosing one starts `pohunek-companion confirm
+session or an ended session (no Stop) gets no entry. A `conflict` runtime
+offers Stop and Remove and an `incompatible` one offers Remove, although the
+client rule refuses them: the daemon is authoritative and refuses the records
+it cannot retire. For such a session the dialog says the daemon may refuse and
+shows its message and `recover` hint. Choosing one starts `pohunek-companion confirm
 <stop|remove> --host H --session ID --name NAME`, a small dialog in its own
 process and window (Wayland `app_id` `pohunek-companion-confirm`), so it
 survives the sidebar closing and compositor rules can float it. It names the

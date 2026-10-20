@@ -16,6 +16,9 @@ pub enum OwnerState {
     Working,
     /// Idle with no work for longer than the idle threshold.
     Idle,
+    /// The runtime is neither healthy nor lost (`conflict`, `incompatible`):
+    /// the session is not known to be running and needs the owner's attention.
+    RuntimeProblem,
     /// The session stopped, finished, failed, or lost its runtime.
     Ended,
     /// No agent activity is reported (for example a plain shell). Counts in
@@ -30,6 +33,7 @@ impl OwnerState {
             Self::NeedsOwner => "Needs owner",
             Self::Working => "Working",
             Self::Idle => "Idle",
+            Self::RuntimeProblem => "Runtime problem",
             Self::Ended => "Ended",
             Self::NoAgentState => "No agent state",
         }
@@ -39,7 +43,21 @@ impl OwnerState {
 /// Whether the session is idle with no subagent or background work, the
 /// condition whose duration `idle_since` measures.
 pub(crate) fn is_idle_without_work(info: &SessionInfo) -> bool {
-    info.activity == Some(AgentActivity::Idle) && !has_running_work(info) && !is_ended(info)
+    info.activity == Some(AgentActivity::Idle)
+        && !has_running_work(info)
+        && !is_ended(info)
+        && !has_runtime_problem(info)
+}
+
+/// The runtime is in a state that is neither healthy nor lost, so the
+/// reported activity cannot be trusted.
+pub(crate) fn has_runtime_problem(info: &SessionInfo) -> bool {
+    info.runtime.as_ref().is_some_and(|runtime| {
+        matches!(
+            runtime.state,
+            RuntimeState::Conflict | RuntimeState::Incompatible
+        )
+    })
 }
 
 fn has_running_work(info: &SessionInfo) -> bool {
@@ -80,6 +98,9 @@ pub fn derive(
 ) -> OwnerState {
     if is_ended(info) {
         return OwnerState::Ended;
+    }
+    if has_runtime_problem(info) {
+        return OwnerState::RuntimeProblem;
     }
     if open_attention || info.activity == Some(AgentActivity::Blocked) {
         return OwnerState::NeedsOwner;
@@ -194,6 +215,28 @@ mod tests {
         ] {
             assert_eq!(derived(&info(patch), true, Some(600)), OwnerState::Ended);
         }
+    }
+
+    #[test]
+    fn conflicting_or_incompatible_runtime_is_a_runtime_problem() {
+        for runtime_state in ["conflict", "incompatible"] {
+            for activity in ["idle", "working", "blocked"] {
+                let patch = json!({"activity": activity, "runtime": {
+                    "state": runtime_state, "runtime_generation": "1", "loss_reason": "resume_binding_shape_mismatch"}});
+                let session = info(patch);
+                assert_eq!(
+                    derived(&session, true, Some(600)),
+                    OwnerState::RuntimeProblem
+                );
+                assert!(!is_idle_without_work(&session));
+            }
+        }
+        let reconnecting = info(
+            json!({"activity": "working", "runtime": {"state": "reconnecting", "runtime_generation": "1"}}),
+        );
+        assert_eq!(derived(&reconnecting, false, None), OwnerState::Working);
+        let lost = info(json!({"runtime": {"state": "lost", "runtime_generation": "1"}}));
+        assert_eq!(derived(&lost, false, None), OwnerState::Ended);
     }
 
     #[test]

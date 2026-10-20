@@ -53,10 +53,17 @@ fn detach(command: &mut Command) {
     std::os::unix::process::CommandExt::process_group(command, 0);
 }
 
-/// Starts `<current exe> confirm <action> --host H --session ID --name NAME`
-/// without a shell; each value is a single argv word. `action` is "stop" or
-/// "remove".
-pub fn spawn_confirm(action: &str, host: &str, session_id: &str, name: &str) -> Result<(), String> {
+/// Starts `<current exe> confirm <action> --host H --session ID --name NAME
+/// [--runtime-problem]` without a shell; each value is a single argv word.
+/// `action` is "stop" or "remove"; `runtime_problem` tells the dialog that
+/// the daemon may refuse the action.
+pub fn spawn_confirm(
+    action: &str,
+    host: &str,
+    session_id: &str,
+    name: &str,
+    runtime_problem: bool,
+) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|err| format!("Cannot start the confirmation dialog: {err}"))?;
     let mut command = Command::new(exe);
@@ -70,6 +77,9 @@ pub fn spawn_confirm(action: &str, host: &str, session_id: &str, name: &str) -> 
             session_id,
         ])
         .args(["--name", name]);
+    if runtime_problem {
+        command.arg("--runtime-problem");
+    }
     detach(&mut command);
     let child = command
         .spawn()

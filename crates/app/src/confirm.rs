@@ -19,9 +19,11 @@ const APP_ID: &str = "pohunek-companion-confirm";
 const SESSION_FLAG: &str = "--session";
 const NAME_FLAG: &str = "--name";
 const HOST_FLAG: &str = "--host";
+const RUNTIME_PROBLEM_FLAG: &str = "--runtime-problem";
 
 /// Usage line shared by the argument errors.
-pub const USAGE: &str = "confirm <stop|remove> --session ID [--name NAME] [--host HOST]";
+pub const USAGE: &str =
+    "confirm <stop|remove> --session ID [--name NAME] [--host HOST] [--runtime-problem]";
 
 /// Parsed `confirm` arguments.
 #[derive(Debug, PartialEq, Eq)]
@@ -31,6 +33,9 @@ pub struct Args {
     pub session_id: String,
     /// Name shown in the dialog; the session id when none is given.
     pub name: String,
+    /// The session's runtime is in conflict or incompatible: the daemon may
+    /// refuse the action.
+    pub runtime_problem: bool,
 }
 
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -44,10 +49,15 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
     let mut host = LOCAL_HOST.to_owned();
     let mut session_id = None;
     let mut name = None;
+    let mut runtime_problem = false;
     while let Some(arg) = args.next() {
         let slot = match arg.as_str() {
             SESSION_FLAG => &mut session_id,
             NAME_FLAG => &mut name,
+            RUNTIME_PROBLEM_FLAG => {
+                runtime_problem = true;
+                continue;
+            }
             HOST_FLAG => {
                 host = args
                     .next()
@@ -69,6 +79,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
         host,
         name: name.unwrap_or_else(|| session_id.clone()),
         session_id,
+        runtime_problem,
     })
 }
 
@@ -103,12 +114,20 @@ fn wording(action: LifecycleAction) -> Wording {
     }
 }
 
-fn show_wording(window: &ConfirmWindow, action: LifecycleAction) {
+/// Sentence added to the consequence for a session with a runtime problem.
+const RUNTIME_PROBLEM_NOTE: &str = " The session's runtime is in a conflicting or incompatible state, so the daemon may refuse; its message is shown here.";
+
+fn show_wording(window: &ConfirmWindow, action: LifecycleAction, runtime_problem: bool) {
     let wording = wording(action);
     window.set_kind(wording.kind.into());
     window.set_heading(wording.heading.into());
     window.set_confirm_label(wording.confirm_label.into());
-    window.set_consequence(wording.consequence.into());
+    let note = if runtime_problem && action != LifecycleAction::RemoveAcceptingUnconfirmed {
+        RUNTIME_PROBLEM_NOTE
+    } else {
+        ""
+    };
+    window.set_consequence(format!("{}{note}", wording.consequence).into());
     window.set_confirm_selected(false);
 }
 
@@ -192,7 +211,7 @@ fn action_label(action: LifecycleAction, session_id: &str) -> String {
 fn show_report(window: &ConfirmWindow, report: ActionReport) {
     window.set_busy(false);
     if report.offer_unconfirmed {
-        show_wording(window, LifecycleAction::RemoveAcceptingUnconfirmed);
+        show_wording(window, LifecycleAction::RemoveAcceptingUnconfirmed, false);
         window.set_error(report.error.into());
     } else if !report.error.is_empty() {
         window.set_confirm_selected(false);
@@ -215,7 +234,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
     let window = ConfirmWindow::new()?;
     slint::set_xdg_app_id(APP_ID)?;
     window.set_name(args.name.as_str().into());
-    show_wording(&window, args.action);
+    show_wording(&window, args.action, args.runtime_problem);
 
     let daemon = Config::load()
         .map(|config| config.daemon)

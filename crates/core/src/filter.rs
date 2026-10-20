@@ -11,10 +11,11 @@ use crate::owner_state::OwnerState;
 use crate::session::{ProjectRef, SessionRow};
 
 /// Every owner state in chip order.
-const STATE_ORDER: [OwnerState; 5] = [
+const STATE_ORDER: [OwnerState; 6] = [
     OwnerState::NeedsOwner,
     OwnerState::Working,
     OwnerState::Idle,
+    OwnerState::RuntimeProblem,
     OwnerState::Ended,
     OwnerState::NoAgentState,
 ];
@@ -25,6 +26,7 @@ pub fn state_key(state: OwnerState) -> &'static str {
         OwnerState::NeedsOwner => "needs-you",
         OwnerState::Working => "working",
         OwnerState::Idle => "idle",
+        OwnerState::RuntimeProblem => "runtime-problem",
         OwnerState::Ended => "ended",
         OwnerState::NoAgentState => "no-agent-state",
     }
@@ -41,6 +43,7 @@ fn state_chip_label(state: OwnerState) -> &'static str {
         OwnerState::NeedsOwner => "Needs you",
         OwnerState::Working => "Working",
         OwnerState::Idle => "Idle",
+        OwnerState::RuntimeProblem => "Problem",
         OwnerState::Ended => "Ended",
         OwnerState::NoAgentState => "No agent",
     }
@@ -108,14 +111,16 @@ pub struct StateChip {
     pub selected: bool,
 }
 
-/// The state chips: Needs you, Working, Idle, Ended, and No agent when some
-/// session has no agent state. Selection is multi-choice: one click toggles
+/// The state chips: Needs you, Working, Idle, Ended, plus Problem when some
+/// session has a runtime problem and No agent when some session has no agent
+/// state. Selection is multi-choice: one click toggles
 /// one state.
 pub fn state_chips(rows: &[SessionRow], selected: &StateSelection) -> Vec<StateChip> {
     STATE_ORDER
         .into_iter()
         .filter(|state| {
-            *state != OwnerState::NoAgentState || rows.iter().any(|row| row.owner_state == *state)
+            !matches!(state, OwnerState::NoAgentState | OwnerState::RuntimeProblem)
+                || rows.iter().any(|row| row.owner_state == *state)
         })
         .map(|state| StateChip {
             label: state_chip_label(state),
@@ -402,6 +407,7 @@ mod tests {
             attach_refusal: None,
             can_stop: false,
             can_remove: false,
+            runtime_detail: String::new(),
             open: crate::open::OpenTargets::default(),
         }
     }
