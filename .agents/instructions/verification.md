@@ -112,6 +112,14 @@ show the owner's real sessions (names, ids, working directories, Work links).
   daemon. `scripts/ui-agent stop` stops the app, the daemon, and its
   sessions and deletes the directory. Everything published comes from this
   mode.
+- The isolated run never discovers the owner's overlay hosts: the daemon and
+  the app get a `netbird` stub first on `PATH` (`<isolated dir>/bin/netbird`).
+  The daemon's machine-wide `host.discover` reads `netbird status --json`, so
+  the stub fails it (the daemon serves local-only) unless `--remote-host` is
+  used; then it forwards the real status with every peer except the synthetic
+  remote host removed. A screenshot from `--owner-daemon`, or from any run
+  that shows a host-tagged session other than the synthetic remote, must not
+  be published.
 - For a manual `cargo run` that is meant to be published, set the same
   isolated environment instead; the owner's socket is `$XDG_RUNTIME_DIR/pohunek`.
 - `scripts/ui-agent start --remote-host <ssh destination>` also starts a
