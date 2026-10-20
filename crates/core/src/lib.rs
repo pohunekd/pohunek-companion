@@ -36,7 +36,8 @@ pub use config::{
 };
 pub use connect::host_naming_this_machine;
 pub use discovery::{
-    DiscoveredHost, DiscoveryPlan, IncompatibleHost, discover_records, plan as plan_discovery,
+    DialogHost, DiscoveredHost, DiscoveryPlan, IncompatibleHost, dialog_hosts,
+    discover_dialog_hosts, discover_records, plan as plan_discovery,
 };
 pub use error::CoreError;
 pub use filter::{

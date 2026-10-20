@@ -8,8 +8,10 @@ use pohunek_client::{ExternalIdentity, LOCAL_HOST, remote_host_with_port};
 
 use crate::badge::sanitize;
 use crate::config::{DaemonConfig, HostConfig};
-use crate::connect::{connect_discover, socket_for_host};
+use crate::connect::{connect_discover, host_naming_this_machine, socket_for_host};
 use crate::error::CoreError;
+use crate::routes::set_route;
+use tracing::{debug, warn};
 
 /// A reachable peer the companion connects to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +105,97 @@ pub fn plan(records: &[HostRecord], configured: &[HostConfig]) -> DiscoveryPlan 
         }
     }
     plan
+}
+
+/// A remote host the New session dialog lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialogHost {
+    /// The session key's host: a configured target or a discovered key.
+    pub target: String,
+    /// The label the sidebar shows for the host.
+    pub label: String,
+    /// Why the host cannot be picked; `None` when it can.
+    pub unavailable: Option<String>,
+}
+
+/// The hosts after Local in the dialog: configured entries, then the
+/// discovered reachable peers, then the incompatible ones (listed, not
+/// pickable).
+pub fn dialog_hosts(configured: &[HostConfig], plan: &DiscoveryPlan) -> Vec<DialogHost> {
+    let host = |target: &str, label: &str, unavailable: Option<String>| DialogHost {
+        target: target.to_owned(),
+        label: label.to_owned(),
+        unavailable,
+    };
+    configured
+        .iter()
+        .map(|entry| host(&entry.target, &entry.display_label(), None))
+        .chain(
+            plan.connect
+                .iter()
+                .map(|found| host(&found.key, &found.label, None)),
+        )
+        .chain(plan.incompatible.iter().map(|peer| {
+            host(
+                &peer.key,
+                &peer.label,
+                Some(format!(
+                    "{}: incompatible daemon (protocol {})",
+                    peer.label, peer.protocol_version
+                )),
+            )
+        }))
+        .collect()
+}
+
+/// The dialog's remote hosts: configured entries plus what the local daemon
+/// discovers, with the connection routes of the discovered ones registered.
+/// A peer that is this machine is left out, as in the sidebar. The second
+/// value is why discovery failed, if it did; configured hosts stay listed.
+pub async fn discover_dialog_hosts(
+    config: &DaemonConfig,
+    configured: &[HostConfig],
+) -> (Vec<DialogHost>, Option<String>) {
+    let (mut plan, failure) = match discover_records(config).await {
+        Ok(records) => (plan(&records, configured), None),
+        Err(err) => (DiscoveryPlan::default(), Some(err.to_string())),
+    };
+    for (target, route) in &plan.configured_routes {
+        set_route(target, route);
+    }
+    for found in &plan.connect {
+        set_route(&found.key, &found.route);
+    }
+    // The checks run concurrently so slow peers do not add up before the
+    // dialog appears.
+    let mut checks = tokio::task::JoinSet::new();
+    for (index, found) in std::mem::take(&mut plan.connect).into_iter().enumerate() {
+        let config = config.clone();
+        checks.spawn(async move {
+            let named = host_naming_this_machine(std::slice::from_ref(&found.key), &config).await;
+            (index, found, named)
+        });
+    }
+    let mut checked = Vec::new();
+    while let Some(joined) = checks.join_next().await {
+        match joined {
+            Ok(done) => checked.push(done),
+            Err(err) => warn!(error = %err, "check of a discovered host did not finish"),
+        }
+    }
+    checked.sort_by_key(|(index, ..)| *index);
+    let mut remote = Vec::new();
+    for (_, found, named) in checked {
+        match named {
+            Ok(None) => remote.push(found),
+            Ok(Some(_)) => debug!(host = %found.key, "discovered peer is this machine"),
+            // An unverifiable peer is not offered: a create on this machine
+            // under a remote key would be placed under the wrong host.
+            Err(err) => warn!(host = %found.key, error = %err, "cannot check the discovered host"),
+        }
+    }
+    plan.connect = remote;
+    (dialog_hosts(configured, &plan), failure)
 }
 
 fn has_ip_address(record: &HostRecord) -> bool {
@@ -314,6 +407,37 @@ mod tests {
         peer.port = 28722;
         let routes = plan(&[peer.clone()], &[host("Air"), host("netbird:air@9")]).configured_routes;
         assert_eq!(routes, [("Air".to_owned(), "Air@28722".to_owned())]);
+    }
+
+    #[test]
+    fn dialog_lists_configured_then_discovered_then_incompatible() {
+        let records = [
+            record("air", reachable()),
+            record(
+                "old",
+                HostClass::VersionMismatch {
+                    daemon_protocol_version: 2,
+                },
+            ),
+        ];
+        let configured = [HostConfig {
+            target: "box".to_owned(),
+            label: Some("Box".to_owned()),
+        }];
+        let hosts = dialog_hosts(&configured, &plan(&records, &configured));
+        let summary: Vec<_> = hosts
+            .iter()
+            .map(|h| (h.label.as_str(), h.unavailable.is_some()))
+            .collect();
+        assert_eq!(summary, [("Box", false), ("air", false), ("old", true)]);
+        assert_eq!(hosts[0].target, "box");
+        assert!(
+            hosts[2]
+                .unavailable
+                .as_deref()
+                .unwrap()
+                .contains("protocol 2")
+        );
     }
 
     #[test]

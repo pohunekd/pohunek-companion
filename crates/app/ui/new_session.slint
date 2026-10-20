@@ -297,6 +297,9 @@ export component NewSessionWindow inherits Window {
     // Host labels, Local first.
     in property <[string]> host-names;
     in-out property <int> host-index: 0;
+    // Hosts that are listed but cannot be picked, and why.
+    in property <[bool]> host-disabled;
+    in property <string> host-notes;
     // Project labels and launchable agent names, in the order offered.
     in property <[string]> project-names;
     in property <[string]> agent-names;
@@ -383,8 +386,15 @@ export component NewSessionWindow inherits Window {
                 FieldLabel { text: "Host"; }
                 host-field := SearchSelect {
                     model: root.host-names;
+                    disabled: root.host-disabled;
                     selected-index <=> root.host-index;
                     selected(index) => { root.host-changed(index); }
+                }
+                if root.host-notes != "": host-notes-text := Text {
+                    text: root.host-notes;
+                    color: Theme.detail;
+                    font-size: Theme.detail-font-size;
+                    wrap: word-wrap;
                 }
             }
             VerticalLayout {
