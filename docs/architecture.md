@@ -202,7 +202,7 @@ hosts", then every followed host with its connection state (connected or
 unreachable). Picking a host narrows every view to that host's sessions. The
 selection is part of the per-view filter stored in `layout.toml` (`host`, the
 host's target), like the project and states. The button is absent while only the
-local host is followed.
+local host is followed and no host is selected.
 
 ## Creating a session
 
