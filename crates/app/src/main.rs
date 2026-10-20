@@ -699,22 +699,43 @@ fn rename_outcome(
         .map_err(|err| format!("Cannot rename {session_id}: {err}"))
 }
 
-/// Stops or removes on a background thread and shows a failure in the window.
-/// The row changes through the daemon's session event, not from this outcome.
+/// What the window shows after a stop or remove: a failure, or a note on a
+/// successful removal that left something for the owner to handle.
+#[derive(Default)]
+struct ActionReport {
+    error: String,
+    notice: String,
+    /// The refusal was only an unconfirmed runtime sweep: offer "Remove anyway".
+    offer_unconfirmed: bool,
+}
+
+/// Stops or removes on a background thread and shows the outcome in the
+/// window. The row changes through the daemon's session event, not from this
+/// outcome.
 fn start_lifecycle(
     window: slint::Weak<AppWindow>,
     daemon: Result<DaemonConfig, String>,
     host: String,
     session_id: String,
+    name: String,
     action: LifecycleAction,
 ) {
     std::thread::spawn(move || {
-        let outcome = lifecycle_outcome(&daemon, &host, &session_id, action);
-        if let Err(message) = &outcome {
-            warn!(session = %session_id, action = action.verb(), error = %message, "session action failed");
+        let report = lifecycle_report(&daemon, &host, &session_id, action);
+        if !report.error.is_empty() {
+            warn!(session = %session_id, action = action.verb(), error = %report.error, "session action failed");
         }
         let applied = window.upgrade_in_event_loop(move |window| {
-            window.set_action_error(outcome.err().unwrap_or_default().into());
+            window.set_action_error(report.error.into());
+            window.set_action_notice(report.notice.into());
+            let (host, id, name) = if report.offer_unconfirmed {
+                (host, session_id, name)
+            } else {
+                Default::default()
+            };
+            window.set_force_host(host.into());
+            window.set_force_id(id.into());
+            window.set_force_name(name.into());
         });
         if let Err(err) = applied {
             error!(error = %err, "deliver session action outcome to the UI");
@@ -722,32 +743,71 @@ fn start_lifecycle(
     });
 }
 
-fn lifecycle_outcome(
+fn lifecycle_report(
     daemon: &Result<DaemonConfig, String>,
     host: &str,
     session_id: &str,
     action: LifecycleAction,
-) -> Result<(), String> {
-    let verb = action.verb();
+) -> ActionReport {
+    let failure = |error: String| ActionReport {
+        error,
+        ..Default::default()
+    };
     if host != LOCAL_HOST {
-        return Err(format!(
-            "Cannot {verb} {session_id}: only the local daemon is supported"
+        return failure(format!(
+            "Cannot {}: only the local daemon is supported",
+            action_label(action, session_id)
         ));
     }
-    let daemon = daemon.as_ref().map_err(Clone::clone)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let daemon = match daemon {
+        Ok(daemon) => daemon,
+        Err(message) => return failure(message.clone()),
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|err| format!("cannot start the background runtime: {err}"))?;
-    runtime
-        .block_on(run_lifecycle_action(daemon, session_id, action))
-        .map_err(|err| format!("Cannot {verb} {session_id}: {err}"))
-        .and_then(|worktrees_failed| match worktrees_failed {
-            0 => Ok(()),
-            count => Err(format!(
-                "Removed {session_id}, but {count} worktree checkout(s) could not be deleted and need manual cleanup"
-            )),
-        })
+    {
+        Ok(runtime) => runtime,
+        Err(err) => return failure(format!("cannot start the background runtime: {err}")),
+    };
+    match runtime.block_on(run_lifecycle_action(daemon, session_id, action)) {
+        Err(err) => ActionReport {
+            error: format!("Cannot {}: {err}", action_label(action, session_id)),
+            offer_unconfirmed: action == LifecycleAction::Remove && err.is_unconfirmed(),
+            ..Default::default()
+        },
+        Ok(outcome) => {
+            let mut parts = Vec::new();
+            if outcome.worktrees_failed > 0 {
+                parts.push(format!(
+                    "{} worktree checkout(s) could not be deleted and need manual cleanup",
+                    outcome.worktrees_failed
+                ));
+            }
+            if !outcome.unconfirmed_processes.is_empty() {
+                parts.push(format!(
+                    "these processes could not be confirmed ended and were not signalled; they may still be running: {}",
+                    outcome.unconfirmed_processes.join(", ")
+                ));
+            }
+            if parts.is_empty() {
+                ActionReport::default()
+            } else {
+                ActionReport {
+                    notice: format!("Removed {session_id}, but {}", parts.join("; ")),
+                    ..Default::default()
+                }
+            }
+        }
+    }
+}
+
+fn action_label(action: LifecycleAction, session_id: &str) -> String {
+    let verb = match action {
+        LifecycleAction::Stop => "stop",
+        LifecycleAction::Remove | LifecycleAction::RemoveAcceptingUnconfirmed => "remove",
+    };
+    format!("{verb} {session_id}")
 }
 
 fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> Result<(), String> {
@@ -881,33 +941,31 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
             (context, rename_daemon)
         }
     };
-    {
+    for (name, action) in [
+        ("stop", LifecycleAction::Stop),
+        ("remove", LifecycleAction::Remove),
+        ("remove-anyway", LifecycleAction::RemoveAcceptingUnconfirmed),
+    ] {
         let weak = window.as_weak();
         let daemon = rename_daemon.clone();
-        window.on_stop_session(move |host, id| {
-            info!(host = %host, session = %id, "stop confirmed from the context menu");
+        let handler = move |host: slint::SharedString,
+                            id: slint::SharedString,
+                            display: slint::SharedString| {
+            info!(host = %host, session = %id, action = action.verb(), "session action confirmed from the context menu");
             start_lifecycle(
                 weak.clone(),
                 daemon.clone(),
                 host.into(),
                 id.into(),
-                LifecycleAction::Stop,
+                display.into(),
+                action,
             );
-        });
-    }
-    {
-        let weak = window.as_weak();
-        let daemon = rename_daemon.clone();
-        window.on_remove_session(move |host, id| {
-            info!(host = %host, session = %id, "remove confirmed from the context menu");
-            start_lifecycle(
-                weak.clone(),
-                daemon.clone(),
-                host.into(),
-                id.into(),
-                LifecycleAction::Remove,
-            );
-        });
+        };
+        match name {
+            "stop" => window.on_stop_session(handler),
+            "remove" => window.on_remove_session(handler),
+            _ => window.on_remove_session_anyway(handler),
+        }
     }
     {
         let weak = window.as_weak();

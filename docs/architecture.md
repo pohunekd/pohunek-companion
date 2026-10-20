@@ -219,16 +219,24 @@ Right arrow moves the selection to the destructive button (Left returns to
 Cancel), and only then Enter
 (or a click) sends one `session.stop` or `session.remove`.
 
-Removal uses `session.remove`, never `session.remove_accepting_unconfirmed`: a
-removal the daemon cannot confirm (for example because processes with an
-unreadable environment may belong to the session's runtime) is refused and the
-refusal is shown as "Cannot remove <id>: <message>". Both calls run on a
+Removal first sends `session.remove`. When the daemon refuses it with
+`runtime_supervision_ambiguous` (it cannot confirm that processes of the
+session's runtime ended, for example because they have an unreadable
+environment) the refusal is shown as "Cannot remove <id>: <message>" and a
+"Remove anyway..." entry appears. It opens a second confirmation, again
+starting on Cancel, that says in plain words that the daemon cannot confirm the
+processes ended, that they are not signalled and may keep running unsupervised
+after the session, its logs and its worktree are deleted. Only confirming it
+sends `session.remove_accepting_unconfirmed` for that one session; the consent
+is never remembered and the safe call is always tried first. After that
+removal the window lists the accepted processes (pid and command name) from
+the result. Any other refusal is shown without the offer. Both calls run on a
 connection whose request timeout is `daemon.session_action_timeout_ms`,
 because they wait for the runtime to end and be swept. The row changes, and
 the layout store drops a removed session, when the daemon's session events
-arrive; a stop or remove error is shown in the window. A request that exceeded the
-timeout has an unknown outcome and may still complete in the daemon. A removal
-that could not delete worktree checkouts is reported with their count.
+arrive; a stop or remove error is shown in the window. A request that exceeded
+the timeout has an unknown outcome and may still complete in the daemon. A
+removal that could not delete worktree checkouts is reported with their count.
 Log lines carry the session id and the error code.
 
 ## Window placement

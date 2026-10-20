@@ -521,9 +521,17 @@ export component AppWindow inherits Window {
     // Why the last stop or remove failed; empty when it succeeded or none ran.
     in-out property <string> action-error;
     // Stops or removes the session (host, id); both are confirmed first.
-    callback stop-session(string, string);
-    callback remove-session(string, string);
-    // The pending confirmation: "stop" or "remove" for the session (host, id)
+    callback stop-session(string, string, string);
+    callback remove-session(string, string, string);
+    callback remove-session-anyway(string, string, string);
+    // A successful removal that left something for the owner to handle.
+    in-out property <string> action-notice;
+    // The session whose safe removal was refused only because the daemon could
+    // not confirm its processes ended; empty when "Remove anyway" is not offered.
+    in-out property <string> force-host;
+    in-out property <string> force-id;
+    in-out property <string> force-name;
+    // The pending confirmation: "stop", "remove" or "remove-anyway" for the session (host, id)
     // shown as confirm-name; empty kind when none is open.
     in-out property <string> confirm-kind;
     in-out property <string> confirm-host;
@@ -531,6 +539,15 @@ export component AppWindow inherits Window {
     in-out property <string> confirm-name;
     // Which button Enter activates; always starts on Cancel.
     in-out property <bool> confirm-selected;
+    function confirm() {
+        if root.confirm-kind == "stop" {
+            root.stop-session(root.confirm-host, root.confirm-id, root.confirm-name);
+        } else if root.confirm-kind == "remove" {
+            root.remove-session(root.confirm-host, root.confirm-id, root.confirm-name);
+        } else {
+            root.remove-session-anyway(root.confirm-host, root.confirm-id, root.confirm-name);
+        }
+    }
     // A standalone group name editor ("+ New group") belongs to the editable
     // view; leaving it ends that edit. A row menu's edit stays open.
     changed editable => {
@@ -751,6 +768,32 @@ export component AppWindow inherits Window {
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
+        if root.action-notice != "": action-notice-text := Text {
+            text: root.action-notice;
+            color: Theme.detail;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.force-id != "" && root.confirm-kind == "": force-touch := TouchArea {
+            height: Theme.new-group-height;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Remove anyway";
+            clicked => {
+                root.confirm-selected = false;
+                root.confirm-host = root.force-host;
+                root.confirm-id = root.force-id;
+                root.confirm-name = root.force-name;
+                root.confirm-kind = "remove-anyway";
+            }
+            Text {
+                x: Theme.row-padding;
+                text: "Remove anyway...";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.error;
+                font-size: Theme.group-font-size;
+                vertical-alignment: center;
+            }
+        }
         if root.confirm-kind != "": confirm-scope := FocusScope {
             // Enter activates the selected button, which starts on Cancel;
             // only an explicit Tab/arrow/click moves it to the confirm button.
@@ -773,11 +816,7 @@ export component AppWindow inherits Window {
                 }
                 if event.text == Key.Return {
                     if root.confirm-selected {
-                        if root.confirm-kind == "stop" {
-                            root.stop-session(root.confirm-host, root.confirm-id);
-                        } else {
-                            root.remove-session(root.confirm-host, root.confirm-id);
-                        }
+                        root.confirm();
                     }
                     root.confirm-kind = "";
                     return accept;
@@ -790,6 +829,8 @@ export component AppWindow inherits Window {
                 confirm-text := Text {
                     text: root.confirm-kind == "stop"
                         ? "Stop " + root.confirm-name + "? The agent ends; the session stays in the list as ended."
+                        : root.confirm-kind == "remove-anyway"
+                        ? "Remove " + root.confirm-name + " anyway? The daemon cannot confirm that all of its processes ended. They are not signalled and may keep running unsupervised after the session, its logs and its worktree are deleted."
                         : "Remove " + root.confirm-name + "? The session is deleted from the daemon (stopped first if live), together with any worktree checkout Pohunek created for it.";
                     color: Theme.text;
                     font-size: Theme.error-font-size;
@@ -818,20 +859,16 @@ export component AppWindow inherits Window {
                     confirm-ok := TouchArea {
                         mouse-cursor: pointer;
                         accessible-role: button;
-                        accessible-label: root.confirm-kind == "stop" ? "Confirm stop" : "Confirm remove";
+                        accessible-label: root.confirm-kind == "stop" ? "Confirm stop" : root.confirm-kind == "remove" ? "Confirm remove" : "Confirm remove anyway";
                         clicked => {
-                            if root.confirm-kind == "stop" {
-                                root.stop-session(root.confirm-host, root.confirm-id);
-                            } else {
-                                root.remove-session(root.confirm-host, root.confirm-id);
-                            }
+                            root.confirm();
                             root.confirm-kind = "";
                         }
                         Rectangle {
                             border-width: root.confirm-selected ? Theme.confirm-selected-border : Theme.confirm-border;
                             border-color: Theme.error;
                             Text {
-                                text: root.confirm-kind == "stop" ? "Stop" : "Remove";
+                                text: root.confirm-kind == "stop" ? "Stop" : root.confirm-kind == "remove" ? "Remove" : "Remove anyway";
                                 color: Theme.error;
                                 font-size: Theme.group-font-size;
                                 horizontal-alignment: center;
@@ -943,6 +980,8 @@ export component AppWindow inherits Window {
                                 }
                                 stop => {
                                     root.action-error = "";
+                                    root.action-notice = "";
+                                    root.force-id = "";
                                     root.confirm-selected = false;
                                     root.confirm-host = session.host;
                                     root.confirm-id = session.id;
@@ -951,6 +990,8 @@ export component AppWindow inherits Window {
                                 }
                                 remove => {
                                     root.action-error = "";
+                                    root.action-notice = "";
+                                    root.force-id = "";
                                     root.confirm-selected = false;
                                     root.confirm-host = session.host;
                                     root.confirm-id = session.id;

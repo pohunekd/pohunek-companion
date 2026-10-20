@@ -1,6 +1,8 @@
 use pohunek_client::ClientError;
 use pohunek_client::protocol::SessionId;
-use pohunek_client::protocol::method::{SessionRemove, SessionStop};
+use pohunek_client::protocol::method::{
+    SessionRemove, SessionRemoveAcceptingUnconfirmed, SessionStop,
+};
 use tracing::error;
 
 use crate::config::DaemonConfig;
@@ -12,10 +14,15 @@ pub enum LifecycleAction {
     /// `session.stop`: ends the agent; the session stays in the list as ended.
     Stop,
     /// `session.remove`: deletes the session from the daemon, stopping it
-    /// first when it is still live. The variant that accepts unconfirmed
-    /// runtime sweeps is never used: a removal the daemon cannot confirm is
-    /// refused and shown.
+    /// first when it is still live. A removal the daemon cannot confirm is
+    /// refused.
     Remove,
+    /// `session.remove_accepting_unconfirmed`: like `Remove`, but accepts the
+    /// processes with an unreadable environment that are the only reason the
+    /// daemon cannot confirm the runtime ended. Those processes are never
+    /// signalled and may keep running. Only sent after the owner consented
+    /// to this one removal.
+    RemoveAcceptingUnconfirmed,
 }
 
 impl LifecycleAction {
@@ -24,6 +31,7 @@ impl LifecycleAction {
         match self {
             Self::Stop => "stop",
             Self::Remove => "remove",
+            Self::RemoveAcceptingUnconfirmed => "remove_accepting_unconfirmed",
         }
     }
 }
@@ -38,28 +46,72 @@ pub enum LifecycleError {
     Failed(String),
 }
 
-/// Sends one `session.stop` or `session.remove` for `session_id`. Returns the
-/// number of worktree checkouts a removal could not delete (they are no longer
-/// tracked by the daemon and need manual cleanup); zero for a stop.
+/// Error code of a removal refused because the daemon cannot prove the
+/// runtime's processes gone.
+const UNCONFIRMED_CODE: &str = "runtime_supervision_ambiguous";
+
+impl LifecycleError {
+    /// The daemon refused only because it could not confirm the runtime's
+    /// processes ended; `RemoveAcceptingUnconfirmed` can proceed after consent.
+    pub fn is_unconfirmed(&self) -> bool {
+        matches!(self, Self::Refused { code, .. } if code == UNCONFIRMED_CODE)
+    }
+}
+
+/// What a successful stop or remove reported.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LifecycleOutcome {
+    /// Worktree checkouts a removal could not delete; the daemon no longer
+    /// tracks them, so they need manual cleanup.
+    pub worktrees_failed: u32,
+    /// Processes an accepting removal left unverified and unsignalled, as
+    /// `pid (command)`.
+    pub unconfirmed_processes: Vec<String>,
+}
+
+/// Sends one `session.stop`, `session.remove` or
+/// `session.remove_accepting_unconfirmed` for `session_id`.
 pub async fn run_lifecycle_action(
     daemon: &DaemonConfig,
     session_id: &str,
     action: LifecycleAction,
-) -> Result<u32, LifecycleError> {
+) -> Result<LifecycleOutcome, LifecycleError> {
     let socket = resolve_socket().map_err(|err| LifecycleError::Failed(err.to_string()))?;
     let mut client = connect_for_session_action(&socket, daemon)
         .await
         .map_err(|err| LifecycleError::Failed(err.to_string()))?;
     let id = SessionId(session_id.to_owned());
     let outcome = match action {
-        LifecycleAction::Stop => client.call::<SessionStop>(id).await.map(|_| 0),
-        LifecycleAction::Remove => client
-            .call::<SessionRemove>(id)
+        LifecycleAction::Stop => client
+            .call::<SessionStop>(id)
             .await
-            .map(|result| result.worktrees_failed),
+            .map(|_| LifecycleOutcome::default()),
+        LifecycleAction::Remove => {
+            client
+                .call::<SessionRemove>(id)
+                .await
+                .map(|result| LifecycleOutcome {
+                    worktrees_failed: result.worktrees_failed,
+                    unconfirmed_processes: Vec::new(),
+                })
+        }
+        LifecycleAction::RemoveAcceptingUnconfirmed => client
+            .call::<SessionRemoveAcceptingUnconfirmed>(id)
+            .await
+            .map(|result| LifecycleOutcome {
+                worktrees_failed: result.worktrees_failed,
+                unconfirmed_processes: result
+                    .accepted_unconfirmed_processes
+                    .iter()
+                    .map(|process| match &process.command {
+                        Some(command) => format!("{} ({command})", process.pid),
+                        None => process.pid.to_string(),
+                    })
+                    .collect(),
+            }),
     };
     match outcome {
-        Ok(worktrees_failed) => Ok(worktrees_failed),
+        Ok(outcome) => Ok(outcome),
         Err(ClientError::Protocol(err)) => {
             error!(code = %err.code, action = action.verb(), "session lifecycle action refused");
             Err(LifecycleError::Refused {
