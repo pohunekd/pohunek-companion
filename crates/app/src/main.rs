@@ -266,6 +266,20 @@ fn lock(layout: &SharedLayout) -> MutexGuard<'_, LayoutState> {
     layout.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The name a remote session's host is shown under, or `None` for a local
+/// session. Falls back to the host route when the row is no longer listed.
+pub(crate) fn remote_host_name(layout: &SharedLayout, key: &SessionKey) -> Option<String> {
+    if key.host == LOCAL_HOST {
+        return None;
+    }
+    let label = lock(layout)
+        .rows
+        .iter()
+        .find(|row| row.key == *key)
+        .and_then(|row| row.host_label.clone());
+    Some(label.unwrap_or_else(|| key.host.clone()))
+}
+
 /// Saves the layout and returns the text for the window's layout error line.
 fn save_layout(state: &mut LayoutState) -> Option<String> {
     state
@@ -970,11 +984,12 @@ fn start_rename(
     window: slint::Weak<AppWindow>,
     daemon: Result<DaemonConfig, String>,
     host: String,
+    host_name: Option<String>,
     session_id: String,
     input: String,
 ) {
     std::thread::spawn(move || {
-        let outcome = rename_outcome(&daemon, &host, &session_id, &input);
+        let outcome = rename_outcome(&daemon, &host, host_name.as_deref(), &session_id, &input);
         if let Err(message) = &outcome {
             warn!(session = %session_id, error = %message, "rename failed");
         }
@@ -990,22 +1005,26 @@ fn start_rename(
 fn rename_outcome(
     daemon: &Result<DaemonConfig, String>,
     host: &str,
+    host_name: Option<&str>,
     session_id: &str,
     input: &str,
 ) -> Result<(), String> {
-    if host != LOCAL_HOST {
-        return Err(format!(
-            "Cannot rename {session_id}: only the local daemon is supported"
-        ));
-    }
     let daemon = daemon.as_ref().map_err(Clone::clone)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|err| format!("cannot start the background runtime: {err}"))?;
     runtime
-        .block_on(rename_session(daemon, session_id, name_from_input(input)))
-        .map_err(|err| format!("Cannot rename {session_id}: {err}"))
+        .block_on(rename_session(
+            daemon,
+            host,
+            session_id,
+            name_from_input(input),
+        ))
+        .map_err(|err| match host_name {
+            Some(name) => format!("Cannot rename {session_id} on {name}: {err}"),
+            None => format!("Cannot rename {session_id}: {err}"),
+        })
 }
 
 fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> Result<(), String> {
@@ -1195,13 +1214,20 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     confirm::install(&window, rename_daemon.clone(), layout.clone());
     {
         let weak = window.as_weak();
+        let layout = layout.clone();
         window.on_rename_session(move |host, id, name| {
             info!(host = %host, session = %id, "rename requested from the context menu");
+            let key = SessionKey {
+                host: host.into(),
+                session_id: id.into(),
+            };
+            let host_name = remote_host_name(&layout, &key);
             start_rename(
                 weak.clone(),
                 rename_daemon.clone(),
-                host.into(),
-                id.into(),
+                key.host,
+                host_name,
+                key.session_id,
                 name.into(),
             );
         });

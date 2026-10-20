@@ -5,7 +5,7 @@ use pohunek_client::protocol::method::SessionRename;
 use tracing::error;
 
 use crate::config::DaemonConfig;
-use crate::connect::{connect, resolve_socket};
+use crate::connect::{connect_host, socket_for_host};
 
 /// Why a rename did not happen; the message is shown to the owner as is.
 #[derive(Debug, thiserror::Error)]
@@ -20,13 +20,15 @@ pub enum RenameError {
 
 /// Sets the display name of a session through `session.rename`; `None` clears
 /// it so the session shows its id. The daemon trims the name and validates it.
+/// `host` is the local host or the route of the remote host owning the session.
 pub async fn rename_session(
     daemon: &DaemonConfig,
+    host: &str,
     session_id: &str,
     name: Option<String>,
 ) -> Result<(), RenameError> {
-    let socket = resolve_socket().map_err(|err| RenameError::Failed(err.to_string()))?;
-    let mut client = connect(&socket, daemon)
+    let socket = socket_for_host(host).map_err(|err| RenameError::Failed(err.to_string()))?;
+    let mut client = connect_host(host, &socket, daemon)
         .await
         .map_err(|err| RenameError::Failed(err.to_string()))?;
     let params = SessionRenameParams {

@@ -233,7 +233,9 @@ copy of the result: the row changes when the daemon's session event arrives. A
 daemon refusal (for example an external read-only session or a control
 character) or a failure to reach the daemon is shown in the window as
 "Cannot rename <id>: <message>" and nothing changes. Log lines carry the
-session id and the error code, never the name.
+session id and the error code, never the name. For a remote session the call
+goes to the daemon of the session's host and the message reads "Cannot rename
+<id> on <host>: <message>", with the host's label (else its target).
 
 ## Stopping or removing a session
 
@@ -278,6 +280,12 @@ when the daemon's session events arrive. A request that exceeded the timeout
 has an unknown outcome and may still complete in the daemon. A removal that
 could not delete worktree checkouts is reported with their count in the
 modal. Log lines carry the session id and the error code.
+
+Stop and remove work on a remote session as on a local one, against the daemon
+of the session's host (`Client::connect_with_options` with the session-action
+timeout). The modal names the host ("Remove <name> on <host>?"), the remove
+consequence adds that the worktree checkout is deleted on that host, and errors
+read "Cannot remove <id> on <host>: <message>".
 
 ## Row action icons
 
