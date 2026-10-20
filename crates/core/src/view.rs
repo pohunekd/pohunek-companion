@@ -144,7 +144,8 @@ const NO_WORK_NAME: &str = "No Work item";
 const ID_SEPARATOR: char = '\u{1f}';
 
 /// Regroups the arranged sessions by project: Needs you, then one section per
-/// project ordered by title, then No project. Inside a section sessions keep
+/// project label (the same label on several hosts is one section) ordered by
+/// title, then No project. Inside a section sessions keep
 /// their My groups order.
 pub fn by_project(arranged: Vec<GroupSection>, title_max_chars: usize) -> Vec<GroupSection> {
     by_key(
@@ -154,7 +155,7 @@ pub fn by_project(arranged: Vec<GroupSection>, title_max_chars: usize) -> Vec<Gr
         |row| {
             let project = row.project.as_ref()?;
             Some((
-                format!("project{ID_SEPARATOR}{}", project.id),
+                format!("project{ID_SEPARATOR}{}", project.label),
                 project.label.clone(),
             ))
         },
@@ -375,7 +376,7 @@ mod tests {
                 group(
                     "g2",
                     vec![
-                        project_row("4", Some(("p-b", "beta"))),
+                        project_row("4", Some(("p-b-other-host", "beta"))),
                         waiting,
                         project_row("5", None),
                     ],

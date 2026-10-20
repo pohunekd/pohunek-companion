@@ -109,6 +109,9 @@ struct Arranged {
     owner_groups: Vec<(String, String)>,
     project_chips: Vec<ProjectChip>,
     project_index: usize,
+    /// Id of a project with the selected label, for the New session button;
+    /// the selected host's project wins, else the first seen.
+    filter_project_id: String,
     state_chips: Vec<StateChip>,
     host_options: Vec<HostOption>,
 }
@@ -125,7 +128,7 @@ fn chip_key(selection: &ProjectSelection) -> String {
     match selection {
         ProjectSelection::All => "all".to_owned(),
         ProjectSelection::NoProject => "none".to_owned(),
-        ProjectSelection::Project(project) => format!("project:{}", project.id),
+        ProjectSelection::Project(project) => format!("project:{project}"),
     }
 }
 
@@ -141,6 +144,18 @@ fn host_rows(state: &LayoutState) -> Vec<SessionRow> {
             .collect(),
         None => state.rows.clone(),
     }
+}
+
+fn selected_project_id(state: &LayoutState) -> String {
+    let ProjectSelection::Project(label) = state.filter.project() else {
+        return String::new();
+    };
+    host_rows(state)
+        .iter()
+        .filter_map(|row| row.project.as_ref())
+        .find(|project| project.label == *label)
+        .map(|project| project.id.clone())
+        .unwrap_or_default()
 }
 
 fn arrange(state: &LayoutState) -> Arranged {
@@ -166,6 +181,7 @@ fn arrange(state: &LayoutState) -> Arranged {
         sections,
         project_chips,
         project_index,
+        filter_project_id: selected_project_id(state),
         placed: layout
             .items()
             .iter()
@@ -193,6 +209,7 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
         owner_groups,
         project_chips,
         project_index,
+        filter_project_id,
         state_chips,
         host_options,
     } = arranged;
@@ -208,6 +225,14 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
             .map(|option| option.selected)
             .collect::<Vec<_>>(),
     )));
+    window.set_host_active_name(
+        host_options
+            .iter()
+            .find(|option| option.selected)
+            .and_then(|option| option.name.clone())
+            .unwrap_or_default()
+            .into(),
+    );
     window.set_host_names(ModelRc::new(VecModel::from(
         host_options
             .into_iter()
@@ -233,13 +258,7 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
             .collect::<Vec<_>>(),
     )));
     window.set_project_index(i32::try_from(project_index).unwrap_or_default());
-    window.set_filter_project_id(
-        match project_chips.get(project_index).map(|chip| &chip.selection) {
-            Some(ProjectSelection::Project(project)) => project.id.as_str(),
-            _ => "",
-        }
-        .into(),
-    );
+    window.set_filter_project_id(filter_project_id.into());
     window.set_project_keys(ModelRc::new(VecModel::from(
         project_chips
             .iter()

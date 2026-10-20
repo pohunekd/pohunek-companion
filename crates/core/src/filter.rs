@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::GroupSection;
 use crate::owner_state::OwnerState;
-use crate::session::{ProjectRef, SessionRow};
+use crate::session::SessionRow;
 
 /// Every owner state in chip order.
 const STATE_ORDER: [OwnerState; 6] = [
@@ -138,11 +138,14 @@ pub struct StoredFilter {
     /// State keys; absent selects the default states.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     states: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Read for files written before the selection was keyed by label; never
+    /// written. Such a file selects its `project_label`, else every project.
+    #[serde(default, skip_serializing)]
     project_id: Option<String>,
+    /// Label of the selected project, matched on every host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project_label: Option<String>,
-    /// Sessions without a project; ignored when `project_id` is set.
+    /// Sessions without a project; ignored when a project label is set.
     #[serde(default, skip_serializing_if = "is_false")]
     no_project: bool,
     /// Target of the selected host (`local` or a configured remote target);
@@ -161,9 +164,9 @@ fn is_false(value: &bool) -> bool {
 pub enum ProjectSelection {
     #[default]
     All,
-    /// Sessions of this project; the label is the last one seen, kept so the
-    /// chip stays readable after the project has no sessions.
-    Project(ProjectRef),
+    /// Sessions of the projects with this label on every host, matched
+    /// case-sensitively as displayed.
+    Project(String),
     /// Sessions that belong to no project.
     NoProject,
 }
@@ -172,7 +175,7 @@ impl ProjectSelection {
     fn admits(&self, row: &SessionRow) -> bool {
         match self {
             Self::All => true,
-            Self::Project(wanted) => row.project.as_ref().is_some_and(|p| p.id == wanted.id),
+            Self::Project(wanted) => row.project.as_ref().is_some_and(|p| p.label == *wanted),
             Self::NoProject => row.project.is_none(),
         }
     }
@@ -186,33 +189,33 @@ pub struct ProjectChip {
 }
 
 /// The project chips for the current sessions: "All", one chip per project
-/// ordered by label ignoring case (then id), then "No project" when some
-/// session has none. The selected project keeps its chip, with its last
-/// label, even when no session belongs to it any more. Returns the chips and
-/// the index of the selected one.
+/// label (the same label on several hosts is one chip) ordered by label
+/// ignoring case, then "No project" when some session has none. The selected
+/// project keeps its chip even when no session belongs to it any more.
+/// Returns the chips and the index of the selected one.
 pub fn project_chips(
     rows: &[SessionRow],
     selected: &ProjectSelection,
 ) -> (Vec<ProjectChip>, usize) {
-    let mut projects: Vec<ProjectRef> = Vec::new();
+    let mut labels: Vec<&str> = Vec::new();
     for project in rows.iter().filter_map(|row| row.project.as_ref()) {
-        if !projects.iter().any(|p| p.id == project.id) {
-            projects.push(project.clone());
+        if !labels.contains(&project.label.as_str()) {
+            labels.push(&project.label);
         }
     }
     if let ProjectSelection::Project(wanted) = selected
-        && !projects.iter().any(|p| p.id == wanted.id)
+        && !labels.contains(&wanted.as_str())
     {
-        projects.push(wanted.clone());
+        labels.push(wanted);
     }
-    projects.sort_by_cached_key(|p| (lowercase_chars(&p.label), p.id.clone()));
+    labels.sort_by_cached_key(|label| (lowercase_chars(label), label.to_string()));
     let mut chips = vec![ProjectChip {
         label: "All".to_owned(),
         selection: ProjectSelection::All,
     }];
-    chips.extend(projects.into_iter().map(|p| ProjectChip {
-        label: p.label.clone(),
-        selection: ProjectSelection::Project(p),
+    chips.extend(labels.into_iter().map(|label| ProjectChip {
+        label: label.to_owned(),
+        selection: ProjectSelection::Project(label.to_owned()),
     }));
     if rows.iter().any(|row| row.project.is_none()) || *selected == ProjectSelection::NoProject {
         chips.push(ProjectChip {
@@ -222,10 +225,7 @@ pub fn project_chips(
     }
     let index = chips
         .iter()
-        .position(|chip| match (&chip.selection, selected) {
-            (ProjectSelection::Project(a), ProjectSelection::Project(b)) => a.id == b.id,
-            (a, b) => a == b,
-        })
+        .position(|chip| chip.selection == *selected)
         .unwrap_or(0);
     (chips, index)
 }
@@ -250,7 +250,11 @@ pub struct HostEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostOption {
     pub target: Option<String>,
+    /// Entry text with the connection state.
     pub label: String,
+    /// The host's own label, for the button while it is selected; `None` for
+    /// "All hosts".
+    pub name: Option<String>,
     pub selected: bool,
 }
 
@@ -270,16 +274,19 @@ pub fn host_options(hosts: &[HostEntry], selected: Option<&str>) -> Vec<HostOpti
     let mut options = vec![HostOption {
         target: None,
         label: "All hosts".to_owned(),
+        name: None,
         selected: selected.is_none(),
     }];
     options.extend(hosts.iter().map(|h| HostOption {
         target: Some(h.target.clone()),
         label: format!("{} ({})", h.label, state_label(h.connection)),
+        name: Some(h.label.clone()),
         selected: selected == Some(h.target.as_str()),
     }));
     options.extend(stale.map(|target| HostOption {
         target: Some(target.to_owned()),
         label: format!("{target} ({})", state_label(HostConnection::Unreachable)),
+        name: Some(target.to_owned()),
         selected: true,
     }));
     options
@@ -325,13 +332,10 @@ impl SessionFilter {
                 }
             }
         }
-        filter.project = match (&stored.project_id, stored.no_project) {
-            (Some(id), _) => ProjectSelection::Project(ProjectRef {
-                id: id.clone(),
-                label: stored.project_label.clone().unwrap_or_else(|| id.clone()),
-            }),
-            (None, true) => ProjectSelection::NoProject,
-            (None, false) => ProjectSelection::All,
+        filter.project = match (&stored.project_label, stored.no_project) {
+            (Some(label), _) => ProjectSelection::Project(label.clone()),
+            (None, true) if stored.project_id.is_none() => ProjectSelection::NoProject,
+            (None, _) => ProjectSelection::All,
         };
         filter.host = stored.host.clone().filter(|host| !host.is_empty());
         filter
@@ -340,13 +344,13 @@ impl SessionFilter {
     /// The project, host and states, as stored per view; the query is not
     /// stored.
     pub fn to_stored(&self) -> StoredFilter {
-        let (project_id, project_label) = match &self.project {
-            ProjectSelection::Project(p) => (Some(p.id.clone()), Some(p.label.clone())),
-            _ => (None, None),
+        let project_label = match &self.project {
+            ProjectSelection::Project(label) => Some(label.clone()),
+            _ => None,
         };
         StoredFilter {
             states: (self.states != StateSelection::default()).then(|| self.states.keys()),
-            project_id,
+            project_id: None,
             project_label,
             no_project: self.project == ProjectSelection::NoProject,
             host: self.host.clone(),
@@ -625,11 +629,8 @@ mod tests {
         r
     }
 
-    fn project_sel(id: &str, label: &str) -> ProjectSelection {
-        ProjectSelection::Project(ProjectRef {
-            id: id.into(),
-            label: label.into(),
-        })
+    fn project_sel(label: &str) -> ProjectSelection {
+        ProjectSelection::Project(label.into())
     }
 
     fn sample() -> Vec<SessionRow> {
@@ -652,7 +653,7 @@ mod tests {
     #[test]
     fn the_project_and_the_query_both_have_to_match() {
         let mut filter = SessionFilter::default();
-        filter.set_project(project_sel("p-b", "beta"));
+        filter.set_project(project_sel("beta"));
         assert!(filter.is_active());
         assert_eq!(matching(&filter), ["1", "4"]);
         filter.set_query("docs");
@@ -669,7 +670,7 @@ mod tests {
     #[test]
     fn a_selected_project_without_sessions_filters_everything_out() {
         let mut filter = SessionFilter::default();
-        filter.set_project(project_sel("p-gone", "gone"));
+        filter.set_project(project_sel("gone"));
         assert!(matching(&filter).is_empty());
         let sections = vec![section("a", sample())];
         assert!(filter_sections(sections, &filter).is_empty());
@@ -681,7 +682,7 @@ mod tests {
         let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, ["All", "Alpha", "beta", "No project"]);
         assert_eq!(index, 0);
-        let (_, index) = project_chips(&sample(), &project_sel("p-b", "beta"));
+        let (_, index) = project_chips(&sample(), &project_sel("beta"));
         assert_eq!(index, 2);
         let with_project: Vec<_> = sample()
             .into_iter()
@@ -692,12 +693,55 @@ mod tests {
     }
 
     #[test]
+    fn one_label_on_several_hosts_is_one_chip_that_filters_every_host() {
+        let mut remote = project_row("5", "remote-build", Some(("p-remote", "beta")));
+        remote.key.host = "host-b".into();
+        let mut rows = sample();
+        rows.push(remote);
+        let (chips, index) = project_chips(&rows, &project_sel("beta"));
+        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["All", "Alpha", "beta", "No project"]);
+        assert_eq!(index, 2);
+        let mut filter = SessionFilter::default();
+        filter.set_project(project_sel("beta"));
+        let matched: Vec<_> = rows
+            .iter()
+            .filter(|r| filter.matches(r))
+            .map(|r| r.key.session_id.as_str())
+            .collect();
+        assert_eq!(matched, ["1", "4", "5"]);
+        // Labels match case-sensitively as displayed.
+        filter.set_project(project_sel("Beta"));
+        assert!(!rows.iter().any(|r| filter.matches(r)));
+    }
+
+    #[test]
+    fn a_stored_id_only_project_loads_as_all_and_a_label_is_kept() {
+        let legacy = StoredFilter {
+            project_id: Some("p-b".into()),
+            ..StoredFilter::default()
+        };
+        assert_eq!(
+            SessionFilter::from_stored(&legacy).project(),
+            &ProjectSelection::All
+        );
+        let with_label = StoredFilter {
+            project_id: Some("p-b".into()),
+            project_label: Some("beta".into()),
+            ..StoredFilter::default()
+        };
+        let loaded = SessionFilter::from_stored(&with_label);
+        assert_eq!(loaded.project(), &project_sel("beta"));
+        assert_eq!(loaded.to_stored().project_id, None);
+    }
+
+    #[test]
     fn the_selected_project_keeps_its_chip_after_its_sessions_are_gone() {
         let rows: Vec<_> = sample()
             .into_iter()
             .filter(|r| r.key.session_id != "2")
             .collect();
-        let (chips, index) = project_chips(&rows, &project_sel("p-a", "Alpha"));
+        let (chips, index) = project_chips(&rows, &project_sel("Alpha"));
         let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, ["All", "Alpha", "beta", "No project"]);
         assert_eq!(index, 1);
@@ -782,9 +826,9 @@ mod tests {
         assert!(filter.matches(&project_row("1", "build", Some(("p-b", "beta")))));
         filter.toggle_state(OwnerState::Ended);
         assert!(filter.matches(&ended));
-        filter.set_project(project_sel("p-a", "Alpha"));
+        filter.set_project(project_sel("Alpha"));
         assert!(!filter.matches(&ended));
-        filter.set_project(project_sel("p-b", "beta"));
+        filter.set_project(project_sel("beta"));
         filter.set_query("zzz");
         assert!(!filter.matches(&ended));
         filter.set_query("old");
@@ -814,14 +858,14 @@ mod tests {
         assert_eq!(filter.to_stored(), StoredFilter::default());
         filter.toggle_state(OwnerState::Ended);
         filter.toggle_state(OwnerState::Idle);
-        filter.set_project(project_sel("p-b", "beta"));
+        filter.set_project(project_sel("beta"));
         let restored = SessionFilter::from_stored(&filter.to_stored());
         assert_eq!(restored.states(), filter.states());
         assert_eq!(restored.project(), filter.project());
 
         let stale = StoredFilter {
             states: Some(vec!["banana".into()]),
-            project_id: Some("p-gone".into()),
+            project_label: Some("gone".into()),
             ..StoredFilter::default()
         };
         let loaded = SessionFilter::from_stored(&stale);
