@@ -6,6 +6,8 @@ export component SearchField inherits Rectangle {
     in property <string> placeholder;
     // Accessible name of the text input.
     in property <string> label;
+    // Accessible name of the clear button.
+    in property <string> clear-label;
     in property <bool> search-glyph;
     // Shows a clear button while the field holds text.
     in property <bool> clearable;
@@ -70,7 +72,7 @@ export component SearchField inherits Rectangle {
             width: root.field-height - root.field-padding;
             mouse-cursor: pointer;
             accessible-role: button;
-            accessible-label: "Clear " + root.label;
+            accessible-label: root.clear-label;
             clicked => {
                 input.text = "";
                 root.edited("");

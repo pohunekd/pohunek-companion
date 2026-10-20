@@ -1024,6 +1024,7 @@ export component AppWindow inherits Window {
                 label: "Filter sessions";
                 search-glyph: true;
                 clearable: true;
+                clear-label: "Clear filter";
                 text <=> root.filter-text;
                 edited(value) => { root.filter-changed(value); }
             }
@@ -1099,7 +1100,7 @@ export component AppWindow inherits Window {
             }
         }
         if root.creating-group: new-group-scope := FocusScope {
-            height: Theme.new-group-height;
+            height: Theme.field-height;
             capture-key-pressed(event) => {
                 if event.text == Key.Escape {
                     root.creating-group = false;
@@ -1138,7 +1139,7 @@ export component AppWindow inherits Window {
             wrap: word-wrap;
         }
         if root.renaming-id != "": rename-scope := FocusScope {
-            height: Theme.new-group-height;
+            height: Theme.field-height;
             capture-key-pressed(event) => {
                 if event.text == Key.Escape {
                     root.renaming-id = "";
