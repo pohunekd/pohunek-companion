@@ -379,7 +379,6 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       TAG: ${{ github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -392,6 +391,8 @@ jobs:
       - name: Check the asset set and the checksums
         run: scripts/release-inventory "$RUNNER_TEMP/release" "$VERSION"
       - name: Create the draft and upload the assets
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # A rerun must not add a second draft for the same tag.
@@ -405,6 +406,8 @@ jobs:
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
             --title "$TAG" --notes "$notes" ./*
       - name: Verify the draft's assets
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/release"
@@ -415,4 +418,6 @@ jobs:
           done | LC_ALL=C sort > "$RUNNER_TEMP/local.txt"
           diff "$RUNNER_TEMP/local.txt" "$RUNNER_TEMP/remote.txt"
       - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
