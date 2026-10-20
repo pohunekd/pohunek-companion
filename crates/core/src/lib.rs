@@ -15,6 +15,7 @@ mod model;
 mod needs_you;
 mod new_session;
 mod owner_state;
+mod rename;
 mod session;
 mod socket;
 mod sort_key;
@@ -45,6 +46,7 @@ pub use new_session::{
 pub use owner_state::{OwnerState, derive};
 pub use pohunek_client::LOCAL_HOST;
 pub use pohunek_client::protocol::SessionNewParams;
+pub use rename::{RenameError, name_from_input, rename_session};
 pub use session::{ProjectRef, SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
 pub use tray_summary::{TrayEntry, TraySummary};

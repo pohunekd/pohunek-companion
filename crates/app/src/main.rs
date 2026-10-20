@@ -12,10 +12,10 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
-    INBOX_ID, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState, Placement,
+    INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState, Placement,
     PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow,
     TraySummary, View, ViewConfig, attach, clip_display, filter_sections, layout_path,
-    project_chips, run_live,
+    name_from_input, project_chips, rename_session, run_live,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -567,6 +567,50 @@ fn start_attach(
     });
 }
 
+/// Renames on a background thread and shows a failure in the window. The new
+/// name appears through the daemon's session event, not from this outcome.
+fn start_rename(
+    window: slint::Weak<AppWindow>,
+    daemon: Result<DaemonConfig, String>,
+    host: String,
+    session_id: String,
+    input: String,
+) {
+    std::thread::spawn(move || {
+        let outcome = rename_outcome(&daemon, &host, &session_id, &input);
+        if let Err(message) = &outcome {
+            warn!(session = %session_id, error = %message, "rename failed");
+        }
+        let applied = window.upgrade_in_event_loop(move |window| {
+            window.set_rename_error(outcome.err().unwrap_or_default().into());
+        });
+        if let Err(err) = applied {
+            error!(error = %err, "deliver rename outcome to the UI");
+        }
+    });
+}
+
+fn rename_outcome(
+    daemon: &Result<DaemonConfig, String>,
+    host: &str,
+    session_id: &str,
+    input: &str,
+) -> Result<(), String> {
+    if host != LOCAL_HOST {
+        return Err(format!(
+            "Cannot rename {session_id}: only the local daemon is supported"
+        ));
+    }
+    let daemon = daemon.as_ref().map_err(Clone::clone)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("cannot start the background runtime: {err}"))?;
+    runtime
+        .block_on(rename_session(daemon, session_id, name_from_input(input)))
+        .map_err(|err| format!("Cannot rename {session_id}: {err}"))
+}
+
 fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> Result<(), String> {
     if !refusal.is_empty() {
         return Err(format!("Cannot attach: {refusal}"));
@@ -651,8 +695,9 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     window.set_editable(view.is_editable());
 
     let config_path = Config::path().map_err(|err| err.to_string());
-    let attach_context = match Config::load() {
+    let (attach_context, rename_daemon) = match Config::load() {
         Ok(config) => {
+            let rename_daemon = Ok(config.daemon.clone());
             {
                 let mut state = lock(&layout);
                 state.title_max_chars = config.view.section_title_max_chars;
@@ -670,17 +715,32 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                 config.layout.rules,
                 layout.clone(),
             );
-            context
+            (context, rename_daemon)
         }
         Err(err) => {
             error!(error = %err, "load companion.toml");
             window.set_error(err.to_string().into());
-            AttachContext {
+            let rename_daemon = Err(err.to_string());
+            let context = AttachContext {
                 config_path,
                 settings: Err(err.to_string()),
-            }
+            };
+            (context, rename_daemon)
         }
     };
+    {
+        let weak = window.as_weak();
+        window.on_rename_session(move |host, id, name| {
+            info!(host = %host, session = %id, "rename requested from the context menu");
+            start_rename(
+                weak.clone(),
+                rename_daemon.clone(),
+                host.into(),
+                id.into(),
+                name.into(),
+            );
+        });
+    }
     {
         let weak = window.as_weak();
         let context = attach_context.clone();
