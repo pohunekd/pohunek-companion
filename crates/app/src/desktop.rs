@@ -257,23 +257,23 @@ fn prune_empty_children(dir: &Path) {
     }
 }
 
-/// Runs `update-desktop-database` and `gtk-update-icon-cache` on the
-/// directories that exist, when the tools are installed. Launchers read the entry and icons without them, so a missing
-/// tool or a failing run is reported on stderr and never fails the command.
+/// Runs `update-desktop-database` on the applications directory and
+/// `gtk-update-icon-cache` on the hicolor directory, when the tools are
+/// installed. The icon cache is only built where an `index.theme` exists: a
+/// user hicolor directory has none, the tool refuses it, and GTK reads
+/// uncached icons. Launchers read the entry and icons without either tool, so
+/// a missing tool or a failing run is reported on stderr and never fails the
+/// command.
 fn refresh_caches(root: &Path) {
     let applications = root.join("applications");
     let hicolor = root.join("icons/hicolor");
     if applications.is_dir() {
         run_tool("update-desktop-database", &[applications.as_os_str()]);
     }
-    if hicolor.is_dir() {
+    if hicolor.join("index.theme").is_file() {
         run_tool(
             "gtk-update-icon-cache",
-            &[
-                "--force".as_ref(),
-                "--ignore-theme-index".as_ref(),
-                hicolor.as_os_str(),
-            ],
+            &["--force".as_ref(), hicolor.as_os_str()],
         );
     }
 }
@@ -341,7 +341,7 @@ mod tests {
             "Name=Pohunek Companion",
             "Icon=pohunek-companion",
             "Terminal=false",
-            "Categories=Development;Utility;",
+            "Categories=Development;",
             "StartupWMClass=pohunek-companion",
             "Actions=new-session;",
             "[Desktop Action new-session]",
