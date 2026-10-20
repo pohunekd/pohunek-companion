@@ -263,6 +263,7 @@ mod tests {
             can_remove: false,
             runtime_detail: String::new(),
             open: crate::open::OpenTargets::default(),
+            host_label: None,
         }
     }
 

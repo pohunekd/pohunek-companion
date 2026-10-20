@@ -833,6 +833,11 @@ start() {
     if [[ -n ${UI_AGENT_CONFIG_EXTRA:-} ]]; then
         printf '%s\n' "$UI_AGENT_CONFIG_EXTRA" >>"$config_dir/companion.toml"
     fi
+    # The synthetic remote host is listed in the sidebar like a configured one.
+    if [ -n "$remote_host" ]; then
+        printf '\n[[hosts]]\ntarget = "%s"\nlabel = "remote"\n' "$(cat "$remote_route_file")" \
+            >>"$config_dir/companion.toml"
+    fi
 
     local -a envs=(
         SLINT_EMIT_DEBUG_INFO=1

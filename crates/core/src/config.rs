@@ -4,10 +4,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use pohunek_client::is_local_host;
 use serde::Deserialize;
 
 use crate::attach::{AttachConfig, AttachTemplate};
 use crate::attach_macos::AttachTerminal;
+use crate::badge::sanitize;
 use crate::open::{OpenConfig, OpenTemplate, default_open_template};
 
 const CONFIG_HOME_ENV: &str = "XDG_CONFIG_HOME";
@@ -46,6 +48,13 @@ pub enum ConfigError {
         index: usize,
         problem: String,
     },
+    #[error("invalid {path}: `hosts[{index}]` (target {target:?}) {problem}")]
+    Host {
+        path: PathBuf,
+        index: usize,
+        target: String,
+        problem: String,
+    },
     #[error(
         "invalid {path}: `daemon.reconnect_initial_ms` ({initial}) must not exceed \
          `daemon.reconnect_max_ms` ({max})"
@@ -72,6 +81,11 @@ pub struct Config {
     pub view: ViewConfig,
     /// `[new_session]` table: how the new-session dialog creates sessions.
     pub new_session: NewSessionConfig,
+    /// `[[hosts]]`: remote Pohunek hosts whose sessions are listed next to the
+    /// local ones, each on its own connection. Optional; default none (local
+    /// only). Example: `[[hosts]]` with `target = "zajcaair"` and
+    /// `label = "Air"`.
+    pub hosts: Vec<HostConfig>,
     /// `attach_command`: argv template that opens a session in a terminal,
     /// as an array of words (no shell is involved). Optional; when absent,
     /// clicking a session reports that attach is not configured. `{bin}`
@@ -124,6 +138,7 @@ impl Default for Config {
             layout: LayoutConfig::default(),
             view: ViewConfig::default(),
             new_session: NewSessionConfig::default(),
+            hosts: Vec::new(),
             attach_command: None,
             attach_terminal: None,
             pohunek_bin: "pohunek".to_owned(),
@@ -131,6 +146,54 @@ impl Default for Config {
             attach_observe_ms: 1000,
             login_shell_timeout_ms: 2000,
             attach_script_max_age_s: 3600,
+        }
+    }
+}
+
+/// One `[[hosts]]` entry: a remote Pohunek host.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostConfig {
+    /// `target`: a Pohunek host route as `pohunek --host` accepts it (for
+    /// example `zajcaair`, `netbird:peer~...`, or `netbird:peer~...@28722`).
+    /// Required, not empty, not `local`, unique among the entries, and not a
+    /// name of this machine. It is the session key's host, verbatim.
+    pub target: String,
+    /// `label`: the host name shown on the host's rows. Optional; default the
+    /// `target`.
+    pub label: Option<String>,
+}
+
+impl HostConfig {
+    /// Why the entry is unusable, without the duplicate check.
+    fn problem(&self) -> Option<String> {
+        if self.target.trim().is_empty() {
+            return Some("needs a non-empty `target`".to_owned());
+        }
+        if is_local_host(self.target.trim()) {
+            return Some(
+                "must not name the local host; the local daemon is always listed".to_owned(),
+            );
+        }
+        if self.target != self.target.trim() {
+            return Some("has leading or trailing whitespace in `target`".to_owned());
+        }
+        if self
+            .label
+            .as_deref()
+            .is_some_and(|label| label.trim().is_empty())
+        {
+            return Some("has an empty `label`".to_owned());
+        }
+        None
+    }
+
+    /// The sanitized host name for display.
+    pub fn display_label(&self) -> String {
+        let label = self.label.as_deref().map(sanitize);
+        match label {
+            Some(label) if !label.is_empty() => label,
+            _ => sanitize(&self.target),
         }
     }
 }
@@ -496,6 +559,22 @@ impl Config {
                 });
             }
         }
+        for (index, host) in self.hosts.iter().enumerate() {
+            let problem = host.problem().or_else(|| {
+                self.hosts[..index]
+                    .iter()
+                    .position(|other| other.target == host.target)
+                    .map(|first| format!("duplicates `hosts[{first}]`"))
+            });
+            if let Some(problem) = problem {
+                return Err(ConfigError::Host {
+                    path: path.to_owned(),
+                    index,
+                    target: host.target.clone(),
+                    problem,
+                });
+            }
+        }
         if self.pohunek_bin.is_empty() {
             return Err(ConfigError::EmptyPohunekBin {
                 path: path.to_owned(),
@@ -600,6 +679,46 @@ mod tests {
     #[test]
     fn empty_file_gives_defaults() {
         assert_eq!(parse("").unwrap(), Config::default());
+    }
+
+    #[test]
+    fn hosts_parse_in_file_order_with_optional_labels() {
+        let config = parse(
+            "[[hosts]]\ntarget = \"zajcaair\"\nlabel = \"Air\"\n[[hosts]]\ntarget = \"netbird:peer~x@28722\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.hosts.len(), 2);
+        assert_eq!(config.hosts[0].display_label(), "Air");
+        assert_eq!(config.hosts[1].display_label(), "netbird:peer~x@28722");
+        assert!(parse("").unwrap().hosts.is_empty());
+    }
+
+    #[test]
+    fn invalid_hosts_fail_naming_the_entry() {
+        for (text, entry, problem) in [
+            ("[[hosts]]\ntarget = \"\"\n", "hosts[0]", "non-empty"),
+            ("[[hosts]]\ntarget = \"local\"\n", "hosts[0]", "local host"),
+            (
+                "[[hosts]]\ntarget = \"a\"\n[[hosts]]\ntarget = \"local\"\n",
+                "hosts[1]",
+                "local host",
+            ),
+            (
+                "[[hosts]]\ntarget = \"a\"\n[[hosts]]\ntarget = \"b\"\n[[hosts]]\ntarget = \"a\"\n",
+                "hosts[2]",
+                "duplicates `hosts[0]`",
+            ),
+            (
+                "[[hosts]]\ntarget = \"a\"\nlabel = \" \"\n",
+                "hosts[0]",
+                "empty `label`",
+            ),
+        ] {
+            let msg = parse(text).unwrap_err().to_string();
+            assert!(msg.contains(entry) && msg.contains(problem), "{msg}");
+        }
+        let msg = parse("[[hosts]]\nlabel = \"x\"\n").unwrap_err().to_string();
+        assert!(msg.contains("target"), "{msg}");
     }
 
     #[test]

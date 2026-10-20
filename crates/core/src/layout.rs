@@ -369,12 +369,15 @@ impl Layout {
     }
 
     /// Appends sessions the layout does not know to the end of Inbox, in list
-    /// order, and drops placements of sessions missing from `current`.
-    pub fn reconcile(&mut self, current: &[SessionKey]) -> Reconciled {
+    /// order, and drops placements of `host`'s sessions missing from
+    /// `current`, the full seeded list of that host. Items of other hosts are
+    /// never pruned, so a host that is disconnected or not yet seeded keeps
+    /// its placements.
+    pub fn reconcile(&mut self, host: &str, current: &[SessionKey]) -> Reconciled {
         let listed: HashSet<&SessionKey> = current.iter().collect();
         let mut result = Reconciled::default();
         self.items.retain(|item| {
-            let keep = listed.contains(&item.key());
+            let keep = item.host != host || listed.contains(&item.key());
             if !keep {
                 result.pruned.push(item.key());
             }
@@ -941,11 +944,12 @@ impl LayoutStore {
         &self.layout
     }
 
-    /// Reconciles with the daemon's full session list and logs the outcome.
-    pub fn reconcile(&mut self, current: &[SessionKey]) -> Reconciled {
-        let result = self.layout.reconcile(current);
+    /// Reconciles with the full session list of `host` and logs the outcome.
+    pub fn reconcile(&mut self, host: &str, current: &[SessionKey]) -> Reconciled {
+        let result = self.layout.reconcile(host, current);
         if !result.added.is_empty() || !result.pruned.is_empty() {
             info!(
+                host,
                 added = ?result.added.iter().map(|k| k.session_id.as_str()).collect::<Vec<_>>(),
                 pruned = ?result.pruned.iter().map(|k| k.session_id.as_str()).collect::<Vec<_>>(),
                 "layout reconciled with the session list"
@@ -1197,13 +1201,49 @@ mod tests {
     #[test]
     fn reconcile_appends_unknown_sessions_in_list_order_and_prunes_missing_ones() {
         let mut layout = Layout::default();
-        layout.reconcile(&keys(&["s1", "s2", "s3"]));
+        layout.reconcile("local", &keys(&["s1", "s2", "s3"]));
         assert_eq!(inbox_order(&layout), ["s1", "s2", "s3"]);
 
-        let result = layout.reconcile(&keys(&["s3", "s1", "s4", "s5"]));
+        let result = layout.reconcile("local", &keys(&["s3", "s1", "s4", "s5"]));
         assert_eq!(result.pruned, keys(&["s2"]));
         assert_eq!(result.added, keys(&["s4", "s5"]));
         assert_eq!(inbox_order(&layout), ["s1", "s3", "s4", "s5"]);
+    }
+
+    fn remote_key(host: &str, id: &str) -> SessionKey {
+        SessionKey {
+            host: host.to_owned(),
+            session_id: id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_host_seed_prunes_only_that_hosts_items() {
+        let a = |ids: &[&str]| -> Vec<SessionKey> {
+            ids.iter().map(|id| remote_key("host-a", id)).collect()
+        };
+        let b = |ids: &[&str]| -> Vec<SessionKey> {
+            ids.iter().map(|id| remote_key("host-b", id)).collect()
+        };
+        let mut layout = Layout::default();
+        layout.reconcile("host-a", &a(&["a1", "a2"]));
+        layout.reconcile("host-b", &b(&["b1", "b2"]));
+        assert_eq!(inbox_order(&layout), ["a1", "a2", "b1", "b2"]);
+
+        // Host A lost a2 and gained a3; host B was not seeded again.
+        let result = layout.reconcile("host-a", &a(&["a1", "a3"]));
+        assert_eq!(result.pruned, a(&["a2"]));
+        assert_eq!(result.added, a(&["a3"]));
+        assert_eq!(inbox_order(&layout), ["a1", "b1", "b2", "a3"]);
+
+        // An empty seed of B empties B only; a host never seeded (C) prunes
+        // nothing and no host is touched by a reconcile of another.
+        layout.reconcile("host-b", &[]);
+        assert_eq!(inbox_order(&layout), ["a1", "a3"]);
+        let before = layout.items().to_vec();
+        let result = layout.reconcile("host-c", &[]);
+        assert!(result.pruned.is_empty() && result.added.is_empty());
+        assert_eq!(layout.items(), before);
     }
 
     const THREE_GROUPS: &str = r#"
@@ -1224,7 +1264,7 @@ order = "t"
 
     fn arranged(ids: &[&str]) -> Layout {
         let mut layout: Layout = toml::from_str(THREE_GROUPS).expect("parses");
-        layout.reconcile(&keys(ids));
+        layout.reconcile("local", &keys(ids));
         layout
     }
 
@@ -1433,7 +1473,7 @@ order = "t"
             session("s2", Some("beta"), None),
         ];
         let keys: Vec<SessionKey> = rows.iter().map(|r| r.key.clone()).collect();
-        store.reconcile(&keys);
+        store.reconcile("local", &keys);
         store.set_view(View::ByProject);
         let alpha = store.layout().present(&rows, 40)[0].id.clone();
         assert_eq!(store.set_collapsed(&alpha, true), Ok(true));
@@ -1465,7 +1505,7 @@ order = "t"
         let dir = scratch("groups");
         let path = dir.join(LAYOUT_FILE);
         let (mut store, _) = LayoutStore::open(path.clone());
-        store.reconcile(&keys(&["s1"]));
+        store.reconcile("local", &keys(&["s1"]));
         let work = store.create_group("Work").expect("creates");
         let review = store.create_group("Review").expect("creates");
         assert_eq!(
@@ -1526,7 +1566,7 @@ order = "t"
         let dir = scratch("manual");
         let path = dir.join(LAYOUT_FILE);
         let (mut store, _) = LayoutStore::open(path.clone());
-        store.reconcile(&keys(&["s1", "s2"]));
+        store.reconcile("local", &keys(&["s1", "s2"]));
         store
             .move_session(&key("s1"), INBOX_ID, Placement::End)
             .expect("moves");
@@ -1563,7 +1603,7 @@ order = "g"
 "#;
         let mut layout: Layout = toml::from_str(text).expect("parses");
         assert_eq!(layout.validate(), Ok(false));
-        layout.reconcile(&keys(&["s1", "s2", "s3"]));
+        layout.reconcile("local", &keys(&["s1", "s2", "s3"]));
         let sections = layout.arrange(&[]);
         assert_eq!(
             sections.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
@@ -1589,7 +1629,7 @@ order = "g"
         let path = dir.join("state").join(LAYOUT_FILE);
         let (mut store, error) = LayoutStore::open(path.clone());
         assert!(error.is_none());
-        store.reconcile(&keys(&["s1", "s2"]));
+        store.reconcile("local", &keys(&["s1", "s2"]));
         assert!(store.save_if_changed().expect("saves"));
         assert!(!store.save_if_changed().expect("no rewrite"));
 
@@ -1602,7 +1642,7 @@ order = "g"
         assert!(error.is_none());
         assert_eq!(reloaded.layout(), store.layout());
         let mut reloaded = reloaded;
-        reloaded.reconcile(&keys(&["s1", "s2"]));
+        reloaded.reconcile("local", &keys(&["s1", "s2"]));
         assert!(!reloaded.save_if_changed().expect("no rewrite"));
 
         let annotated = format!(
@@ -1612,7 +1652,7 @@ order = "g"
         fs::write(&path, &annotated).expect("write");
         let (mut edited, error) = LayoutStore::open(path.clone());
         assert!(error.is_none());
-        edited.reconcile(&keys(&["s1", "s2"]));
+        edited.reconcile("local", &keys(&["s1", "s2"]));
         assert!(!edited.save_if_changed().expect("no rewrite"));
         assert_eq!(fs::read_to_string(&path).expect("read"), annotated);
         let _ = fs::remove_dir_all(&dir);
@@ -1672,7 +1712,7 @@ order = "g"
         fs::write(&path, typo).expect("write");
         let (mut store, error) = LayoutStore::open(path.clone());
         assert!(matches!(error, Some(LayoutError::Invalid { .. })));
-        store.reconcile(&keys(&["s1"]));
+        store.reconcile("local", &keys(&["s1"]));
         assert!(!store.save_if_changed().expect("skips"));
         assert_eq!(fs::read_to_string(&path).expect("read"), typo);
         let _ = fs::remove_dir_all(&dir);
@@ -1688,7 +1728,7 @@ order = "g"
 
         let (mut store, error) = LayoutStore::open(path.clone());
         assert!(matches!(error, Some(LayoutError::Invalid { .. })));
-        store.reconcile(&keys(&["s1"]));
+        store.reconcile("local", &keys(&["s1"]));
         assert_eq!(store.layout().arrange(&[]).len(), 1);
         assert!(!store.save_if_changed().expect("skips"));
         assert_eq!(fs::read_to_string(&path).expect("read"), damaged);
@@ -1732,12 +1772,13 @@ order = "g"
             can_remove: false,
             runtime_detail: String::new(),
             open: crate::open::OpenTargets::default(),
+            host_label: None,
         }
     }
 
     fn placed(layout: &mut Layout, rows: &[SessionRow], rules: &[PlacementRule]) {
         let keys: Vec<SessionKey> = rows.iter().map(|r| r.key.clone()).collect();
-        layout.reconcile(&keys);
+        layout.reconcile("local", &keys);
         layout.apply_rules(rows, rules);
     }
 

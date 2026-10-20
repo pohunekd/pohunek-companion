@@ -13,11 +13,11 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
-    INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OpenConfig, OpenKind,
-    OwnerState, PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection,
-    SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, attach,
-    clip_display, filter_sections, layout_path, name_from_input, open, project_chips,
-    rename_session, run_live, state_chips, state_from_key,
+    HostConfig, INBOX_ID, LOCAL_HOST, LayoutStore, LiveHost, LiveUpdate, MoveError, NEEDS_YOU_ID,
+    OpenConfig, OpenKind, OwnerState, PendingStore, Placement, PlacementRule, ProjectChip,
+    ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View,
+    ViewConfig, attach, clip_display, filter_sections, host_naming_this_machine, layout_path,
+    name_from_input, open, project_chips, rename_session, run_live, state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -69,6 +69,7 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 badge: badge.into(),
                 badge_role: badge_role.into(),
                 host: s.key.host.into(),
+                host_label: s.host_label.unwrap_or_default().into(),
                 id: s.key.session_id.into(),
                 can_stop: s.can_stop,
                 can_remove: s.can_remove,
@@ -538,17 +539,211 @@ fn apply_pending(
     }
 }
 
-/// Follows the daemon on a background thread and hands every update to the UI
-/// thread; the UI thread never waits on the daemon.
-fn follow_daemon(
+/// Everything a host's loop needs to publish an update to the window.
+struct Publisher {
     window: slint::Weak<AppWindow>,
     tray: slint::Weak<Tray>,
-    daemon: DaemonConfig,
-    idle_threshold: Duration,
     rules: Vec<PlacementRule>,
     pending: Option<(PendingStore, Duration)>,
     layout: SharedLayout,
+    hosts: Rc<RefCell<HostsView>>,
+}
+
+/// The latest session list of every followed host and the hosts that are
+/// currently not connected; shared by the loops of all hosts, which run on one
+/// thread.
+struct HostsView {
+    /// Hosts in display order (local first); `None` rows until first seeded.
+    rows: Vec<(String, Option<Vec<SessionRow>>)>,
+    /// Status line per host that is not connected, by target.
+    down: Vec<(String, String)>,
+}
+
+impl HostsView {
+    fn new(hosts: &[LiveHost]) -> Self {
+        Self {
+            rows: hosts.iter().map(|h| (h.target.clone(), None)).collect(),
+            down: Vec::new(),
+        }
+    }
+
+    /// Stores `sessions` as `host`'s list and returns the union of all hosts.
+    fn set_rows(&mut self, host: &str, sessions: Vec<SessionRow>) -> Vec<SessionRow> {
+        if let Some((_, slot)) = self.rows.iter_mut().find(|(target, _)| target == host) {
+            *slot = Some(sessions);
+        }
+        self.rows
+            .iter()
+            .filter_map(|(_, rows)| rows.as_deref())
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    /// Every host has delivered a list at least once; derived collapsed
+    /// sections are pruned only then, because an unseeded host's sections are
+    /// not yet known.
+    fn all_seeded(&self) -> bool {
+        self.rows.iter().all(|(_, rows)| rows.is_some())
+    }
+
+    fn is_down(&self, host: &str) -> bool {
+        self.down.iter().any(|(target, _)| target == host)
+    }
+
+    fn set_down(&mut self, host: &str, line: Option<String>) {
+        self.down.retain(|(target, _)| target != host);
+        if let Some(line) = line {
+            self.down.push((host.to_owned(), line));
+        }
+    }
+
+    fn status(&self) -> String {
+        let order = |target: &str| self.rows.iter().position(|(t, _)| t == target);
+        let mut down: Vec<_> = self.down.iter().collect();
+        down.sort_by_key(|(target, _)| order(target));
+        down.into_iter()
+            .map(|(_, line)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+impl Publisher {
+    /// Shows why `host` is not followed; its rows stay out of the list.
+    fn refuse(&self, host: &LiveHost, message: &str) {
+        let label = host.label.as_deref().unwrap_or(&host.target);
+        let status = {
+            let mut hosts = self.hosts.borrow_mut();
+            hosts.set_down(&host.target, Some(format!("{label}: {message}")));
+            hosts.status()
+        };
+        if let Err(err) = self.window.upgrade_in_event_loop(move |window| {
+            window.set_status(status.into());
+        }) {
+            error!(error = %err, "deliver the hosts error to the UI");
+        }
+    }
+
+    /// Applies one update of `host` to the layout and queues the window update.
+    fn publish(&self, host: &LiveHost, update: LiveUpdate) {
+        let local = host.target == LOCAL_HOST;
+        let mut union = None;
+        if let LiveUpdate::Sessions(sessions) = &update {
+            union = Some(
+                self.hosts
+                    .borrow_mut()
+                    .set_rows(&host.target, sessions.clone()),
+            );
+        }
+        let status = match &update {
+            LiveUpdate::Connected => {
+                let mut hosts = self.hosts.borrow_mut();
+                hosts.set_down(&host.target, None);
+                Some(hosts.status())
+            }
+            LiveUpdate::Reconnecting { attempt, reason } => {
+                let line = format!("Reconnecting (attempt {attempt}): {reason}");
+                let line = match &host.label {
+                    Some(label) => format!("{label}: {line}"),
+                    None => line,
+                };
+                let mut hosts = self.hosts.borrow_mut();
+                hosts.set_down(&host.target, Some(line));
+                Some(hosts.status())
+            }
+            LiveUpdate::Sessions(_) => None,
+        };
+        // The tray reflects the local daemon: while it is down the tray stays
+        // offline whatever a remote host reports.
+        let summary = union
+            .as_deref()
+            .filter(|_| !self.hosts.borrow().is_down(LOCAL_HOST))
+            .map(TraySummary::from_rows);
+        let all_seeded = self.hosts.borrow().all_seeded();
+        // Reconciled and saved here so the UI thread never waits on disk;
+        // the lock is held until the update is queued.
+        let mut guard = None;
+        let arranged = match (&update, &union) {
+            (LiveUpdate::Sessions(sessions), Some(all)) => {
+                let mut state = lock(&self.layout);
+                let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
+                state.store.reconcile(&host.target, &keys);
+                if let Some((pending, max_age)) = &self.pending {
+                    let all_keys: Vec<SessionKey> = all.iter().map(|s| s.key.clone()).collect();
+                    apply_pending(&mut state.store, pending, &all_keys, *max_age);
+                }
+                state.store.apply_rules(all, &self.rules);
+                let title_max_chars = state.title_max_chars;
+                if all_seeded {
+                    state.store.prune_collapsed_sections(all, title_max_chars);
+                }
+                let layout_error = save_layout(&mut state);
+                state.rows = all.clone();
+                let arranged = arrange(&state);
+                guard = Some(state);
+                Some((arranged, layout_error))
+            }
+            _ => None,
+        };
+        let tray = self.tray.clone();
+        let applied = self
+            .window
+            .upgrade_in_event_loop(move |window| match update {
+                LiveUpdate::Connected => {
+                    window.set_error("".into());
+                    window.set_status(status.unwrap_or_default().into());
+                }
+                LiveUpdate::Sessions(_) => {
+                    if let (Some(tray), Some(summary)) = (tray.upgrade(), summary) {
+                        tray::apply(&tray, &summary);
+                    }
+                    if let Some((arranged, layout_error)) = arranged {
+                        show_arranged(&window, arranged);
+                        window.set_layout_error(layout_error.unwrap_or_default().into());
+                    }
+                }
+                LiveUpdate::Reconnecting { .. } => {
+                    // The tray goes offline with the local daemon only; a lost
+                    // remote host keeps its last known rows.
+                    if local && let Some(tray) = tray.upgrade() {
+                        tray::apply_offline(&tray, "Not connected to the daemon");
+                    }
+                    window.set_status(status.unwrap_or_default().into());
+                }
+            });
+        drop(guard);
+        if let Err(err) = applied {
+            error!(error = %err, "deliver a daemon update to the UI");
+        }
+    }
+}
+
+/// What the daemon loops take from `companion.toml` and the pending store.
+struct FollowSettings {
+    daemon: DaemonConfig,
+    remotes: Vec<HostConfig>,
+    idle_threshold: Duration,
+    rules: Vec<PlacementRule>,
+    pending: Option<(PendingStore, Duration)>,
+}
+
+/// Follows the local daemon and every configured remote host on a background
+/// thread and hands every update to the UI thread; the UI thread never waits
+/// on a daemon.
+fn follow_daemons(
+    window: slint::Weak<AppWindow>,
+    tray: slint::Weak<Tray>,
+    settings: FollowSettings,
+    layout: SharedLayout,
 ) {
+    let FollowSettings {
+        daemon,
+        remotes,
+        idle_threshold,
+        rules,
+        pending,
+    } = settings;
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -566,62 +761,54 @@ fn follow_daemon(
                 return;
             }
         };
-        runtime.block_on(run_live(&daemon, idle_threshold, |update| {
-            let summary = match &update {
-                LiveUpdate::Sessions(sessions) => Some(TraySummary::from_rows(sessions)),
-                _ => None,
-            };
-            // Reconciled and saved here so the UI thread never waits on disk;
-            // the lock is held until the update is queued.
-            let mut guard = None;
-            let arranged = match &update {
-                LiveUpdate::Sessions(sessions) => {
-                    let mut state = lock(&layout);
-                    let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
-                    state.store.reconcile(&keys);
-                    if let Some((pending, max_age)) = &pending {
-                        apply_pending(&mut state.store, pending, &keys, *max_age);
-                    }
-                    state.store.apply_rules(sessions, &rules);
-                    let title_max_chars = state.title_max_chars;
-                    state
-                        .store
-                        .prune_collapsed_sections(sessions, title_max_chars);
-                    let layout_error = save_layout(&mut state);
-                    state.rows = sessions.clone();
-                    let arranged = arrange(&state);
-                    guard = Some(state);
-                    Some((arranged, layout_error))
+        let hosts: Vec<LiveHost> = std::iter::once(LiveHost::local())
+            .chain(remotes.iter().map(LiveHost::remote))
+            .collect();
+        let publisher = Rc::new(Publisher {
+            window,
+            tray,
+            rules,
+            pending,
+            layout,
+            hosts: Rc::new(RefCell::new(HostsView::new(&hosts))),
+        });
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&runtime, async {
+            let loops: Vec<_> = hosts
+                .into_iter()
+                .map(|host| {
+                    let (daemon, publisher) = (daemon.clone(), publisher.clone());
+                    tokio::task::spawn_local(async move {
+                        if host.label.is_some() {
+                            let target = std::slice::from_ref(&host.target);
+                            let refusal = match host_naming_this_machine(target, &daemon).await {
+                                Ok(None) => None,
+                                Ok(Some(_)) => Some(
+                                    "invalid `hosts` entry: it names this machine, whose \
+                                     sessions are already listed as local"
+                                        .to_owned(),
+                                ),
+                                Err(err) => Some(format!("cannot check the `hosts` entry: {err}")),
+                            };
+                            if let Some(message) = refusal {
+                                error!(host = %host.target, error = %message, "refusing the configured host");
+                                publisher.refuse(&host, &message);
+                                return;
+                            }
+                        }
+                        run_live(&host, &daemon, idle_threshold, |update| {
+                            publisher.publish(&host, update);
+                        })
+                        .await;
+                    })
+                })
+                .collect();
+            for handle in loops {
+                if let Err(err) = handle.await {
+                    error!(error = %err, "a host loop ended");
                 }
-                _ => None,
-            };
-            let tray = tray.clone();
-            let applied = window.upgrade_in_event_loop(move |window| match update {
-                LiveUpdate::Connected => {
-                    window.set_error("".into());
-                    window.set_status("".into());
-                }
-                LiveUpdate::Sessions(_) => {
-                    if let (Some(tray), Some(summary)) = (tray.upgrade(), summary) {
-                        tray::apply(&tray, &summary);
-                    }
-                    if let Some((arranged, layout_error)) = arranged {
-                        show_arranged(&window, arranged);
-                        window.set_layout_error(layout_error.unwrap_or_default().into());
-                    }
-                }
-                LiveUpdate::Reconnecting { attempt, reason } => {
-                    if let Some(tray) = tray.upgrade() {
-                        tray::apply_offline(&tray, "Not connected to the daemon");
-                    }
-                    window.set_status(format!("Reconnecting (attempt {attempt}): {reason}").into());
-                }
-            });
-            drop(guard);
-            if let Err(err) = applied {
-                error!(error = %err, "deliver a daemon update to the UI");
             }
-        }));
+        });
     });
 }
 
@@ -908,13 +1095,16 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                     None
                 }
             };
-            follow_daemon(
+            follow_daemons(
                 window.as_weak(),
                 tray.as_weak(),
-                config.daemon,
-                config.tray.idle_threshold(),
-                config.layout.rules,
-                pending,
+                FollowSettings {
+                    daemon: config.daemon,
+                    remotes: config.hosts,
+                    idle_threshold: config.tray.idle_threshold(),
+                    rules: config.layout.rules,
+                    pending,
+                },
                 layout.clone(),
             );
             (context, rename_daemon, open_settings)
