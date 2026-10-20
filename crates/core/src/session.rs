@@ -3,7 +3,7 @@ use crate::badge::{WorkBadge, WorkFacts, sanitize};
 use crate::open::OpenTargets;
 use crate::owner_state::OwnerState;
 use pohunek_client::LOCAL_HOST;
-use pohunek_client::protocol::SessionInfo;
+use pohunek_client::protocol::{RuntimeState, SessionInfo};
 use time::OffsetDateTime;
 
 /// Identity of a session across hosts. Only the local daemon is used so far.
@@ -46,8 +46,49 @@ pub struct SessionRow {
     pub can_stop: bool,
     /// The daemon accepts `session.remove` for this session.
     pub can_remove: bool,
+    /// Runtime state and loss reason of an unhealthy runtime (sanitized);
+    /// empty for a healthy one.
+    pub runtime_detail: String,
     /// Folder and link the row can open.
     pub open: OpenTargets,
+}
+
+/// Whether the session's runtime is in the given state.
+fn runtime_is(info: &SessionInfo, states: &[RuntimeState]) -> bool {
+    info.runtime
+        .as_ref()
+        .is_some_and(|runtime| states.contains(&runtime.state))
+}
+
+/// Stop is offered for a `conflict` runtime although the client rule refuses
+/// it: the daemon stops some conflicts and refuses the rest with a reason.
+fn offer_stop(info: &SessionInfo) -> bool {
+    info.can_stop()
+        || (info.external != Some(true)
+            && !info.state.is_terminal()
+            && runtime_is(info, &[RuntimeState::Conflict]))
+}
+
+/// Remove is offered for `conflict` and `incompatible` runtimes although the
+/// client rule refuses it: the daemon retires some and refuses the rest.
+fn offer_remove(info: &SessionInfo) -> bool {
+    info.can_remove()
+        || (info.external != Some(true)
+            && runtime_is(info, &[RuntimeState::Conflict, RuntimeState::Incompatible]))
+}
+
+fn runtime_detail(info: &SessionInfo) -> String {
+    let Some(runtime) = info
+        .runtime
+        .as_ref()
+        .filter(|_| runtime_is(info, &[RuntimeState::Conflict, RuntimeState::Incompatible]))
+    else {
+        return String::new();
+    };
+    match runtime.loss_reason.as_deref().map(sanitize) {
+        Some(reason) if !reason.is_empty() => format!("{}: {reason}", runtime.state.as_str()),
+        _ => runtime.state.as_str().to_owned(),
+    }
 }
 
 impl SessionRow {
@@ -57,7 +98,8 @@ impl SessionRow {
         waiting_since: Option<OffsetDateTime>,
         known_label: Option<&str>,
     ) -> Self {
-        let (can_stop, can_remove) = (info.can_stop(), info.can_remove());
+        let (can_stop, can_remove) = (offer_stop(&info), offer_remove(&info));
+        let runtime_detail = runtime_detail(&info);
         let open = OpenTargets::from_info(&info);
         let display_name = info.name.unwrap_or_else(|| info.id.0.clone());
         let project = info.project_id.as_deref().map(|id| {
@@ -88,6 +130,7 @@ impl SessionRow {
             attach_refusal: AttachRefusal::for_session(info.external, info.state),
             can_stop,
             can_remove,
+            runtime_detail,
             open,
         }
     }
@@ -164,5 +207,26 @@ mod tests {
         assert_eq!(work.kind.as_deref(), Some("pr"));
         assert_eq!(work.role.as_deref(), Some("implementer"));
         assert_eq!(session.badge.unwrap().link, "GH PR #12");
+    }
+
+    #[test]
+    fn conflict_offers_stop_and_remove_and_incompatible_only_remove() {
+        let runtime = |state: &str| json!({"runtime": {"state": state, "runtime_generation": "1", "loss_reason": "resume_binding_shape_mismatch"}});
+        let conflict = row(info(runtime("conflict")), None);
+        assert!(conflict.can_stop && conflict.can_remove);
+        assert_eq!(
+            conflict.runtime_detail,
+            "conflict: resume_binding_shape_mismatch"
+        );
+        let incompatible = row(info(runtime("incompatible")), None);
+        assert!(!incompatible.can_stop && incompatible.can_remove);
+        let external = row(
+            info(
+                json!({"external": true, "runtime": {"state": "conflict", "runtime_generation": "1"}}),
+            ),
+            None,
+        );
+        assert!(!external.can_stop && !external.can_remove);
+        assert!(row(info(json!({})), None).runtime_detail.is_empty());
     }
 }

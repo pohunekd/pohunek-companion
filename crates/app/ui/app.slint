@@ -1,12 +1,14 @@
 import { AboutSlint, LineEdit, ScrollView } from "std-widgets.slint";
 import { ChoiceChips } from "choice_chips.slint";
 
-export enum OwnerStateKind { needs-owner, working, idle, ended, no-agent-state }
+export enum OwnerStateKind { needs-owner, working, idle, runtime-problem, ended, no-agent-state }
 
 export struct SessionRowData {
     name: string,
     agent: string,
     state: string,
+    // Runtime state and loss reason when the runtime is unhealthy; else empty.
+    runtime-detail: string,
     owner-state: OwnerStateKind,
     owner-label: string,
     // Empty when the session has no Pohunek Work link.
@@ -114,6 +116,7 @@ export global Theme {
     out property <color> owner-needs-owner: #e0a030;
     out property <color> owner-working: #4caf6e;
     out property <color> owner-idle: #5b8def;
+    out property <color> owner-runtime-problem: #d9534f;
     out property <color> owner-ended: #6c757d;
     out property <color> owner-no-agent-state: #4a4d54;
 
@@ -126,6 +129,9 @@ export global Theme {
         }
         if kind == OwnerStateKind.idle {
             return owner-idle;
+        }
+        if kind == OwnerStateKind.runtime-problem {
+            return owner-runtime-problem;
         }
         if kind == OwnerStateKind.ended {
             return owner-ended;
@@ -320,7 +326,7 @@ component SessionRow inherits Rectangle {
                 horizontal-stretch: 0;
             }
             state-text := Text {
-                text: root.data.agent + " - " + root.data.state;
+                text: root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "");
                 color: Theme.detail;
                 font-size: Theme.detail-font-size;
                 horizontal-alignment: left;

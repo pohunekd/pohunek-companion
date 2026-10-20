@@ -1621,6 +1621,7 @@ order = "g"
             attach_refusal: None,
             can_stop: false,
             can_remove: false,
+            runtime_detail: String::new(),
             open: crate::open::OpenTargets::default(),
         }
     }

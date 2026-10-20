@@ -33,6 +33,7 @@ fn owner_state_kind(state: OwnerState) -> OwnerStateKind {
         OwnerState::NeedsOwner => OwnerStateKind::NeedsOwner,
         OwnerState::Working => OwnerStateKind::Working,
         OwnerState::Idle => OwnerStateKind::Idle,
+        OwnerState::RuntimeProblem => OwnerStateKind::RuntimeProblem,
         OwnerState::Ended => OwnerStateKind::Ended,
         OwnerState::NoAgentState => OwnerStateKind::NoAgentState,
     }
@@ -62,6 +63,7 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 name: s.display_name.into(),
                 agent: s.agent.into(),
                 state: s.state.into(),
+                runtime_detail: s.runtime_detail.into(),
                 owner_state: owner_state_kind(s.owner_state),
                 owner_label: s.owner_state.label().into(),
                 badge: badge.into(),
@@ -924,9 +926,18 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     }
     {
         let weak = window.as_weak();
+        let layout = layout.clone();
         window.on_request_action(move |kind, host, id, name| {
             info!(host = %host, session = %id, action = %kind, "confirmation requested from the sidebar");
-            let outcome = launch::spawn_confirm(&kind, &host, &id, &name);
+            let key = SessionKey {
+                host: host.to_string(),
+                session_id: id.to_string(),
+            };
+            let runtime_problem = lock(&layout)
+                .rows
+                .iter()
+                .any(|row| row.key == key && !row.runtime_detail.is_empty());
+            let outcome = launch::spawn_confirm(&kind, &host, &id, &name, runtime_problem);
             if let Err(message) = &outcome {
                 error!(error = %message, "start the confirmation dialog");
             }

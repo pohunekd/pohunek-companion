@@ -40,10 +40,22 @@ impl LifecycleAction {
 #[derive(Debug, thiserror::Error)]
 pub enum LifecycleError {
     /// The daemon answered with a typed refusal.
-    #[error("{message}")]
-    Refused { code: String, message: String },
+    #[error("{}", refusal_text(.message, .recover))]
+    Refused {
+        code: String,
+        message: String,
+        /// The daemon's suggested recovery action.
+        recover: Option<String>,
+    },
     #[error("{0}")]
     Failed(String),
+}
+
+fn refusal_text(message: &str, recover: &Option<String>) -> String {
+    match recover.as_deref().filter(|hint| !hint.is_empty()) {
+        Some(hint) => format!("{message} ({hint})"),
+        None => message.to_owned(),
+    }
 }
 
 /// Error code of a removal refused because the daemon cannot prove the
@@ -117,6 +129,7 @@ pub async fn run_lifecycle_action(
             Err(LifecycleError::Refused {
                 code: err.code,
                 message: err.msg,
+                recover: err.recover,
             })
         }
         Err(err) => {
