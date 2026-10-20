@@ -133,6 +133,22 @@ pub fn clip_display(text: &str, max_chars: usize) -> String {
     clipped
 }
 
+/// Clips `text` to at most `max_chars` characters by replacing the middle with
+/// an ellipsis, so both the start and the end of a path or id stay readable.
+pub fn clip_middle(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_owned();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let tail = keep / 2;
+    let head = keep - tail;
+    let mut clipped: String = text.chars().take(head).collect();
+    clipped.push(ELLIPSIS);
+    clipped.extend(text.chars().skip(count - tail));
+    clipped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

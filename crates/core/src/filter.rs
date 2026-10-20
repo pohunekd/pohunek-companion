@@ -518,6 +518,7 @@ mod tests {
             open: crate::open::OpenTargets::default(),
             host_label: None,
             host_unreachable: false,
+            details: Default::default(),
         }
     }
 

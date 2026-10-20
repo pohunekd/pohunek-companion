@@ -7,6 +7,7 @@ mod attach_path;
 mod badge;
 mod config;
 mod connect;
+mod detail;
 mod discovery;
 mod error;
 mod filter;
@@ -29,12 +30,13 @@ mod view;
 
 pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attach};
 pub use attach_macos::AttachTerminal;
-pub use badge::{WorkBadge, WorkFacts, clip_display};
+pub use badge::{WorkBadge, WorkFacts, clip_display, clip_middle};
 pub use config::{
     Config, ConfigError, DaemonConfig, HostConfig, LayoutConfig, NewSessionConfig, PlacementRule,
     TrayConfig, ViewConfig,
 };
 pub use connect::host_naming_this_machine;
+pub use detail::{DetailField, DetailSection, SessionDetails};
 pub use discovery::{
     DialogHost, DialogHostsError, DiscoveredHost, DiscoveryPlan, IncompatibleHost,
     decode_dialog_hosts, dialog_hosts, discover_dialog_hosts, discover_records,
