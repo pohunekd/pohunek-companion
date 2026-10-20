@@ -33,6 +33,28 @@ brotli), libgcc_s, libm and libc. Wayland, X11 and GL libraries are loaded at
 run time by the window system layer, so a working Wayland or X11 desktop with
 its usual Mesa/EGL stack is also required.
 
+## Install (Apple Silicon macOS)
+
+Each `vX.Y.Z` release has `pohunek-companion-<version>-aarch64-apple-darwin.tar.gz`
+and a `.sha256` file beside it. The archive holds `Pohunek Companion.app`,
+`LICENSE` and `README.md`. The app needs macOS 14 or later.
+
+The app is ad-hoc signed and not notarized. A file downloaded in a browser gets
+the `com.apple.quarantine` attribute, and Gatekeeper then refuses to open it.
+Download with `curl` (or `gh`), which does not set the attribute, or install
+with Homebrew once the tap exists:
+
+```bash
+v=0.1.0
+a=pohunek-companion-$v-aarch64-apple-darwin.tar.gz
+curl -fLO https://github.com/pohunekd/pohunek-companion/releases/download/v$v/$a
+curl -fLO https://github.com/pohunekd/pohunek-companion/releases/download/v$v/$a.sha256
+shasum -a 256 -c $a.sha256
+gh attestation verify $a --repo pohunekd/pohunek-companion
+tar -xzf $a
+codesign --verify --deep --strict pohunek-companion-$v-aarch64-apple-darwin/"Pohunek Companion.app"
+```
+
 Contributors and agents start at [AGENTS.md](AGENTS.md).
 
 Licensed under MIT. Built with Slint under the Slint Royalty-free License.

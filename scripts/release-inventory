@@ -1,0 +1,49 @@
+#!/bin/sh
+# Check a downloaded release asset directory and print its inventory.
+#
+# usage: release-inventory <dir> <version>
+#
+# The directory must hold exactly the two archives and their checksum files,
+# and every checksum must match. Prints "<name> <size> sha256:<digest>" per
+# file, sorted by name.
+
+set -eu
+
+fail() {
+    printf 'release-inventory: %s\n' "$*" >&2
+    exit 1
+}
+
+[ "$#" -eq 2 ] || fail "usage: release-inventory <dir> <version>"
+dir=$1
+version=$2
+[ -d "$dir" ] || fail "not a directory: $dir"
+case $version in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) fail "version must be X.Y.Z: $version" ;;
+esac
+
+linux=pohunek-companion-$version-x86_64-unknown-linux-gnu.tar.gz
+macos=pohunek-companion-$version-aarch64-apple-darwin.tar.gz
+want=$(printf '%s\n' "$linux" "$linux.sha256" "$macos" "$macos.sha256" | LC_ALL=C sort)
+have=$(cd "$dir" && find . -type f -print | sed 's|^\./||' | LC_ALL=C sort)
+if [ "$want" != "$have" ]; then
+    printf 'expected:\n%s\nfound:\n%s\n' "$want" "$have" >&2
+    fail "unexpected asset set"
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    digest() { sha256sum "$1" | cut -d' ' -f1; }
+    check() { sha256sum -c "$1" >&2; }
+else
+    digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
+    check() { shasum -a 256 -c "$1" >&2; }
+fi
+size() { wc -c < "$1" | tr -d ' '; }
+
+cd "$dir"
+check "$linux.sha256"
+check "$macos.sha256"
+printf '%s\n' "$want" | while IFS= read -r f; do
+    printf '%s %s sha256:%s\n' "$f" "$(size "$f")" "$(digest "$f")"
+done
