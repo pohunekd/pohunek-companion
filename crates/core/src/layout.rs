@@ -2,7 +2,7 @@
 //! persisted in `layout.toml` under the state directory. Never stored in
 //! session metadata and never sent to the daemon.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::config::PlacementRule;
+use crate::filter::StoredFilter;
 use crate::session::{SessionKey, SessionRow};
 use crate::sort_key;
 use crate::view::View;
@@ -117,6 +118,10 @@ pub struct Layout {
     /// until the owner picks a view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     view: Option<String>,
+    /// Filter of each view by view id; a view without an entry uses the
+    /// default filter.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    filters: BTreeMap<String, StoredFilter>,
     #[serde(default)]
     groups: Vec<Group>,
     #[serde(default)]
@@ -263,6 +268,7 @@ impl Default for Layout {
         Self {
             version: FORMAT_VERSION,
             view: None,
+            filters: BTreeMap::new(),
             groups: vec![inbox_group(sort_key::between(None, None))],
             items: Vec::new(),
         }
@@ -295,6 +301,11 @@ impl Layout {
             .as_deref()
             .and_then(View::parse)
             .unwrap_or_default()
+    }
+
+    /// The stored filter of a view; the default filter when none is stored.
+    pub fn filter(&self, view: View) -> StoredFilter {
+        self.filters.get(view.id()).cloned().unwrap_or_default()
     }
 
     /// Sections of the selected view for display; derived section titles are
@@ -887,6 +898,21 @@ impl LayoutStore {
         self.layout.view = Some(view.id().to_owned());
     }
 
+    /// Stores a view's filter; saved by the next
+    /// [`save_if_changed`](Self::save_if_changed). The default filter is
+    /// stored as no entry.
+    pub fn set_filter(&mut self, view: View, filter: StoredFilter) {
+        if self.layout.filter(view) == filter {
+            return;
+        }
+        info!(view = view.id(), "view filter changed");
+        if filter == StoredFilter::default() {
+            self.layout.filters.remove(view.id());
+        } else {
+            self.layout.filters.insert(view.id().to_owned(), filter);
+        }
+    }
+
     /// Applies the placement rules (see [`Layout::apply_rules`]) and logs
     /// each placement with the session key, rule index, and group id.
     pub fn apply_rules(
@@ -1068,6 +1094,8 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::{ProjectSelection, SessionFilter};
+    use crate::owner_state::OwnerState;
 
     fn key(id: &str) -> SessionKey {
         SessionKey {
@@ -1478,6 +1506,28 @@ order = "g"
         assert!(!edited.save_if_changed().expect("no rewrite"));
         assert_eq!(fs::read_to_string(&path).expect("read"), annotated);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_views_filter_persists_separately() {
+        let dir = scratch("filters");
+        let path = dir.join("layout.toml");
+        let (mut store, error) = LayoutStore::open(path.clone());
+        assert!(error.is_none());
+        let mut filter = SessionFilter::default();
+        filter.toggle_state(OwnerState::Ended);
+        filter.set_project(ProjectSelection::NoProject);
+        store.set_filter(View::ByState, filter.to_stored());
+        store.save_if_changed().expect("saves");
+        let (reloaded, error) = LayoutStore::open(path);
+        assert!(error.is_none());
+        let restored = SessionFilter::from_stored(&reloaded.layout().filter(View::ByState));
+        assert_eq!(restored.states(), filter.states());
+        assert_eq!(restored.project(), &ProjectSelection::NoProject);
+        assert_eq!(
+            reloaded.layout().filter(View::ByProject),
+            StoredFilter::default()
+        );
     }
 
     #[test]

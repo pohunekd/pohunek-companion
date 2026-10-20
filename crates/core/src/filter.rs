@@ -4,8 +4,147 @@
 //! substrings, because a random-looking id contains almost any short
 //! subsequence.
 
+use serde::{Deserialize, Serialize};
+
 use crate::layout::GroupSection;
+use crate::owner_state::OwnerState;
 use crate::session::{ProjectRef, SessionRow};
+
+/// Every owner state in chip order.
+const STATE_ORDER: [OwnerState; 5] = [
+    OwnerState::NeedsOwner,
+    OwnerState::Working,
+    OwnerState::Idle,
+    OwnerState::Ended,
+    OwnerState::NoAgentState,
+];
+
+/// Value stored in `layout.toml` and sent back by the window for a state chip.
+pub fn state_key(state: OwnerState) -> &'static str {
+    match state {
+        OwnerState::NeedsOwner => "needs-you",
+        OwnerState::Working => "working",
+        OwnerState::Idle => "idle",
+        OwnerState::Ended => "ended",
+        OwnerState::NoAgentState => "no-agent-state",
+    }
+}
+
+/// The state a chip key stands for.
+pub fn state_from_key(key: &str) -> Option<OwnerState> {
+    STATE_ORDER.into_iter().find(|s| state_key(*s) == key)
+}
+
+/// Chip label of a state.
+fn state_chip_label(state: OwnerState) -> &'static str {
+    match state {
+        OwnerState::NeedsOwner => "Needs you",
+        OwnerState::Working => "Working",
+        OwnerState::Idle => "Idle",
+        OwnerState::Ended => "Ended",
+        OwnerState::NoAgentState => "No agent",
+    }
+}
+
+/// The owner states a view shows; a session passes when its state is in the
+/// set. The default shows every state except Ended.
+#[derive(Debug, Clone)]
+pub struct StateSelection(Vec<OwnerState>);
+
+impl PartialEq for StateSelection {
+    fn eq(&self, other: &Self) -> bool {
+        STATE_ORDER
+            .into_iter()
+            .all(|s| self.contains(s) == other.contains(s))
+    }
+}
+
+impl Eq for StateSelection {}
+
+impl Default for StateSelection {
+    fn default() -> Self {
+        Self(
+            STATE_ORDER
+                .into_iter()
+                .filter(|s| *s != OwnerState::Ended)
+                .collect(),
+        )
+    }
+}
+
+impl StateSelection {
+    pub fn contains(&self, state: OwnerState) -> bool {
+        self.0.contains(&state)
+    }
+
+    /// Adds the state when absent, removes it when present.
+    pub fn toggle(&mut self, state: OwnerState) {
+        if let Some(at) = self.0.iter().position(|s| *s == state) {
+            self.0.remove(at);
+        } else {
+            self.0.push(state);
+        }
+    }
+
+    /// Whether every state passes, so the selection narrows nothing.
+    fn is_all(&self) -> bool {
+        STATE_ORDER.into_iter().all(|s| self.contains(s))
+    }
+
+    fn keys(&self) -> Vec<String> {
+        STATE_ORDER
+            .into_iter()
+            .filter(|s| self.contains(*s))
+            .map(|s| state_key(s).to_owned())
+            .collect()
+    }
+}
+
+/// One chip of the state row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateChip {
+    pub label: &'static str,
+    pub key: &'static str,
+    pub selected: bool,
+}
+
+/// The state chips: Needs you, Working, Idle, Ended, and No agent when some
+/// session has no agent state. Selection is multi-choice: one click toggles
+/// one state.
+pub fn state_chips(rows: &[SessionRow], selected: &StateSelection) -> Vec<StateChip> {
+    STATE_ORDER
+        .into_iter()
+        .filter(|state| {
+            *state != OwnerState::NoAgentState || rows.iter().any(|row| row.owner_state == *state)
+        })
+        .map(|state| StateChip {
+            label: state_chip_label(state),
+            key: state_key(state),
+            selected: selected.contains(state),
+        })
+        .collect()
+}
+
+/// A view's stored filter: the selected states and project. Unknown state
+/// keys are ignored; a project that no longer exists keeps filtering as an
+/// empty project.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredFilter {
+    /// State keys; absent selects the default states.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    states: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_label: Option<String>,
+    /// Sessions without a project; ignored when `project_id` is set.
+    #[serde(default, skip_serializing_if = "is_false")]
+    no_project: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// Which project the sidebar is narrowed to.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -90,6 +229,7 @@ pub fn project_chips(
 pub struct SessionFilter {
     tokens: Vec<Vec<char>>,
     project: ProjectSelection,
+    states: StateSelection,
 }
 
 impl SessionFilter {
@@ -97,6 +237,43 @@ impl SessionFilter {
         Self {
             tokens: query.split_whitespace().map(lowercase_chars).collect(),
             project: ProjectSelection::All,
+            states: StateSelection::default(),
+        }
+    }
+
+    /// A filter with no query and the project and states a view stored.
+    pub fn from_stored(stored: &StoredFilter) -> Self {
+        let mut filter = Self::default();
+        if let Some(keys) = &stored.states {
+            let parsed: Vec<OwnerState> = keys.iter().filter_map(|k| state_from_key(k)).collect();
+            // A list of only unknown keys is a file from another version, not
+            // an owner choice to hide everything.
+            if !parsed.is_empty() || keys.is_empty() {
+                filter.states = StateSelection(parsed);
+            }
+        }
+        filter.project = match (&stored.project_id, stored.no_project) {
+            (Some(id), _) => ProjectSelection::Project(ProjectRef {
+                id: id.clone(),
+                label: stored.project_label.clone().unwrap_or_else(|| id.clone()),
+            }),
+            (None, true) => ProjectSelection::NoProject,
+            (None, false) => ProjectSelection::All,
+        };
+        filter
+    }
+
+    /// The project and states, as stored per view; the query is not stored.
+    pub fn to_stored(&self) -> StoredFilter {
+        let (project_id, project_label) = match &self.project {
+            ProjectSelection::Project(p) => (Some(p.id.clone()), Some(p.label.clone())),
+            _ => (None, None),
+        };
+        StoredFilter {
+            states: (self.states != StateSelection::default()).then(|| self.states.keys()),
+            project_id,
+            project_label,
+            no_project: self.project == ProjectSelection::NoProject,
         }
     }
 
@@ -112,12 +289,27 @@ impl SessionFilter {
         &self.project
     }
 
-    pub fn is_active(&self) -> bool {
+    pub fn states(&self) -> &StateSelection {
+        &self.states
+    }
+
+    pub fn toggle_state(&mut self, state: OwnerState) {
+        self.states.toggle(state);
+    }
+
+    /// Whether a query or project narrows the list; section expansion and
+    /// hiding empty sections follow this, not the state selection.
+    pub fn is_searching(&self) -> bool {
         !self.tokens.is_empty() || self.project != ProjectSelection::All
     }
 
+    /// Whether any part of the filter hides sessions.
+    pub fn is_active(&self) -> bool {
+        self.is_searching() || !self.states.is_all()
+    }
+
     pub fn matches(&self, row: &SessionRow) -> bool {
-        if !self.project.admits(row) {
+        if !self.states.contains(row.owner_state) || !self.project.admits(row) {
             return false;
         }
         if self.tokens.is_empty() {
@@ -161,20 +353,26 @@ fn is_subsequence(needle: &[char], haystack: &[char]) -> bool {
     needle.iter().all(|n| rest.any(|h| h == n))
 }
 
-/// Keeps only the matching rows of each section, in their order. While the
-/// filter is active, sections left without a row are dropped and the rest are
-/// shown expanded so their matches are visible; an inactive filter returns the
+/// Keeps only the matching rows of each section, in their order. While a
+/// query or project is selected, sections left without a row are dropped and
+/// the rest are shown expanded so their matches are visible. With only a state
+/// selection, sections the filter emptied are dropped, sections that were
+/// already empty stay, and collapsing is kept. An inactive filter returns the
 /// sections unchanged.
 pub fn filter_sections(sections: Vec<GroupSection>, filter: &SessionFilter) -> Vec<GroupSection> {
     if !filter.is_active() {
         return sections;
     }
+    let searching = filter.is_searching();
     sections
         .into_iter()
         .filter_map(|mut section| {
+            let before = section.rows.len();
             section.rows.retain(|row| filter.matches(row));
-            section.collapsed = false;
-            (!section.rows.is_empty()).then_some(section)
+            if searching {
+                section.collapsed = false;
+            }
+            (!section.rows.is_empty() || (!searching && before == 0)).then_some(section)
         })
         .collect()
 }
@@ -260,7 +458,7 @@ mod tests {
     fn an_empty_or_blank_query_matches_everything() {
         for query in ["", "   ", "\t"] {
             let filter = SessionFilter::new(query);
-            assert!(!filter.is_active());
+            assert!(!filter.is_searching());
             assert!(filter.matches(&row("s-1", "anything")));
         }
     }
@@ -394,5 +592,76 @@ mod tests {
         let out = filter_sections(sections, &SessionFilter::new("bet"));
         assert_eq!(out[0].id, NEEDS_YOU_ID);
         assert_eq!(ids(&out), [vec!["1"], vec!["3"]]);
+    }
+
+    #[test]
+    fn the_default_states_hide_ended_and_a_state_must_pass_with_query_and_project() {
+        let mut ended = project_row("5", "build-old", Some(("p-b", "beta")));
+        ended.owner_state = OwnerState::Ended;
+        let mut filter = SessionFilter::default();
+        assert!(!filter.matches(&ended));
+        assert!(filter.matches(&project_row("1", "build", Some(("p-b", "beta")))));
+        filter.toggle_state(OwnerState::Ended);
+        assert!(filter.matches(&ended));
+        filter.set_project(project_sel("p-a", "Alpha"));
+        assert!(!filter.matches(&ended));
+        filter.set_project(project_sel("p-b", "beta"));
+        filter.set_query("zzz");
+        assert!(!filter.matches(&ended));
+        filter.set_query("old");
+        filter.toggle_state(OwnerState::Ended);
+        assert!(!filter.matches(&ended));
+    }
+
+    #[test]
+    fn a_state_only_filter_keeps_empty_and_collapsed_sections() {
+        let mut ended = row("2", "old");
+        ended.owner_state = OwnerState::Ended;
+        let mut collapsed = section("c", vec![row("3", "live")]);
+        collapsed.collapsed = true;
+        let sections = vec![
+            section("a", vec![ended]),
+            section("b", Vec::new()),
+            collapsed,
+        ];
+        let out = filter_sections(sections, &SessionFilter::default());
+        assert_eq!(ids(&out), [vec![], vec!["3"]]);
+        assert!(out[1].collapsed);
+    }
+
+    #[test]
+    fn a_stored_filter_round_trips_and_unknown_values_load_gracefully() {
+        let mut filter = SessionFilter::default();
+        assert_eq!(filter.to_stored(), StoredFilter::default());
+        filter.toggle_state(OwnerState::Ended);
+        filter.toggle_state(OwnerState::Idle);
+        filter.set_project(project_sel("p-b", "beta"));
+        let restored = SessionFilter::from_stored(&filter.to_stored());
+        assert_eq!(restored.states(), filter.states());
+        assert_eq!(restored.project(), filter.project());
+
+        let stale = StoredFilter {
+            states: Some(vec!["banana".into()]),
+            project_id: Some("p-gone".into()),
+            ..StoredFilter::default()
+        };
+        let loaded = SessionFilter::from_stored(&stale);
+        assert_eq!(loaded.states(), &StateSelection::default());
+        assert!(matching(&loaded).is_empty());
+    }
+
+    #[test]
+    fn the_no_agent_chip_appears_only_when_needed() {
+        let default = StateSelection::default();
+        let labels = |rows: &[SessionRow]| -> Vec<&str> {
+            state_chips(rows, &default)
+                .iter()
+                .map(|c| c.label)
+                .collect()
+        };
+        assert_eq!(labels(&sample()), ["Needs you", "Working", "Idle", "Ended"]);
+        let mut shell = row("9", "shell");
+        shell.owner_state = OwnerState::NoAgentState;
+        assert_eq!(labels(&[shell]).last(), Some(&"No agent"));
     }
 }

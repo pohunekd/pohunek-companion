@@ -456,6 +456,12 @@ export component AppWindow inherits Window {
     in property <[string]> project-keys;
     in-out property <int> project-index;
     callback project-selected(string);
+    // The state chips: labels, the keys sent back on a click, and whether each
+    // state is shown.
+    in property <[string]> state-names;
+    in property <[string]> state-keys;
+    in property <[bool]> state-checked;
+    callback state-toggled(string);
     // Payload of a dragged row: its session.
     pure callback payload(SessionRowData) -> data-transfer;
     // Dropped payload, target group id, anchor session host and id (empty for
@@ -551,6 +557,22 @@ export component AppWindow inherits Window {
             text-color: Theme.detail;
             selected-text-color: Theme.text;
             selected(index) => { root.project-selected(root.project-keys[index]); }
+        }
+        state-select := ChoiceChips {
+            model: root.state-names;
+            multi: true;
+            checked: root.state-checked;
+            chip-height: Theme.chip-height;
+            chip-padding: Theme.chip-padding;
+            chip-radius: Theme.chip-radius;
+            chip-spacing: Theme.chip-spacing;
+            font-size: Theme.chip-font-size;
+            chip-background: Theme.chip-background;
+            chip-hover-background: Theme.chip-hover-background;
+            chip-selected-background: Theme.chip-selected-background;
+            text-color: Theme.detail;
+            selected-text-color: Theme.text;
+            selected(index) => { root.state-toggled(root.state-keys[index]); }
         }
         filter-scope := FocusScope {
             height: Theme.new-group-height;
