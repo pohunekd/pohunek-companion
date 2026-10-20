@@ -288,7 +288,7 @@ component SessionRow inherits Rectangle {
                 title: "Open";
                 activated => { root.clicked(); }
             }
-            MenuItem {
+            if !root.data.host-unreachable: MenuItem {
                 title: "Rename...";
                 activated => { root.rename(); }
             }
