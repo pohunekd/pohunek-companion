@@ -38,6 +38,10 @@ pub struct DiscoveryPlan {
     pub connect: Vec<DiscoveredHost>,
     /// Peers shown as incompatible; never connected.
     pub incompatible: Vec<IncompatibleHost>,
+    /// `(configured target, route)` for a configured entry without an
+    /// explicit port that names a reachable peer: the route carries the
+    /// record's port.
+    pub configured_routes: Vec<(String, String)>,
 }
 
 /// Asks the local daemon for its peers. A failure (no overlay configured, no
@@ -63,7 +67,13 @@ pub fn plan(records: &[HostRecord], configured: &[HostConfig]) -> DiscoveryPlan 
         let Some(key) = host_key(record) else {
             continue;
         };
-        if is_configured(record, &key, configured) {
+        if let Some(host) = configured_entry(record, &key, configured) {
+            if matches!(record.class, HostClass::ReachableDaemon { .. })
+                && !host.target.contains('@')
+                && let Ok(route) = remote_host_with_port(&host.target, record.port)
+            {
+                plan.configured_routes.push((host.target.clone(), route));
+            }
             continue;
         }
         let label = label(record, &key);
@@ -131,10 +141,14 @@ fn label(record: &HostRecord, key: &str) -> String {
         .unwrap_or_else(|| sanitize(key))
 }
 
-/// Whether a configured entry names this record: its target, without an
+/// The configured entry that names this record: its target, without an
 /// explicit `@port`, equals the derived key or the record's peer id, fqdn or
 /// name, bare or prefixed with the overlay.
-fn is_configured(record: &HostRecord, key: &str, configured: &[HostConfig]) -> bool {
+fn configured_entry<'a>(
+    record: &HostRecord,
+    key: &str,
+    configured: &'a [HostConfig],
+) -> Option<&'a HostConfig> {
     let names: Vec<&str> = [
         record.peer_id.as_deref(),
         record.fqdn.as_deref(),
@@ -144,7 +158,7 @@ fn is_configured(record: &HostRecord, key: &str, configured: &[HostConfig]) -> b
     .flatten()
     .filter(|name| !name.is_empty())
     .collect();
-    configured.iter().any(|host| {
+    configured.iter().find(|host| {
         let target = host
             .target
             .rsplit_once('@')
@@ -292,6 +306,14 @@ mod tests {
             );
         }
         assert_eq!(plan(&[peer], &[host("netbird:other")]).connect.len(), 1);
+    }
+
+    #[test]
+    fn configured_entry_without_a_port_dials_the_records_port() {
+        let mut peer = record("air", reachable());
+        peer.port = 28722;
+        let routes = plan(&[peer.clone()], &[host("Air"), host("netbird:air@9")]).configured_routes;
+        assert_eq!(routes, [("Air".to_owned(), "Air@28722".to_owned())]);
     }
 
     #[test]

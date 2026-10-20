@@ -18,7 +18,7 @@ use pohunek_companion_core::{
     PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip,
     TraySummary, View, ViewConfig, attach, clip_display, discover_records, filter_sections,
     host_naming_this_machine, host_options, layout_path, name_from_input, open, plan_discovery,
-    project_chips, rename_session, run_live, state_chips, state_from_key,
+    project_chips, rename_session, run_live, set_route, state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -1063,7 +1063,13 @@ async fn follow_discovered(
                         );
                     }
                 }
+                for (target, route) in &plan.configured_routes {
+                    set_route(target, route);
+                }
                 for found in &plan.connect {
+                    // The route follows the peer's current port even while its
+                    // loop runs; the next reconnect dials it.
+                    let host = LiveHost::discovered(found);
                     if followed
                         .get(&found.key)
                         .is_some_and(|(_, handle)| handle.is_some())
@@ -1083,7 +1089,6 @@ async fn follow_discovered(
                         }
                     }
                     info!(host = %found.key, label = %found.label, route = %found.route, "following discovered host");
-                    let host = LiveHost::discovered(found);
                     publisher.add_host(&host);
                     let handle = {
                         let (host, daemon, publisher) =

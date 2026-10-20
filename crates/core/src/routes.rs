@@ -11,7 +11,7 @@ use std::sync::{Mutex, PoisonError};
 static ROUTES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 /// Registers `route` as the connection target of the host `key`.
-pub(crate) fn set_route(key: &str, route: &str) {
+pub fn set_route(key: &str, route: &str) {
     ROUTES
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

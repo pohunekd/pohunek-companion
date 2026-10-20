@@ -65,6 +65,7 @@ pub use pending_placement::{Pending, PendingEntry, PendingError, PendingStore, S
 pub use pohunek_client::LOCAL_HOST;
 pub use pohunek_client::protocol::SessionNewParams;
 pub use rename::{RenameError, name_from_input, rename_session};
+pub use routes::set_route;
 pub use session::{ProjectRef, SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
 pub use tray_summary::{TrayEntry, TraySummary};

@@ -94,7 +94,8 @@ All facts come from the public protocol (Pohunek `docs/public-api.md`):
   fqdn, else the key, sanitized, and never enters a key or an argv. A
   configured `[[hosts]]` entry that names the same peer (its target, without
   `@port`, equals the key or the peer id, fqdn or name, bare or prefixed with
-  the overlay) keeps its configured key and is not followed twice. A
+  the overlay) keeps its configured key and is not followed twice; without an
+  explicit `@port` it dials the record's port. A
   `version_mismatch` peer is listed in the status line as incompatible, and
   `unreachable` and `candidate` peers are ignored. A peer that leaves the answer
   is treated like a lost host: its loop stops, its rows stay marked
