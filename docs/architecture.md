@@ -197,8 +197,10 @@ Storage and reconciliation:
 | Runtime problem | runtime state `conflict` or `incompatible` (not running as far as the daemon can tell, not lost); wins over activity and attention. `reconnecting` stays with its activity |
 | Ended / lost | `stopped`, `done`, `failed`, or `session_runtime_lost` |
 
-The icon shows the most urgent state and the count of sessions needing the
-owner; the menu lists them and attaches on click. Runtime problem, Ended and
+The icon is the Pohunek herder figure in the colour of the most urgent state,
+with a badge digit for the count of sessions needing the owner; the menu lists
+them and attaches on click. Icon files derive from `assets/pohunek-icon-master.svg`
+(`scripts/build-icons`, origin and licence in `assets/README.md`). Runtime problem, Ended and
 no-agent-state sessions never count in the tray. The state filter shows a
 "Problem" chip while some session is in that state, and the row's detail line
 adds the runtime state and its `loss_reason`. The tray is a passive summary:
