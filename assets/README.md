@@ -20,4 +20,4 @@ none of these tools.
   `packaging/macos/build-app-bundle`.
 - `icons/pohunek-tray-mask-128.gray`: 128x128 8-bit coverage mask of the herder
   figure (without prompt and field lines, thickened) that `crates/app/src/tray.rs`
-  tints with the state colour.
+  draws dark on a beige rounded-square plate; the state colour is on the count badge.
