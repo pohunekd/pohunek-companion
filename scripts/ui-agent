@@ -42,6 +42,8 @@
 # In every case `stop` then reads `$iso/run/op-daemon.pid` and terminates that
 # `op daemon` if it still runs, and finally removes the directory.
 # `--sessions N` adds N generated sessions to the four fixed ones.
+# The isolated run cannot see the owner's overlay hosts: a stub `netbird` first on
+# the daemon's and the app's PATH hides every peer except the synthetic remote.
 # `--owner-daemon` connects to the owner's real daemon instead; its output must never be published (see
 # .agents/instructions/verification.md).
 #
@@ -391,6 +393,35 @@ create_synthetic_session() {
     env "${envs[@]}" "$cli" "${args[@]}" >/dev/null
 }
 
+# Writes the `netbird` the isolated daemon and the app find first on PATH. The
+# daemon discovers peers machine-wide from `netbird status --json`, so without
+# it the owner's real overlay hosts would join the isolated run. The stub
+# fails `status --json` (discovery reports netbird_state_unavailable) unless a
+# synthetic remote host is running; then it forwards the real status with
+# only a minimal projection (own address, that peer). Any other subcommand fails.
+write_netbird_stub() {
+    local stub=$1 real
+    need jq
+    real=$(command -v netbird 2>/dev/null || true)
+    {
+        printf '#!/usr/bin/env bash\nset -o pipefail\n'
+        printf 'real=%q\nroute_file=%q\n' "$real" "$remote_route_file"
+        cat <<'EOF'
+[ "${1:-}" = status ] && [ "${2:-}" = --json ] && [ $# -eq 2 ] || exit 1
+[ -n "$real" ] && [ -r "$route_file" ] || { echo "netbird stub: no real netbird or no synthetic remote host" >&2; exit 1; }
+route=$(cat "$route_file")
+fqdn=${route#netbird:}
+fqdn=${fqdn%@*}
+[ -n "$fqdn" ] || exit 1
+"$real" status --json | jq -c --arg fqdn "$fqdn" '
+    def only: map(select(type == "object" and .fqdn == $fqdn));
+    {daemonStatus, fqdn, netbirdIp,
+     peers: {details: ((if (.peers | type) == "array" then .peers else (.peers.details // []) end) | only)}}' ||
+    { echo "netbird stub: cannot read or filter the real status" >&2; exit 1; }
+EOF
+    } >"$stub" && chmod 700 "$stub"
+}
+
 # Starts the isolated daemon, its projects, and $1 generated sessions on top of
 # the fixed ones; prints the directory.
 start_isolated_daemon() {
@@ -405,6 +436,8 @@ start_isolated_daemon() {
         chmod 700 "$iso" "$iso/run" &&
         ln -s "$daemon_bin" "$iso/bin/pohunekd" ||
         { stop >/dev/null 2>&1 || true; die "cannot prepare the isolated directory"; }
+    write_netbird_stub "$iso/bin/netbird" ||
+        { stop >/dev/null 2>&1 || true; die "cannot write the netbird stub"; }
     local -a envs
     mapfile -t envs < <(isolated_env "$iso")
     local -a scope=()
@@ -851,7 +884,7 @@ start() {
     if [ -n "$iso" ]; then
         # The companion's config and layout live in the isolated directory too.
         mapfile -t envs < <(isolated_env "$iso")
-        envs+=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port")
+        envs+=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port" "PATH=$iso/bin:$PATH")
     fi
     if [ "$windowed" -eq 0 ]; then
         # No display variables: the headless backend renders in process.
