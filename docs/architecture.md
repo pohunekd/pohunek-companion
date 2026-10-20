@@ -213,8 +213,10 @@ session, an ended session (no Stop) or a session with an unresolved runtime
 (no Remove) gets no entry. Choosing one opens a confirmation in the sidebar
 that names the session and the consequence: stop ends the agent and keeps the
 session in the list as ended; remove deletes it from the daemon (stopped first
-if live). The confirmation starts on Cancel: Enter and Escape cancel, Tab or an
-arrow key moves the selection to the destructive button, and only then Enter
+if live) together with any worktree checkout Pohunek created for it. The
+confirmation starts on Cancel: Enter and Escape cancel, Tab or the
+Right arrow moves the selection to the destructive button (Left returns to
+Cancel), and only then Enter
 (or a click) sends one `session.stop` or `session.remove`.
 
 Removal uses `session.remove`, never `session.remove_accepting_unconfirmed`: a
@@ -224,7 +226,9 @@ refusal is shown as "Cannot remove <id>: <message>". Both calls run on a
 connection whose request timeout is `daemon.session_action_timeout_ms`,
 because they wait for the runtime to end and be swept. The row changes, and
 the layout store drops a removed session, when the daemon's session events
-arrive; a stop or remove error is shown in the window and nothing changes.
+arrive; a stop or remove error is shown in the window. A request that exceeded the
+timeout has an unknown outcome and may still complete in the daemon. A removal
+that could not delete worktree checkouts is reported with their count.
 Log lines carry the session id and the error code.
 
 ## Window placement

@@ -58,7 +58,7 @@ export global Theme {
     out property <length> chip-height: 26px;
     out property <length> chip-padding: 8px;
     out property <length> chip-radius: 13px;
-    out property <length> chip-spacing: 4px;
+    out property <length> chip-spacing: Theme.confirm-spacing;
     out property <length> chip-font-size: 12px;
     out property <color> chip-background: #2b2d31;
     out property <color> chip-hover-background: #35383d;
@@ -70,6 +70,10 @@ export global Theme {
     out property <color> group-button-hover: #e6e6e6;
     out property <length> group-edit-height: 22px;
     out property <length> new-group-height: 26px;
+    out property <length> confirm-spacing: 4px;
+    out property <length> confirm-button-spacing: 8px;
+    out property <length> confirm-border: 1px;
+    out property <length> confirm-selected-border: 2px;
     out property <color> new-group-text: #8a8f98;
     out property <length> group-font-size: 12px;
     out property <color> group-text: #b5bac1;
@@ -77,7 +81,7 @@ export global Theme {
     out property <length> badge-font-size: 10px;
     out property <length> badge-padding: 4px;
     out property <length> badge-radius: 3px;
-    out property <length> badge-spacing: 4px;
+    out property <length> badge-spacing: Theme.confirm-spacing;
     out property <color> background: #1e1f22;
     out property <color> row: #2b2d31;
     out property <color> text: #e6e6e6;
@@ -755,7 +759,15 @@ export component AppWindow inherits Window {
                     root.confirm-kind = "";
                     return accept;
                 }
-                if event.text == Key.Tab || event.text == Key.LeftArrow || event.text == Key.RightArrow {
+                if event.text == Key.LeftArrow {
+                    root.confirm-selected = false;
+                    return accept;
+                }
+                if event.text == Key.RightArrow {
+                    root.confirm-selected = true;
+                    return accept;
+                }
+                if event.text == Key.Tab {
                     root.confirm-selected = !root.confirm-selected;
                     return accept;
                 }
@@ -774,17 +786,17 @@ export component AppWindow inherits Window {
             }
             init => { self.focus(); }
             VerticalLayout {
-                spacing: 4px;
+                spacing: Theme.confirm-spacing;
                 confirm-text := Text {
                     text: root.confirm-kind == "stop"
                         ? "Stop " + root.confirm-name + "? The agent ends; the session stays in the list as ended."
-                        : "Remove " + root.confirm-name + "? The session is deleted from the daemon (stopped first if live).";
+                        : "Remove " + root.confirm-name + "? The session is deleted from the daemon (stopped first if live), together with any worktree checkout Pohunek created for it.";
                     color: Theme.text;
                     font-size: Theme.error-font-size;
                     wrap: word-wrap;
                 }
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.confirm-button-spacing;
                     height: Theme.new-group-height;
                     confirm-cancel := TouchArea {
                         mouse-cursor: pointer;
@@ -792,7 +804,7 @@ export component AppWindow inherits Window {
                         accessible-label: "Cancel";
                         clicked => { root.confirm-kind = ""; }
                         Rectangle {
-                            border-width: !root.confirm-selected ? 2px : 1px;
+                            border-width: !root.confirm-selected ? Theme.confirm-selected-border : Theme.confirm-border;
                             border-color: Theme.detail;
                             Text {
                                 text: "Cancel";
@@ -816,7 +828,7 @@ export component AppWindow inherits Window {
                             root.confirm-kind = "";
                         }
                         Rectangle {
-                            border-width: root.confirm-selected ? 2px : 1px;
+                            border-width: root.confirm-selected ? Theme.confirm-selected-border : Theme.confirm-border;
                             border-color: Theme.error;
                             Text {
                                 text: root.confirm-kind == "stop" ? "Stop" : "Remove";

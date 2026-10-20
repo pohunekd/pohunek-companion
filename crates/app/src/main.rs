@@ -742,6 +742,12 @@ fn lifecycle_outcome(
     runtime
         .block_on(run_lifecycle_action(daemon, session_id, action))
         .map_err(|err| format!("Cannot {verb} {session_id}: {err}"))
+        .and_then(|worktrees_failed| match worktrees_failed {
+            0 => Ok(()),
+            count => Err(format!(
+                "Removed {session_id}, but {count} worktree checkout(s) could not be deleted and need manual cleanup"
+            )),
+        })
 }
 
 fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> Result<(), String> {

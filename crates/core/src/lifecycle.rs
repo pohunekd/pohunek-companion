@@ -38,23 +38,28 @@ pub enum LifecycleError {
     Failed(String),
 }
 
-/// Sends one `session.stop` or `session.remove` for `session_id`.
+/// Sends one `session.stop` or `session.remove` for `session_id`. Returns the
+/// number of worktree checkouts a removal could not delete (they are no longer
+/// tracked by the daemon and need manual cleanup); zero for a stop.
 pub async fn run_lifecycle_action(
     daemon: &DaemonConfig,
     session_id: &str,
     action: LifecycleAction,
-) -> Result<(), LifecycleError> {
+) -> Result<u32, LifecycleError> {
     let socket = resolve_socket().map_err(|err| LifecycleError::Failed(err.to_string()))?;
     let mut client = connect_for_session_action(&socket, daemon)
         .await
         .map_err(|err| LifecycleError::Failed(err.to_string()))?;
     let id = SessionId(session_id.to_owned());
     let outcome = match action {
-        LifecycleAction::Stop => client.call::<SessionStop>(id).await.map(drop),
-        LifecycleAction::Remove => client.call::<SessionRemove>(id).await.map(drop),
+        LifecycleAction::Stop => client.call::<SessionStop>(id).await.map(|_| 0),
+        LifecycleAction::Remove => client
+            .call::<SessionRemove>(id)
+            .await
+            .map(|result| result.worktrees_failed),
     };
     match outcome {
-        Ok(()) => Ok(()),
+        Ok(worktrees_failed) => Ok(worktrees_failed),
         Err(ClientError::Protocol(err)) => {
             error!(code = %err.code, action = action.verb(), "session lifecycle action refused");
             Err(LifecycleError::Refused {
