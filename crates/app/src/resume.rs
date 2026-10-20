@@ -2,6 +2,9 @@
 //! attach once the session runs again. A profile change the owner has not
 //! approved yet goes through the confirmation modal.
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, PoisonError};
+
 use pohunek_companion_core::{
     DaemonConfig, LOCAL_HOST, LifecycleAction, Resumed, SessionKey, run_lifecycle_action,
 };
@@ -12,9 +15,11 @@ use crate::{AppWindow, AttachContext, SharedLayout, attach_outcome, remote_host_
 
 /// What one resume attempt left for the window to show.
 pub enum Step {
-    /// Resumed and attached, or resumed with the attach left to the owner;
-    /// the text is the status line (empty when the attach launched).
+    /// Resumed and attached (empty text), or resumed with the attach left to
+    /// the owner (the note says so).
     Done(String),
+    /// Another resume of the same session is already running.
+    Ignored,
     /// The daemon refused only because the agent profile changed; local hosts
     /// can retry after the owner approves.
     NeedsProfileApproval,
@@ -26,6 +31,37 @@ pub enum Step {
 pub struct ResumeContext {
     pub daemon: Result<DaemonConfig, String>,
     pub attach: AttachContext,
+    /// Sessions with a resume in flight, shared by every clone.
+    pub in_flight: Arc<Mutex<HashSet<SessionKey>>>,
+}
+
+/// Marks `key` as resuming until dropped.
+struct InFlight {
+    set: Arc<Mutex<HashSet<SessionKey>>>,
+    key: SessionKey,
+}
+
+impl InFlight {
+    fn begin(context: &ResumeContext, key: &SessionKey) -> Option<Self> {
+        let fresh = context
+            .in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.clone());
+        fresh.then(|| Self {
+            set: context.in_flight.clone(),
+            key: key.clone(),
+        })
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.key);
+    }
 }
 
 fn subject(session_id: &str, host_name: Option<&str>) -> String {
@@ -44,6 +80,9 @@ pub fn resume_and_attach(
     host_name: Option<&str>,
     accept_profile_change: bool,
 ) -> Step {
+    let Some(_in_flight) = InFlight::begin(context, key) else {
+        return Step::Ignored;
+    };
     let label = subject(&key.session_id, host_name);
     let daemon = match &context.daemon {
         Ok(daemon) => daemon,
@@ -94,7 +133,9 @@ fn show_step(
     step: Step,
 ) {
     match step {
-        Step::Done(text) | Step::Failed(text) => window.set_attach_error(text.into()),
+        Step::Done(note) => window.set_attach_note(note.into()),
+        Step::Failed(text) => window.set_attach_error(text.into()),
+        Step::Ignored => {}
         Step::NeedsProfileApproval => {
             confirm.offer_resume_with_profile_change(window, key, name, host_name)
         }
@@ -114,6 +155,7 @@ pub fn start_resume(
     info!(host = %key.host, session = %key.session_id, "resume requested");
     if let Some(window) = window.upgrade() {
         window.set_attach_error("".into());
+        window.set_attach_note("".into());
     }
     std::thread::spawn(move || {
         let step = resume_and_attach(&context, &key, host_name.as_deref(), false);
@@ -124,7 +166,7 @@ pub fn start_resume(
             Step::NeedsProfileApproval => {
                 info!(session = %key.session_id, "resume needs approval for a changed agent profile")
             }
-            Step::Done(_) => {}
+            Step::Done(_) | Step::Ignored => {}
         }
         let applied = window.upgrade_in_event_loop(move |window| {
             show_step(&window, &confirm, &key, &name, host_name, step);

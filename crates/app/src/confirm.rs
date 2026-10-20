@@ -72,8 +72,9 @@ fn show_wording(window: &AppWindow, action: LifecycleAction, runtime_problem: bo
 struct ActionReport {
     error: String,
     notice: String,
-    /// Status line text for a resume that succeeded.
-    status: String,
+    /// Status line error and note of a resume; the modal closes either way.
+    status_error: String,
+    status_note: String,
     /// The refusal was only an unconfirmed runtime sweep: offer "Remove anyway".
     offer_unconfirmed: bool,
 }
@@ -170,8 +171,11 @@ fn show_report(window: &AppWindow, report: ActionReport, remote: bool) {
     } else if !report.notice.is_empty() {
         window.set_confirm_notice(report.notice.into());
     } else {
-        if !report.status.is_empty() {
-            window.set_attach_error(report.status.into());
+        if !report.status_error.is_empty() {
+            window.set_attach_error(report.status_error.into());
+        }
+        if !report.status_note.is_empty() {
+            window.set_attach_note(report.status_note.into());
         }
         window.set_confirm_open(false);
     }
@@ -205,6 +209,13 @@ impl ConfirmHandle {
         host_name: Option<String>,
     ) {
         if window.get_confirm_busy() {
+            window.set_attach_error(
+                format!(
+                    "Cannot resume {}: another action is still running, try again when it ends",
+                    subject(&key.session_id, host_name.as_deref())
+                )
+                .into(),
+            );
             return;
         }
         let action = LifecycleAction::ResumeAcceptingProfileChange;
@@ -298,6 +309,10 @@ pub fn install(
         info!(host = %host, session = %session_id, action = action.verb(), "session action confirmed in the modal");
         window.set_confirm_busy(true);
         window.set_confirm_error("".into());
+        if action == LifecycleAction::ResumeAcceptingProfileChange {
+            window.set_attach_error("".into());
+            window.set_attach_note("".into());
+        }
         let weak = window.as_weak();
         let slot = slot.clone();
         let daemon = daemon.clone();
@@ -352,17 +367,18 @@ fn resume_report(
         session_id: session_id.to_owned(),
     };
     match resume_and_attach(resume, &key, host_name, true) {
-        Step::Done(status) => ActionReport {
-            status,
+        Step::Done(status_note) => ActionReport {
+            status_note,
             ..Default::default()
         },
-        Step::Failed(error) => ActionReport {
-            error,
+        Step::Ignored => ActionReport::default(),
+        Step::Failed(status_error) => ActionReport {
+            status_error,
             ..Default::default()
         },
         // An approved resume never asks again.
         Step::NeedsProfileApproval => ActionReport {
-            error: format!(
+            status_error: format!(
                 "Cannot resume {}: the agent profile changed again",
                 subject(session_id, host_name)
             ),

@@ -79,6 +79,12 @@ pub fn refusal_sentence(code: &str) -> String {
         "runtime_supervision_ambiguous" => {
             "The previous run could not be confirmed ended; try again later.".to_owned()
         }
+        "runtime_served_by_package" | "runtime_not_installed" | "runtime_builtin_removed" => {
+            "The agent runtime of this session is no longer installed on the host.".to_owned()
+        }
+        "runtime_incompatible" => {
+            "The agent runtime of this session is incompatible with this host.".to_owned()
+        }
         "task_session_ended" => {
             "The session belongs to an ended task; continue it from the task.".to_owned()
         }

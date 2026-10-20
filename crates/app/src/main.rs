@@ -1562,6 +1562,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     let resume_context = resume::ResumeContext {
         daemon: rename_daemon.clone(),
         attach: attach_context.clone(),
+        in_flight: Arc::default(),
     };
     let confirm_handle = confirm::install(
         &window,

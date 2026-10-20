@@ -1208,6 +1208,9 @@ export component AppWindow inherits Window {
     in property <string> log-error;
     // Outcome of the last attach click; empty when it launched.
     in property <string> attach-error;
+    // A neutral line after an attach-related action that needs no fix, for
+    // example a resumed session that is still starting.
+    in property <string> attach-note;
     // Why the new-session dialog could not be started; empty when it started.
     in property <string> launch-error;
     // Id of the project the active project filter selects; empty for "All" and
@@ -1498,6 +1501,12 @@ export component AppWindow inherits Window {
         if root.attach-error != "": attach-error-text := Text {
             text: root.attach-error;
             color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.attach-note != "": attach-note-text := Text {
+            text: root.attach-note;
+            color: Theme.detail;
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
