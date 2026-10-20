@@ -8,7 +8,7 @@ use pohunek_client::protocol::SessionInfo;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::badge::{WorkFacts, sanitize};
+use crate::badge::{WorkFacts, is_format_char, sanitize};
 use crate::session::ProjectRef;
 
 /// One labelled, copyable value.
@@ -56,7 +56,7 @@ const LOCAL_HOST_NAME: &str = "local";
 fn plain(value: &str) -> String {
     value
         .chars()
-        .filter(|c| !c.is_control() && *c != '\u{200B}' && !('\u{202A}'..='\u{202E}').contains(c))
+        .filter(|c| !c.is_control() && !is_format_char(*c))
         .collect()
 }
 
@@ -175,7 +175,7 @@ impl SessionDetails {
     /// A plain-text block of `label: value` lines under the session's name,
     /// for pasting into an issue or a chat.
     pub fn copy_all(&self, name: &str) -> String {
-        let mut text = String::from(name);
+        let mut text = sanitize(name);
         for field in self.sections.iter().flat_map(|section| &section.fields) {
             text.push('\n');
             text.push_str(field.label);
@@ -223,6 +223,9 @@ mod tests {
 
     #[test]
     fn plain_keeps_spaces_and_drops_control_and_bidi_characters() {
-        assert_eq!(plain("/tmp/a  b\n\u{202E}c\u{7}"), "/tmp/a  bc");
+        assert_eq!(
+            plain("/tmp/a  b\n\u{202E}c\u{2066}d\u{200F}\u{7}"),
+            "/tmp/a  bcd"
+        );
     }
 }

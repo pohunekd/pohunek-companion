@@ -117,7 +117,7 @@ pub(crate) fn sanitize(value: &str) -> String {
     out.trim_end().to_owned()
 }
 
-fn is_format_char(c: char) -> bool {
+pub(crate) fn is_format_char(c: char) -> bool {
     matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
 }
 
