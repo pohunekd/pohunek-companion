@@ -16,6 +16,7 @@ mod needs_you;
 mod new_session;
 mod owner_state;
 mod rename;
+mod pending_placement;
 mod session;
 mod socket;
 mod sort_key;
@@ -47,6 +48,7 @@ pub use new_session::{
     load_choices, load_recipe, load_templates, recipe_from_action, submit_blocker, template_names,
 };
 pub use owner_state::{OwnerState, derive};
+pub use pending_placement::{Pending, PendingEntry, PendingError, PendingStore, Settled};
 pub use pohunek_client::LOCAL_HOST;
 pub use pohunek_client::protocol::SessionNewParams;
 pub use rename::{RenameError, name_from_input, rename_session};
