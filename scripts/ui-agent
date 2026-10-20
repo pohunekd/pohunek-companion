@@ -7,8 +7,12 @@
 # is never part of Cargo.toml features, so normal and release builds do not
 # contain the server.
 #
-#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [-- APP_ARGS...]
+#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N]
+#                          [--remote-host DEST [--remote-port N]] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
+#   scripts/ui-agent remote-route                    print the synthetic remote host's route
+#   scripts/ui-agent remote-stop                     stop only the remote daemon (a lost host)
+#   scripts/ui-agent remote-start                    start it again with the same sessions
 #   scripts/ui-agent restart                         stop and start only the app
 #   scripts/ui-agent dialog [-- ] APP_ARGS...        start a dialog process with its own MCP port
 #   scripts/ui-agent dialog-stop [N]                 stop dialog N (default: all)
@@ -58,6 +62,18 @@
 # for call, screenshot, tree, find, and click with UI_AGENT_DIALOG=N. `stop`
 # also stops every dialog.
 #
+# `--remote-host DEST` also starts a synthetic remote host: an isolated daemon
+# with sessions `remote-alpha` and `remote-beta` on the macOS machine DEST, in a
+# temporary directory with its own POHUNEK_REMOTE_PORT. Commands reach DEST with
+# `ssh -o BatchMode=yes DEST sh -s` (override the command with
+# UI_AGENT_REMOTE_EXEC; it gets DEST and `sh -s -- ARGS` and reads the script on
+# stdin). The local isolated daemon and the app get the same port, and the route
+# `netbird:<fqdn>@<port>` is printed. The remote side needs NetBird, `pohunek`
+# and `pohunekd` on its PATH (UI_AGENT_REMOTE_PATH is prepended). The owner's
+# daemon on DEST is never touched: only processes whose environment carries the
+# isolated XDG_RUNTIME_DIR are signalled, and the daemon is a --dev-subprocess
+# one, so it registers no launchd jobs.
+#
 # The server binds 127.0.0.1 without authentication: any local process can
 # drive the app while it runs. Use only for agent-run debug builds.
 set -euo pipefail
@@ -80,6 +96,10 @@ bin=$state/cargo-target/debug/pohunek-companion
 pidfile=$state/pid
 endpoint_file=$state/endpoint
 iso_file=$state/isolated-dir
+remote_dest_file=$state/remote-host
+remote_iso_file=$state/remote-isolated-dir
+remote_port_file=$state/remote-port
+remote_route_file=$state/remote-route
 daemon_pidfile=$state/daemon-pid
 daemon_scopefile=$state/daemon-scope
 iso_prefix=ph-ui-agent
@@ -286,6 +306,7 @@ isolated_env() {
     echo "XDG_DATA_HOME=$iso/data"
     echo "XDG_CACHE_HOME=$iso/cache"
     echo "SHELL=/bin/sh"
+    if [ -f "$remote_port_file" ]; then echo "POHUNEK_REMOTE_PORT=$(cat "$remote_port_file")"; fi
 }
 
 # True when transient user scopes are usable (Linux with a systemd user manager).
@@ -490,8 +511,244 @@ stop_isolated_daemon() {
     remove_iso_dir
 }
 
+# ---- Synthetic remote host ---------------------------------------------------
+
+remote_projects=(remote-proj)
+remote_sessions=(remote-alpha remote-beta)
+
+# Runs a POSIX sh script (stdin, after the shared library) on host $1 with the
+# remaining arguments as its positional parameters. The command is
+# `ssh -o BatchMode=yes` unless UI_AGENT_REMOTE_EXEC names another one, which
+# receives the host and `sh -s -- ARGS` and must feed stdin to the remote sh.
+remote_sh() {
+    local dest=$1
+    shift
+    local -a words
+    read -r -a words <<<"${UI_AGENT_REMOTE_EXEC:-ssh -o BatchMode=yes}"
+    { remote_lib; cat; } | "${words[@]}" "$dest" "sh -s -- $*"
+}
+
+# The library every remote script starts with. Remote PATH: the nix and
+# homebrew profiles, which a non-login ssh shell does not have.
+remote_lib() {
+    printf 'PATH="%s/etc/profiles/per-user/$(id -un)/bin:/run/current-system/sw/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.nix-profile/bin:$HOME/.local/bin:$PATH"; export PATH\n' \
+        "${UI_AGENT_REMOTE_PATH:+$UI_AGENT_REMOTE_PATH:}"
+    cat <<'LIB'
+set -eu
+fail() { echo "ui-agent-remote: $*" >&2; exit 1; }
+# Runs "$@" with the isolated environment of $iso and the overlay port $port.
+iso_run() {
+    env "XDG_RUNTIME_DIR=$iso/run" "XDG_STATE_HOME=$iso/state" "XDG_CONFIG_HOME=$iso/config" \
+        "XDG_DATA_HOME=$iso/data" "XDG_CACHE_HOME=$iso/cache" SHELL=/bin/sh "POHUNEK_REMOTE_PORT=$port" "$@"
+}
+# Pids of every process carrying the isolated XDG_RUNTIME_DIR: the daemon and
+# its workers. `ps -E` appends the environment; the tools of this pipeline show
+# the pattern in their own arguments and are skipped.
+isolated_pids() {
+    ps -Eww -axo pid=,command= | awk -v pat="XDG_RUNTIME_DIR=$iso/run " \
+        'index($0 " ", pat) && $2 !~ /(^|\/)(ps|awk)$/ { print $1 }'
+}
+launch_daemon() {
+    (
+        cd "$iso/work"
+        iso_run "PATH=$iso/bin:$PATH" perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' \
+            pohunek daemon start --dev-subprocess >>"$iso/daemon.log" 2>&1 </dev/null &
+    )
+}
+# Waits for the local socket and for the overlay listener on the isolated port;
+# prints the listener address and the daemon pid.
+wait_ready() {
+    i=0
+    while [ "$i" -lt 100 ]; do
+        iso_run pohunek health >/dev/null 2>&1 && break
+        i=$((i + 1))
+        sleep 0.2
+    done
+    iso_run pohunek health >/dev/null 2>&1 || { tail -n 10 "$iso/daemon.log" >&2; fail "the daemon did not start"; }
+    i=0
+    while [ "$i" -lt 100 ]; do
+        listener=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fpn 2>/dev/null || true)
+        if [ -n "$listener" ]; then
+            echo "overlay_listener=$(printf '%s\n' "$listener" | sed -n 's/^n//p' | head -1)"
+            echo "daemon_pid=$(printf '%s\n' "$listener" | sed -n 's/^p//p' | head -1)"
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 0.2
+    done
+    tail -n 10 "$iso/daemon.log" >&2
+    fail "no overlay listener on port $port (is NetBird up and on PATH?)"
+}
+# Fails unless launchd holds no job for any session of the isolated daemon: a
+# --dev-subprocess daemon runs plain child processes, so a job label that names
+# one of its sessions would mean it shares the owner's launchd namespace.
+check_launchd() {
+    jobs=$(launchctl print "gui/$(id -u)") || fail "cannot read launchd; refusing to continue"
+    for id in $(iso_run pohunek session list --json | grep -o 's-[0-9A-Z]\{26\}' | sort -u); do
+        if printf '%s\n' "$jobs" | grep -qF ".worker.$id"; then fail "launchd has a job for session $id"; fi
+    done
+    echo "launchd_jobs=0"
+}
+halt_daemon() {
+    for sig in TERM KILL; do
+        [ -n "$(isolated_pids)" ] || break
+        for pid in $(isolated_pids); do kill "-$sig" "$pid" 2>/dev/null || true; done
+        i=0
+        while [ "$i" -lt 50 ] && [ -n "$(isolated_pids)" ]; do
+            i=$((i + 1))
+            sleep 0.1
+        done
+    done
+    if [ -f "$iso/run/op-daemon.pid" ]; then
+        opid=$(cat "$iso/run/op-daemon.pid" 2>/dev/null || true)
+        case $opid in '' | *[!0-9]*) ;; *) case $(ps -o command= -p "$opid" 2>/dev/null) in *"op daemon"*) kill "$opid" 2>/dev/null || true ;; esac ;; esac
+    fi
+    echo "processes_left=$(isolated_pids | wc -l | tr -d ' ')"
+}
+require_iso() {
+    case $iso in
+        */../* | */..) fail "invalid isolated directory" ;;
+        /tmp/ph-ui-r.* | /private/tmp/ph-ui-r.*) [ -d "$iso" ] || fail "no such isolated directory: $iso" ;;
+        *) fail "invalid isolated directory" ;;
+    esac
+}
+LIB
+}
+
+pick_remote_port() {
+    local port=${1:-} i
+    if [ -n "$port" ]; then
+        case $port in
+            '' | *[!0-9]* | 0*) die "--remote-port must be a number from 1024 to 65535" ;;
+        esac
+        { [ "$port" -ge 1024 ] && [ "$port" -le 65535 ]; } || die "--remote-port must be a number from 1024 to 65535"
+        [ "$port" -ne 18722 ] || die "--remote-port must not be 18722, the default port of the owner's daemons"
+    else
+        for i in $(seq 1 50); do
+            port=$((20000 + RANDOM % 10000))
+            python3 -c 'import socket, sys
+s = socket.socket()
+s.bind(("0.0.0.0", int(sys.argv[1])))' "$port" 2>/dev/null && break
+            port=""
+        done
+        [ -n "$port" ] || die "cannot find a free overlay port"
+    fi
+    echo "$port"
+}
+
+# Starts the synthetic remote host $1 on overlay port $2 and records it.
+start_remote_host() {
+    local dest=$1 port=$2 out iso fqdn
+    echo "$dest" >"$remote_dest_file"
+    echo "$port" >"$remote_port_file"
+    local rc=0
+    out=$(remote_sh "$dest" "$port" "${remote_projects[0]}" "${remote_sessions[@]}" <<'EOF'
+port=$1; project=$2; shift 2
+# pohunekd refuses a symlinked path component, and /tmp is one on macOS; the
+# short prefix keeps the worker socket paths under the 103-byte macOS limit.
+iso=$(mktemp -d "$(cd /tmp && pwd -P)/ph-ui-r.XXXXXX") || fail "cannot create the isolated directory"
+echo "isolated_dir=$iso"
+[ -z "$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null)" ] || fail "port $port is already in use"
+pd=$(command -v pohunekd) || fail "pohunekd is not on PATH"
+command -v pohunek >/dev/null || fail "pohunek is not on PATH"
+command -v netbird >/dev/null || fail "netbird is not on PATH"
+mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/work"
+chmod 700 "$iso" "$iso/run"
+ln -s "$pd" "$iso/bin/pohunekd"
+launch_daemon
+wait_ready
+mkdir -p "$iso/work/$project"
+GIT_CONFIG_GLOBAL=/dev/null git -C "$iso/work/$project" init --quiet
+GIT_CONFIG_GLOBAL=/dev/null git -C "$iso/work/$project" -c user.name=ui-agent -c user.email=ui-agent@example.invalid \
+    -c commit.gpgsign=false -c core.hooksPath=/dev/null commit --quiet --allow-empty -m "Initial commit"
+iso_run pohunek project add "$iso/work/$project" --name "$project" >/dev/null
+for name in "$@"; do
+    res=$(iso_run pohunek session new --agent shell --name "$name" --project "$project" --json 2>&1) ||
+        { printf '%s\n' "$res" | head -c 600 >&2; fail "cannot create session $name"; }
+done
+check_launchd
+EOF
+    ) || rc=$?
+    iso=$(printf '%s\n' "$out" | sed -n 's/^isolated_dir=//p' | head -1)
+    case $iso in
+        /tmp/ph-ui-r.[A-Za-z0-9]* | /private/tmp/ph-ui-r.[A-Za-z0-9]*) echo "$iso" >"$remote_iso_file" ;;
+    esac
+    printf '%s\n' "$out" | grep -v '^isolated_dir=' | grep . | sed 's/^/ui-agent remote: /' >&2 || true
+    if [ "$rc" -ne 0 ]; then
+        (stop_remote_host) >/dev/null 2>&1 || true
+        die "the remote host $dest did not start"
+    fi
+    fqdn=$(remote_sh "$dest" <<'EOF' | sed -n 's/^FQDN: //p' | head -1
+netbird status
+EOF
+    ) && [ -n "$fqdn" ] || { (stop_remote_host) >/dev/null 2>&1 || true; die "cannot read the NetBird name of $dest"; }
+    echo "netbird:$fqdn@$port" >"$remote_route_file"
+    echo "ui-agent remote route: $(cat "$remote_route_file")" >&2
+}
+
+# Stops the remote daemon and its sessions, removes the remote directory, and
+# checks that nothing is left. Keeps the record when the host cannot be
+# reached, so a second `stop` can finish the cleanup.
+stop_remote_host() {
+    [ -f "$remote_dest_file" ] || return 0
+    local dest port iso out=""
+    dest=$(cat "$remote_dest_file")
+    port=$(cat "$remote_port_file")
+    if [ ! -f "$remote_iso_file" ]; then
+        rm -f "$remote_dest_file" "$remote_port_file" "$remote_route_file"
+        return 0
+    fi
+    iso=$(cat "$remote_iso_file")
+    if ! out=$(remote_sh "$dest" "$port" "$iso" <<'EOF'
+port=$1; iso=$2
+require_iso
+halt_daemon
+rm -rf "$iso"
+if [ -e "$iso" ]; then echo "directory_left=yes"; else echo "directory_left=no"; fi
+EOF
+    ); then
+        echo "$out" >&2
+        die "cannot stop the remote host $dest; run scripts/ui-agent stop again when it is reachable"
+    fi
+    printf '%s\n' "$out" | sed 's/^/ui-agent remote: /' >&2
+    printf '%s\n' "$out" | grep -qx 'processes_left=0' && printf '%s\n' "$out" | grep -qx 'directory_left=no' ||
+        die "the remote host $dest still has processes or files of the isolated daemon"
+    rm -f "$remote_dest_file" "$remote_iso_file" "$remote_port_file" "$remote_route_file"
+}
+
+# Simulates a lost host: stops only the remote daemon, keeps its directory.
+remote_stop() {
+    [ -f "$remote_iso_file" ] || die "no remote host; start it with: scripts/ui-agent start --remote-host DEST"
+    local dest port iso
+    dest=$(cat "$remote_dest_file")
+    port=$(cat "$remote_port_file")
+    iso=$(cat "$remote_iso_file")
+    remote_sh "$dest" "$port" "$iso" <<'EOF'
+port=$1; iso=$2
+require_iso
+halt_daemon
+EOF
+}
+
+# Starts the stopped remote daemon again in its own directory.
+remote_start() {
+    [ -f "$remote_iso_file" ] || die "no remote host; start it with: scripts/ui-agent start --remote-host DEST"
+    local dest port iso
+    dest=$(cat "$remote_dest_file")
+    port=$(cat "$remote_port_file")
+    iso=$(cat "$remote_iso_file")
+    remote_sh "$dest" "$port" "$iso" <<'EOF'
+port=$1; iso=$2
+require_iso
+[ -z "$(isolated_pids)" ] || fail "the isolated daemon is already running"
+launch_daemon
+wait_ready
+check_launchd
+EOF
+}
+
 start() {
-    local port="" windowed=0 isolated=1 sessions=0
+    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port=""
     local -a app_args=()
     while [ $# -gt 0 ]; do
         case $1 in
@@ -512,11 +769,21 @@ start() {
                 esac
                 shift 2
                 ;;
+            --remote-host)
+                remote_host=${2:?--remote-host needs a value}
+                case $remote_host in
+                    -* | *[!A-Za-z0-9._@:-]*) die "--remote-host must be an ssh destination such as host or user@host" ;;
+                esac
+                shift 2
+                ;;
+            --remote-port) remote_port=${2:?--remote-port needs a value}; shift 2 ;;
             --) shift; app_args=("$@"); break ;;
             *) die "unknown start option: $1" ;;
         esac
     done
     [ "$isolated" -eq 1 ] || [ "$sessions" -eq 0 ] || die "--sessions needs the isolated daemon"
+    [ "$isolated" -eq 1 ] || [ -z "$remote_host" ] || die "--remote-host needs the isolated daemon"
+    [ -n "$remote_host" ] || [ -z "$remote_port" ] || die "--remote-port needs --remote-host"
     need python3
     need curl
     need jq
@@ -528,9 +795,14 @@ start() {
     mkdir -p "$state"
     dialog_stop >/dev/null
     stop_isolated_daemon
+    stop_remote_host
     rm -f "$launch_env_file" "$launch_args_file"
     build_app
 
+    if [ -n "$remote_host" ]; then
+        remote_port=$(pick_remote_port "$remote_port")
+        start_remote_host "$remote_host" "$remote_port"
+    fi
     local iso=""
     if [ "$isolated" -eq 1 ]; then
         iso=$(start_isolated_daemon "$sessions")
@@ -660,6 +932,7 @@ stop() {
     stop_app
     rm -f "$launch_env_file" "$launch_args_file"
     stop_isolated_daemon
+    stop_remote_host
 }
 
 rpc() {
@@ -698,6 +971,9 @@ case $cmd in
     dialogs) dialog_list ;;
     restart) [ $# -eq 0 ] || die "restart takes no arguments; pass app arguments to start after --"; restart ;;
     stop) stop ;;
+    remote-route) [ -f "$remote_route_file" ] && cat "$remote_route_file" || die "no remote host" ;;
+    remote-stop) remote_stop ;;
+    remote-start) remote_start ;;
     status) endpoint ;;
     call) call "$@" ;;
     screenshot)
@@ -739,5 +1015,5 @@ case $cmd in
             echo "$state/state/pohunek-companion/layout.toml"
         fi
         ;;
-    *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
