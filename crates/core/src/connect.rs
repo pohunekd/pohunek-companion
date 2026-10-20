@@ -63,6 +63,19 @@ pub(crate) async fn connect_for_create(
     Ok(Client::connect_local_with_options(socket, options).await?)
 }
 
+/// Client for `session.stop` and `session.remove`, whose request timeout is the
+/// longer session-action timeout.
+pub(crate) async fn connect_for_session_action(
+    socket: &Path,
+    config: &DaemonConfig,
+) -> Result<Client, CoreError> {
+    let options = ClientOptions::default()
+        .with_origin_source(OriginSource::Omitted)
+        .with_connect_timeout(config.connect_timeout())
+        .with_request_timeout(config.session_action_timeout());
+    Ok(Client::connect_local_with_options(socket, options).await?)
+}
+
 /// Opens a connection and turns it into the daemon's event stream.
 pub(crate) async fn subscribe(
     socket: &Path,

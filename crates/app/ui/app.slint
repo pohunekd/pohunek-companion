@@ -24,6 +24,9 @@ export struct SessionRowData {
     project-id: string,
     // Label of that project, shown in the "New session in" menu entry.
     project-label: string,
+    // The daemon accepts session.stop / session.remove for this session.
+    can-stop: bool,
+    can-remove: bool,
 }
 
 export struct OwnerGroupData {
@@ -55,7 +58,7 @@ export global Theme {
     out property <length> chip-height: 26px;
     out property <length> chip-padding: 8px;
     out property <length> chip-radius: 13px;
-    out property <length> chip-spacing: 4px;
+    out property <length> chip-spacing: Theme.confirm-spacing;
     out property <length> chip-font-size: 12px;
     out property <color> chip-background: #2b2d31;
     out property <color> chip-hover-background: #35383d;
@@ -67,6 +70,10 @@ export global Theme {
     out property <color> group-button-hover: #e6e6e6;
     out property <length> group-edit-height: 22px;
     out property <length> new-group-height: 26px;
+    out property <length> confirm-spacing: 4px;
+    out property <length> confirm-button-spacing: 8px;
+    out property <length> confirm-border: 1px;
+    out property <length> confirm-selected-border: 2px;
     out property <color> new-group-text: #8a8f98;
     out property <length> group-font-size: 12px;
     out property <color> group-text: #b5bac1;
@@ -74,7 +81,7 @@ export global Theme {
     out property <length> badge-font-size: 10px;
     out property <length> badge-padding: 4px;
     out property <length> badge-radius: 3px;
-    out property <length> badge-spacing: 4px;
+    out property <length> badge-spacing: Theme.confirm-spacing;
     out property <color> background: #1e1f22;
     out property <color> row: #2b2d31;
     out property <color> text: #e6e6e6;
@@ -133,6 +140,8 @@ component SessionRow inherits Rectangle {
     callback rename();
     // Project to preselect and group to place the session in; either may be empty.
     callback new-session-in-project(string, string);
+    callback stop();
+    callback remove();
 
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: row-drag.dragging ? Theme.row-dragging : Theme.row;
@@ -164,6 +173,14 @@ component SessionRow inherits Rectangle {
             MenuItem {
                 title: "Rename...";
                 activated => { root.rename(); }
+            }
+            if root.data.can-stop: MenuItem {
+                title: "Stop...";
+                activated => { root.stop(); }
+            }
+            if root.data.can-remove: MenuItem {
+                title: "Remove...";
+                activated => { root.remove(); }
             }
             if root.data.project-id != "": MenuItem {
                 title: "New session in " + root.data.project-label;
@@ -501,6 +518,39 @@ export component AppWindow inherits Window {
     in-out property <string> renaming-host;
     in-out property <string> renaming-id;
     in-out property <string> rename-text;
+    // Why the last stop or remove failed; empty when it succeeded or none ran.
+    in-out property <string> action-error;
+    // Stops or removes the session (host, id); both are confirmed first.
+    callback stop-session(string, string, string);
+    callback remove-session(string, string, string);
+    callback remove-session-anyway(string, string, string);
+    // A successful removal that left something for the owner to handle.
+    in-out property <string> action-notice;
+    // The session whose safe removal was refused only because the daemon could
+    // not confirm its processes ended; empty when "Remove anyway" is not offered.
+    in-out property <string> force-host;
+    in-out property <string> force-id;
+    in-out property <string> force-name;
+    // The pending confirmation: "stop", "remove" or "remove-anyway" for the session (host, id)
+    // shown as confirm-name; empty kind when none is open.
+    in-out property <string> confirm-kind;
+    in-out property <string> confirm-host;
+    in-out property <string> confirm-id;
+    in-out property <string> confirm-name;
+    // Which button Enter activates; always starts on Cancel.
+    in-out property <bool> confirm-selected;
+    function confirm() {
+        if root.confirm-kind == "stop" {
+            root.stop-session(root.confirm-host, root.confirm-id, root.confirm-name);
+        } else if root.confirm-kind == "remove" {
+            root.remove-session(root.confirm-host, root.confirm-id, root.confirm-name);
+        } else if root.confirm-kind == "remove-anyway" {
+            // The consent is spent on this call: drop the offer and its refusal.
+            root.force-id = "";
+            root.action-error = "";
+            root.remove-session-anyway(root.confirm-host, root.confirm-id, root.confirm-name);
+        }
+    }
     // A standalone group name editor ("+ New group") belongs to the editable
     // view; leaving it ends that edit. A row menu's edit stays open.
     changed editable => {
@@ -715,6 +765,123 @@ export component AppWindow inherits Window {
                 }
             }
         }
+        if root.action-error != "": action-error-text := Text {
+            text: root.action-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.action-notice != "": action-notice-text := Text {
+            text: root.action-notice;
+            color: Theme.detail;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
+        }
+        if root.force-id != "" && root.confirm-kind == "": force-touch := TouchArea {
+            height: Theme.new-group-height;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Remove anyway";
+            clicked => {
+                root.confirm-selected = false;
+                root.confirm-host = root.force-host;
+                root.confirm-id = root.force-id;
+                root.confirm-name = root.force-name;
+                root.confirm-kind = "remove-anyway";
+            }
+            Text {
+                x: Theme.row-padding;
+                text: "Remove anyway...";
+                color: parent.has-hover ? Theme.group-button-hover : Theme.error;
+                font-size: Theme.group-font-size;
+                vertical-alignment: center;
+            }
+        }
+        if root.confirm-kind != "": confirm-scope := FocusScope {
+            // Enter activates the selected button, which starts on Cancel;
+            // only an explicit Tab/arrow/click moves it to the confirm button.
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.confirm-kind = "";
+                    return accept;
+                }
+                if event.text == Key.LeftArrow {
+                    root.confirm-selected = false;
+                    return accept;
+                }
+                if event.text == Key.RightArrow {
+                    root.confirm-selected = true;
+                    return accept;
+                }
+                if event.text == Key.Tab {
+                    root.confirm-selected = !root.confirm-selected;
+                    return accept;
+                }
+                if event.text == Key.Return {
+                    if root.confirm-selected {
+                        root.confirm();
+                    }
+                    root.confirm-kind = "";
+                    return accept;
+                }
+                reject
+            }
+            init => { self.focus(); }
+            VerticalLayout {
+                spacing: Theme.confirm-spacing;
+                confirm-text := Text {
+                    text: root.confirm-kind == "stop"
+                        ? "Stop " + root.confirm-name + "? The agent ends; the session stays in the list as ended."
+                        : root.confirm-kind == "remove-anyway"
+                        ? "Remove " + root.confirm-name + " anyway? The daemon cannot confirm that all of its processes ended. They are not signalled and may keep running unsupervised after the session, its logs and its worktree are deleted."
+                        : "Remove " + root.confirm-name + "? The session is deleted from the daemon (stopped first if live), together with any worktree checkout Pohunek created for it.";
+                    color: Theme.text;
+                    font-size: Theme.error-font-size;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Theme.confirm-button-spacing;
+                    height: Theme.new-group-height;
+                    confirm-cancel := TouchArea {
+                        mouse-cursor: pointer;
+                        accessible-role: button;
+                        accessible-label: "Cancel";
+                        clicked => { root.confirm-kind = ""; }
+                        Rectangle {
+                            border-width: !root.confirm-selected ? Theme.confirm-selected-border : Theme.confirm-border;
+                            border-color: Theme.detail;
+                            Text {
+                                text: "Cancel";
+                                color: Theme.text;
+                                font-size: Theme.group-font-size;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    confirm-ok := TouchArea {
+                        mouse-cursor: pointer;
+                        accessible-role: button;
+                        accessible-label: root.confirm-kind == "stop" ? "Confirm stop" : root.confirm-kind == "remove" ? "Confirm remove" : "Confirm remove anyway";
+                        clicked => {
+                            root.confirm();
+                            root.confirm-kind = "";
+                        }
+                        Rectangle {
+                            border-width: root.confirm-selected ? Theme.confirm-selected-border : Theme.confirm-border;
+                            border-color: Theme.error;
+                            Text {
+                                text: root.confirm-kind == "stop" ? "Stop" : root.confirm-kind == "remove" ? "Remove" : "Remove anyway";
+                                color: Theme.error;
+                                font-size: Theme.group-font-size;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if root.rename-error != "": rename-error-text := Text {
             text: root.rename-error;
             color: Theme.error;
@@ -813,6 +980,26 @@ export component AppWindow inherits Window {
                                     root.rename-text = session.name == session.id ? "" : session.name;
                                     root.renaming-host = session.host;
                                     root.renaming-id = session.id;
+                                }
+                                stop => {
+                                    root.action-error = "";
+                                    root.action-notice = "";
+                                    root.force-id = "";
+                                    root.confirm-selected = false;
+                                    root.confirm-host = session.host;
+                                    root.confirm-id = session.id;
+                                    root.confirm-name = session.name;
+                                    root.confirm-kind = "stop";
+                                }
+                                remove => {
+                                    root.action-error = "";
+                                    root.action-notice = "";
+                                    root.force-id = "";
+                                    root.confirm-selected = false;
+                                    root.confirm-host = session.host;
+                                    root.confirm-id = session.id;
+                                    root.confirm-name = session.name;
+                                    root.confirm-kind = "remove";
                                 }
                                 return-to-rule => { root.return-to-rule(session.host, session.id); }
                                 new-session-in-project(project, group) => { root.new-session(project, group); }

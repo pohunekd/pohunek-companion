@@ -1619,6 +1619,8 @@ order = "g"
                 role: Some(r.to_owned()),
             }),
             attach_refusal: None,
+            can_stop: false,
+            can_remove: false,
         }
     }
 

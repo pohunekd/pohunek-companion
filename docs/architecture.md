@@ -168,8 +168,9 @@ desktop notifications stay with Pohunek's own notification command.
 
 ## Creating a session
 
-Creating a session and renaming one are the companion's only mutations of
-daemon state (renaming is described under "Renaming a session"). Creation runs
+Creating, renaming, stopping and removing a session are the companion's only
+mutations of daemon state (see "Renaming a session" and "Stopping or removing
+a session"). Creation runs
 from `pohunek-companion new-session [--project <id>]`, a subcommand of the
 same binary that runs as its own process: `slint::set_xdg_app_id` is per
 process, so the dialog sets the app id `pohunek-companion-new-session` and a
@@ -202,6 +203,41 @@ daemon refusal (for example an external read-only session or a control
 character) or a failure to reach the daemon is shown in the window as
 "Cannot rename <id>: <message>" and nothing changes. Log lines carry the
 session id and the error code, never the name.
+
+## Stopping or removing a session
+
+The session row's context menu has "Stop..." and "Remove...". An entry is
+shown only when the daemon's own rule allows it for the session
+(`SessionInfo::can_stop`, `SessionInfo::can_remove`): an external read-only
+session, an ended session (no Stop) or a session with an unresolved runtime
+(no Remove) gets no entry. Choosing one opens a confirmation in the sidebar
+that names the session and the consequence: stop ends the agent and keeps the
+session in the list as ended; remove deletes it from the daemon (stopped first
+if live) together with any worktree checkout Pohunek created for it. The
+confirmation starts on Cancel: Enter and Escape cancel, Tab or the
+Right arrow moves the selection to the destructive button (Left returns to
+Cancel), and only then Enter
+(or a click) sends one `session.stop` or `session.remove`.
+
+Removal first sends `session.remove`. When the daemon refuses it with
+`runtime_supervision_ambiguous` (it cannot confirm that processes of the
+session's runtime ended, for example because they have an unreadable
+environment) the refusal is shown as "Cannot remove <id>: <message>" and a
+"Remove anyway..." entry appears. It opens a second confirmation, again
+starting on Cancel, that says in plain words that the daemon cannot confirm the
+processes ended, that they are not signalled and may keep running unsupervised
+after the session, its logs and its worktree are deleted. Only confirming it
+sends `session.remove_accepting_unconfirmed` for that one session; the consent
+is never remembered and the safe call is always tried first. After that
+removal the window lists the accepted processes (pid and command name) from
+the result. Any other refusal is shown without the offer. Both calls run on a
+connection whose request timeout is `daemon.session_action_timeout_ms`,
+because they wait for the runtime to end and be swept. The row changes, and
+the layout store drops a removed session, when the daemon's session events
+arrive; a stop or remove error is shown in the window. A request that exceeded
+the timeout has an unknown outcome and may still complete in the daemon. A
+removal that could not delete worktree checkouts is reported with their count.
+Log lines carry the session id and the error code.
 
 ## Window placement
 

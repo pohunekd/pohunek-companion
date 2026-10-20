@@ -400,6 +400,8 @@ mod tests {
             project: None,
             work: None,
             attach_refusal: None,
+            can_stop: false,
+            can_remove: false,
         }
     }
 
