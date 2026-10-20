@@ -7,6 +7,7 @@ mod attach_path;
 mod badge;
 mod config;
 mod connect;
+mod discovery;
 mod error;
 mod filter;
 mod layout;
@@ -19,6 +20,7 @@ mod open;
 mod owner_state;
 mod pending_placement;
 mod rename;
+mod routes;
 mod session;
 mod socket;
 mod sort_key;
@@ -33,6 +35,9 @@ pub use config::{
     TrayConfig, ViewConfig,
 };
 pub use connect::host_naming_this_machine;
+pub use discovery::{
+    DiscoveredHost, DiscoveryPlan, IncompatibleHost, discover_records, plan as plan_discovery,
+};
 pub use error::CoreError;
 pub use filter::{
     HostConnection, HostEntry, HostOption, ProjectChip, ProjectSelection, SessionFilter, StateChip,

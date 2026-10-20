@@ -7,13 +7,14 @@ use pohunek_client::protocol::{
     SessionListParams,
 };
 use pohunek_client::{
-    Client, ClientError, ClientOptions, OriginSource, Subscription, is_local_host,
+    Client, ClientError, ClientOptions, LOCAL_HOST, OriginSource, Subscription, is_local_host,
     names_this_machine,
 };
 use tracing::{error, info};
 
 use crate::config::{DaemonConfig, NewSessionConfig};
 use crate::error::CoreError;
+use crate::routes::route_for;
 use crate::socket::local_socket_path;
 
 /// Error code of a `notification.list` page that exceeds the daemon's response
@@ -65,7 +66,7 @@ pub(crate) async fn connect_host(
         .with_origin_source(OriginSource::Omitted)
         .with_connect_timeout(config.connect_timeout())
         .with_request_timeout(config.request_timeout());
-    Ok(Client::connect_with_options(host, socket, options).await?)
+    Ok(Client::connect_with_options(&route_for(host), socket, options).await?)
 }
 
 /// Refuses a configured host that names this machine, which would list the
@@ -75,7 +76,7 @@ pub async fn host_naming_this_machine(
     config: &DaemonConfig,
 ) -> Result<Option<String>, CoreError> {
     for target in targets {
-        if names_this_machine(target, config.connect_timeout()).await? {
+        if names_this_machine(&route_for(target), config.connect_timeout()).await? {
             return Ok(Some(target.clone()));
         }
     }
@@ -95,7 +96,7 @@ pub(crate) async fn connect_for_create(
         .with_origin_source(OriginSource::Omitted)
         .with_connect_timeout(daemon.connect_timeout())
         .with_request_timeout(config.create_timeout());
-    Ok(Client::connect_with_options(host, socket, options).await?)
+    Ok(Client::connect_with_options(&route_for(host), socket, options).await?)
 }
 
 /// Client for `session.stop` and `session.remove` on the local daemon or the
@@ -110,7 +111,20 @@ pub(crate) async fn connect_for_session_action(
         .with_origin_source(OriginSource::Omitted)
         .with_connect_timeout(config.connect_timeout())
         .with_request_timeout(config.session_action_timeout());
-    Ok(Client::connect_with_options(host, socket, options).await?)
+    Ok(Client::connect_with_options(&route_for(host), socket, options).await?)
+}
+
+/// Client for `host.discover` on the local daemon, whose request timeout is
+/// the longer discovery timeout because the daemon probes every peer first.
+pub(crate) async fn connect_discover(
+    socket: &Path,
+    config: &DaemonConfig,
+) -> Result<Client, CoreError> {
+    let options = ClientOptions::default()
+        .with_origin_source(OriginSource::Omitted)
+        .with_connect_timeout(config.connect_timeout())
+        .with_request_timeout(config.discover_timeout());
+    Ok(Client::connect_with_options(LOCAL_HOST, socket, options).await?)
 }
 
 /// Opens a connection and turns it into the daemon's event stream.

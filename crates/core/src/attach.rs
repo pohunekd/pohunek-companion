@@ -15,6 +15,7 @@ use tracing::{error, info};
 
 use crate::attach_macos::{AttachTerminal, open_command, stage_script};
 use crate::attach_path::search_path;
+use crate::routes::route_for;
 use crate::session::SessionKey;
 
 const BIN_PLACEHOLDER: &str = "bin";
@@ -298,7 +299,7 @@ fn launch(
     } else {
         String::new()
     };
-    let argv = template.render(&bin, &key.host, &key.session_id);
+    let argv = template.render(&bin, &route_for(&key.host), &key.session_id);
     let program = resolve_program(&argv[0], config.login_shell_timeout)?;
     let child = spawn_detached(&program, &argv[1..])?;
     observe(child, &program, config.observe)?;
@@ -325,7 +326,7 @@ fn launch_terminal(
         &home.join(SCRIPT_DIR),
         config.script_max_age,
         &bin,
-        &key.host,
+        &route_for(&key.host),
         &key.session_id,
     )
     .map_err(AttachError::Script)?;

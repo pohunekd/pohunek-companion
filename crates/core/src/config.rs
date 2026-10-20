@@ -392,6 +392,16 @@ pub struct DaemonConfig {
     /// reconciled, in seconds, greater than zero. Bounds how long a dropped
     /// event can leave the list stale. Optional; default 60.
     pub reseed_interval_secs: u64,
+    /// `daemon.discover_interval_secs`: how often the local daemon's
+    /// `host.discover` is asked for reachable peers, in seconds, greater than
+    /// zero. Every reachable peer is connected as a remote host. Optional;
+    /// default 60.
+    pub discover_interval_secs: u64,
+    /// `daemon.discover_timeout_secs`: time allowed for one `host.discover`
+    /// call, in seconds, greater than zero. The daemon probes every peer
+    /// before it answers, so this is longer than an ordinary request.
+    /// Optional; default 20.
+    pub discover_timeout_secs: u64,
 }
 
 impl Default for DaemonConfig {
@@ -404,6 +414,8 @@ impl Default for DaemonConfig {
             reconnect_max_ms: 30_000,
             notification_page_size: 200,
             reseed_interval_secs: 60,
+            discover_interval_secs: 60,
+            discover_timeout_secs: 20,
         }
     }
 }
@@ -431,6 +443,14 @@ impl DaemonConfig {
 
     pub fn reseed_interval(&self) -> Duration {
         Duration::from_secs(self.reseed_interval_secs)
+    }
+
+    pub fn discover_interval(&self) -> Duration {
+        Duration::from_secs(self.discover_interval_secs)
+    }
+
+    pub fn discover_timeout(&self) -> Duration {
+        Duration::from_secs(self.discover_timeout_secs)
     }
 }
 
@@ -535,6 +555,14 @@ impl Config {
             (
                 "daemon.reseed_interval_secs",
                 self.daemon.reseed_interval_secs,
+            ),
+            (
+                "daemon.discover_interval_secs",
+                self.daemon.discover_interval_secs,
+            ),
+            (
+                "daemon.discover_timeout_secs",
+                self.daemon.discover_timeout_secs,
             ),
         ]
         .into_iter()
@@ -817,6 +845,8 @@ mod tests {
             "reconnect_max_ms",
             "notification_page_size",
             "reseed_interval_secs",
+            "discover_interval_secs",
+            "discover_timeout_secs",
         ] {
             let msg = parse(&format!("[daemon]\n{key} = 0\n"))
                 .unwrap_err()
