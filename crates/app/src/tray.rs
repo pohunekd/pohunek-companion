@@ -1,7 +1,7 @@
 //! Maps the core tray summary to the Slint tray component: icon pixels,
 //! tooltip text, and menu entries.
 
-use pohunek_companion_core::{OwnerState, TraySummary, clip_display};
+use pohunek_companion_core::{OwnerState, TrayEntry, TraySummary, clip_display};
 use slint::{Color, Image, Rgba8Pixel, SharedPixelBuffer};
 
 use crate::{Theme, Tray, TrayEntryData};
@@ -74,10 +74,23 @@ fn icon(tray: &Tray, summary: &TraySummary) -> Image {
 }
 
 fn tooltip(summary: &TraySummary) -> String {
-    format!(
+    let counts = format!(
         "{} need you, {} idle, {} working",
         summary.needs_owner, summary.idle, summary.working
-    )
+    );
+    match summary.unreachable_hosts {
+        0 => counts,
+        1 => format!("{counts}, 1 host unreachable"),
+        n => format!("{counts}, {n} hosts unreachable"),
+    }
+}
+
+/// Menu text of an entry; a remote session names its host.
+fn entry_label(entry: &TrayEntry) -> String {
+    match &entry.host_label {
+        Some(host) => format!("{} ({}) - {host}", entry.display_name, entry.agent),
+        None => format!("{} ({})", entry.display_name, entry.agent),
+    }
 }
 
 /// Applies `summary` to the tray: icon, tooltip, and the needs-owner entries.
@@ -87,11 +100,7 @@ pub fn apply(tray: &Tray, summary: &TraySummary) {
         .entries
         .iter()
         .map(|entry| TrayEntryData {
-            label: clip_display(
-                &format!("{} ({})", entry.display_name, entry.agent),
-                max_chars,
-            )
-            .into(),
+            label: clip_display(&entry_label(entry), max_chars).into(),
             host: entry.key.host.clone().into(),
             id: entry.key.session_id.clone().into(),
             attach_refusal: entry.attach_refusal.clone().unwrap_or_default().into(),
@@ -106,7 +115,7 @@ pub fn apply(tray: &Tray, summary: &TraySummary) {
 /// Shows that no session data is current: grey icon, no entries, and the
 /// reason in the tooltip and the menu.
 pub fn apply_offline(tray: &Tray, reason: &str) {
-    tray.set_tray_icon(icon(tray, &TraySummary::from_rows(&[])));
+    tray.set_tray_icon(icon(tray, &TraySummary::from_rows(&[], 0)));
     tray.set_tray_tooltip(reason.into());
     tray.set_entries(slint::ModelRc::new(slint::VecModel::from(Vec::<
         TrayEntryData,

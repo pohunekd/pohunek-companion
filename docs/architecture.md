@@ -184,6 +184,19 @@ no-agent-state sessions never count in the tray. The state filter shows a
 adds the runtime state and its `loss_reason`. The tray is a passive summary:
 desktop notifications stay with Pohunek's own notification command.
 
+Each followed host has its own connection state: connected, reconnecting
+(attempt and reason), or refused with a typed protocol error such as
+`version_mismatch` or `daemon_protocol_too_old` (shown with the daemon's
+message). The window status text names every remote host that is not connected
+with its label and reason; the local host keeps its own wording. A remote host
+that is not connected keeps its rows with their last-known facts: the rows are
+dimmed, say "host unreachable" on the detail line, offer no attach or row
+action, and are not updated until the host's next seed. An outage does not
+imply the sessions stopped, so they are never shown as ended. Unreachable-host
+rows never count in the tray and its menu; the tooltip adds "N hosts
+unreachable". A tray entry of a remote session carries its host label. The
+local daemon's outage keeps the offline tray and unmarked rows.
+
 ## Creating a session
 
 Creating, renaming, stopping and removing a session are the companion's only

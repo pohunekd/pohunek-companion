@@ -55,6 +55,9 @@ pub struct SessionRow {
     /// Sanitized name of the remote host the session lives on; `None` for a
     /// local session.
     pub host_label: Option<String>,
+    /// The session's remote host is not connected: the row shows the last
+    /// known facts, which may be stale.
+    pub host_unreachable: bool,
 }
 
 /// Whether the session's runtime is in the given state.
@@ -140,6 +143,7 @@ impl SessionRow {
             runtime_detail,
             open,
             host_label: host_label.map(str::to_owned),
+            host_unreachable: false,
         }
     }
 }

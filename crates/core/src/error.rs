@@ -15,3 +15,14 @@ pub enum CoreError {
     #[error("the daemon rejects a `notification.list` page of even one record as too large")]
     NotificationPageTooLarge,
 }
+
+impl CoreError {
+    /// The daemon's machine-readable error code (`version_mismatch`,
+    /// `daemon_protocol_too_old`, ...) when the failure is a protocol error.
+    pub fn protocol_code(&self) -> Option<&str> {
+        match self {
+            Self::Client(ClientError::Protocol(err)) => Some(err.code.as_str()),
+            _ => None,
+        }
+    }
+}

@@ -26,7 +26,13 @@ pub enum LiveUpdate {
     /// differs from the previous one.
     Sessions(Vec<SessionRow>),
     /// The daemon connection is down; `attempt` counts consecutive failures.
-    Reconnecting { attempt: u32, reason: String },
+    /// `code` is the daemon's protocol error code when it refused the
+    /// connection with one.
+    Reconnecting {
+        attempt: u32,
+        reason: String,
+        code: Option<String>,
+    },
 }
 
 type EventMessage = Result<Event, CoreError>;
@@ -110,6 +116,7 @@ pub async fn run_live(
         publish(LiveUpdate::Reconnecting {
             attempt: failures,
             reason: error.to_string(),
+            code: error.protocol_code().map(str::to_owned),
         });
         let delay = backoff(config, failures);
         info!(

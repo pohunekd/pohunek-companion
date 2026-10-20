@@ -39,6 +39,9 @@ fn owner_state_kind(state: OwnerState) -> OwnerStateKind {
     }
 }
 
+/// Detail text and attach refusal of a row whose host is not connected.
+const HOST_UNREACHABLE: &str = "host unreachable";
+
 fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRowData> {
     sessions
         .into_iter()
@@ -71,15 +74,20 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 host: s.key.host.into(),
                 host_label: s.host_label.unwrap_or_default().into(),
                 id: s.key.session_id.into(),
-                can_stop: s.can_stop,
-                can_remove: s.can_remove,
+                host_unreachable: s.host_unreachable,
+                // Actions need a connected host.
+                can_stop: s.can_stop && !s.host_unreachable,
+                can_remove: s.can_remove && !s.host_unreachable,
                 open_folder: s.open.existing_folder().is_some(),
-                open_link: s.open.link.is_some(),
-                attach_refusal: s
-                    .attach_refusal
-                    .map(|reason| reason.to_string())
-                    .unwrap_or_default()
-                    .into(),
+                open_link: s.open.link.is_some() && !s.host_unreachable,
+                attach_refusal: if s.host_unreachable {
+                    HOST_UNREACHABLE.to_owned()
+                } else {
+                    s.attach_refusal
+                        .map(|reason| reason.to_string())
+                        .unwrap_or_default()
+                }
+                .into(),
             }
         })
         .collect()
@@ -567,17 +575,40 @@ impl HostsView {
         }
     }
 
-    /// Stores `sessions` as `host`'s list and returns the union of all hosts.
-    fn set_rows(&mut self, host: &str, sessions: Vec<SessionRow>) -> Vec<SessionRow> {
+    /// Stores `sessions` as `host`'s list.
+    fn set_rows(&mut self, host: &str, sessions: Vec<SessionRow>) {
         if let Some((_, slot)) = self.rows.iter_mut().find(|(target, _)| target == host) {
             *slot = Some(sessions);
         }
+    }
+
+    /// The union of all hosts' lists; rows of a remote host that is not
+    /// connected keep their last-known facts and are marked unreachable.
+    fn union(&self) -> Vec<SessionRow> {
         self.rows
             .iter()
-            .filter_map(|(_, rows)| rows.as_deref())
-            .flatten()
-            .cloned()
+            .filter_map(|(target, rows)| Some((self.is_unreachable(target), rows.as_deref()?)))
+            .flat_map(|(unreachable, rows)| {
+                rows.iter().cloned().map(move |mut row| {
+                    row.host_unreachable = unreachable;
+                    row
+                })
+            })
             .collect()
+    }
+
+    /// A remote host that is not connected. The local daemon's outage keeps
+    /// its own handling (offline tray, unmarked rows).
+    fn is_unreachable(&self, host: &str) -> bool {
+        host != LOCAL_HOST && self.is_down(host)
+    }
+
+    /// How many remote hosts are not connected.
+    fn unreachable_count(&self) -> usize {
+        self.down
+            .iter()
+            .filter(|(target, _)| target != LOCAL_HOST)
+            .count()
     }
 
     /// Every host has delivered a list at least once; derived collapsed
@@ -628,13 +659,10 @@ impl Publisher {
     /// Applies one update of `host` to the layout and queues the window update.
     fn publish(&self, host: &LiveHost, update: LiveUpdate) {
         let local = host.target == LOCAL_HOST;
-        let mut union = None;
         if let LiveUpdate::Sessions(sessions) = &update {
-            union = Some(
-                self.hosts
-                    .borrow_mut()
-                    .set_rows(&host.target, sessions.clone()),
-            );
+            self.hosts
+                .borrow_mut()
+                .set_rows(&host.target, sessions.clone());
         }
         let status = match &update {
             LiveUpdate::Connected => {
@@ -642,8 +670,15 @@ impl Publisher {
                 hosts.set_down(&host.target, None);
                 Some(hosts.status())
             }
-            LiveUpdate::Reconnecting { attempt, reason } => {
-                let line = format!("Reconnecting (attempt {attempt}): {reason}");
+            LiveUpdate::Reconnecting {
+                attempt,
+                reason,
+                code,
+            } => {
+                let line = match code {
+                    Some(code) => format!("Connection refused ({code}): {reason}"),
+                    None => format!("Reconnecting (attempt {attempt}): {reason}"),
+                };
                 let line = match &host.label {
                     Some(label) => format!("{label}: {line}"),
                     None => line,
@@ -654,29 +689,37 @@ impl Publisher {
             }
             LiveUpdate::Sessions(_) => None,
         };
+        // The list changes with a host's sessions and when a remote host
+        // becomes unreachable; a reconnect is followed by its seed.
+        let union = (matches!(update, LiveUpdate::Sessions(_))
+            || (matches!(update, LiveUpdate::Reconnecting { .. }) && !local))
+            .then(|| self.hosts.borrow().union());
         // The tray reflects the local daemon: while it is down the tray stays
         // offline whatever a remote host reports.
         let summary = union
             .as_deref()
             .filter(|_| !self.hosts.borrow().is_down(LOCAL_HOST))
-            .map(TraySummary::from_rows);
+            .map(|rows| TraySummary::from_rows(rows, self.hosts.borrow().unreachable_count()));
         let all_seeded = self.hosts.borrow().all_seeded();
         // Reconciled and saved here so the UI thread never waits on disk;
         // the lock is held until the update is queued.
         let mut guard = None;
-        let arranged = match (&update, &union) {
-            (LiveUpdate::Sessions(sessions), Some(all)) => {
+        let arranged = match &union {
+            Some(all) => {
                 let mut state = lock(&self.layout);
-                let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
-                state.store.reconcile(&host.target, &keys);
-                if let Some((pending, max_age)) = &self.pending {
-                    let all_keys: Vec<SessionKey> = all.iter().map(|s| s.key.clone()).collect();
-                    apply_pending(&mut state.store, pending, &all_keys, *max_age);
-                }
-                state.store.apply_rules(all, &self.rules);
-                let title_max_chars = state.title_max_chars;
-                if all_seeded {
-                    state.store.prune_collapsed_sections(all, title_max_chars);
+                // A host that only became unreachable keeps its placements.
+                if let LiveUpdate::Sessions(sessions) = &update {
+                    let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
+                    state.store.reconcile(&host.target, &keys);
+                    if let Some((pending, max_age)) = &self.pending {
+                        let all_keys: Vec<SessionKey> = all.iter().map(|s| s.key.clone()).collect();
+                        apply_pending(&mut state.store, pending, &all_keys, *max_age);
+                    }
+                    state.store.apply_rules(all, &self.rules);
+                    let title_max_chars = state.title_max_chars;
+                    if all_seeded {
+                        state.store.prune_collapsed_sections(all, title_max_chars);
+                    }
                 }
                 let layout_error = save_layout(&mut state);
                 state.rows = all.clone();
@@ -705,9 +748,20 @@ impl Publisher {
                 }
                 LiveUpdate::Reconnecting { .. } => {
                     // The tray goes offline with the local daemon only; a lost
-                    // remote host keeps its last known rows.
-                    if local && let Some(tray) = tray.upgrade() {
-                        tray::apply_offline(&tray, "Not connected to the daemon");
+                    // remote host's rows stay, marked unreachable, and leave
+                    // the tray counts.
+                    if local {
+                        if let Some(tray) = tray.upgrade() {
+                            tray::apply_offline(&tray, "Not connected to the daemon");
+                        }
+                    } else {
+                        if let (Some(tray), Some(summary)) = (tray.upgrade(), summary) {
+                            tray::apply(&tray, &summary);
+                        }
+                        if let Some((arranged, layout_error)) = arranged {
+                            show_arranged(&window, arranged);
+                            window.set_layout_error(layout_error.unwrap_or_default().into());
+                        }
                     }
                     window.set_status(status.unwrap_or_default().into());
                 }
