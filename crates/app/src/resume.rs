@@ -77,13 +77,14 @@ fn subject(session_id: &str, host_name: Option<&str>) -> String {
 pub fn resume_and_attach(
     context: &ResumeContext,
     key: &SessionKey,
+    name: &str,
     host_name: Option<&str>,
     accept_profile_change: bool,
 ) -> Step {
     let Some(_in_flight) = InFlight::begin(context, key) else {
         return Step::Ignored;
     };
-    let label = subject(&key.session_id, host_name);
+    let label = subject(name, host_name);
     let daemon = match &context.daemon {
         Ok(daemon) => daemon,
         Err(message) => return Step::Failed(message.clone()),
@@ -113,7 +114,7 @@ pub fn resume_and_attach(
         }
         Err(err) => Step::Failed(format!("Cannot resume {label}: {err}")),
         Ok(outcome) if outcome.resumed == Some(Resumed::Running) => {
-            match attach_outcome(&context.attach, key, "") {
+            match attach_outcome(&context.attach, key, &label, "") {
                 Ok(()) => Step::Done(String::new()),
                 Err(message) => Step::Failed(message),
             }
@@ -158,7 +159,7 @@ pub fn start_resume(
         window.set_attach_note("".into());
     }
     std::thread::spawn(move || {
-        let step = resume_and_attach(&context, &key, host_name.as_deref(), false);
+        let step = resume_and_attach(&context, &key, &name, host_name.as_deref(), false);
         match &step {
             Step::Failed(message) => {
                 warn!(session = %key.session_id, error = %message, "resume failed")

@@ -187,6 +187,8 @@ struct Pending {
     /// The host's display name for a remote session.
     host_name: Option<String>,
     session_id: String,
+    /// The session's display name (its id when it has none).
+    name: String,
     /// Becomes `RemoveAcceptingUnconfirmed` only after the daemon refused a
     /// safe removal and the owner saw the risk.
     action: LifecycleAction,
@@ -212,7 +214,7 @@ impl ConfirmHandle {
             window.set_attach_error(
                 format!(
                     "Cannot resume {}: another action is still running, try again when it ends",
-                    subject(&key.session_id, host_name.as_deref())
+                    subject(name, host_name.as_deref())
                 )
                 .into(),
             );
@@ -223,6 +225,7 @@ impl ConfirmHandle {
             host: key.host.clone(),
             host_name: host_name.clone(),
             session_id: key.session_id.clone(),
+            name: name.to_owned(),
             action,
         });
         window.set_confirm_name(subject(name, host_name.as_deref()).into());
@@ -277,6 +280,7 @@ pub fn install(
             host: host.into(),
             host_name: host_name.clone(),
             session_id: id.into(),
+            name: name.to_string(),
             action,
         });
         window.set_confirm_name(subject(name.as_str(), host_name.as_deref()).into());
@@ -293,7 +297,7 @@ pub fn install(
         if window.get_confirm_busy() {
             return;
         }
-        let Some((host, host_name, session_id, action)) = slot
+        let Some((host, host_name, session_id, name, action)) = slot
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
@@ -301,6 +305,7 @@ pub fn install(
                 p.host.clone(),
                 p.host_name.clone(),
                 p.session_id.clone(),
+                p.name.clone(),
                 p.action,
             ))
         else {
@@ -319,7 +324,7 @@ pub fn install(
         let resume = resume.clone();
         std::thread::spawn(move || {
             let report = if action == LifecycleAction::ResumeAcceptingProfileChange {
-                resume_report(&resume, &host, host_name.as_deref(), &session_id)
+                resume_report(&resume, &host, host_name.as_deref(), &session_id, &name)
             } else {
                 lifecycle_report(&daemon, &host, host_name.as_deref(), &session_id, action)
             };
@@ -361,12 +366,13 @@ fn resume_report(
     host: &str,
     host_name: Option<&str>,
     session_id: &str,
+    name: &str,
 ) -> ActionReport {
     let key = SessionKey {
         host: host.to_owned(),
         session_id: session_id.to_owned(),
     };
-    match resume_and_attach(resume, &key, host_name, true) {
+    match resume_and_attach(resume, &key, name, host_name, true) {
         Step::Done(status_note) => ActionReport {
             status_note,
             ..Default::default()
@@ -380,7 +386,7 @@ fn resume_report(
         Step::NeedsProfileApproval => ActionReport {
             status_error: format!(
                 "Cannot resume {}: the agent profile changed again",
-                subject(session_id, host_name)
+                subject(name, host_name)
             ),
             ..Default::default()
         },

@@ -1200,7 +1200,7 @@ fn start_attach(
     reveal: bool,
 ) {
     std::thread::spawn(move || {
-        let outcome = attach_outcome(&context, &key, &refusal);
+        let outcome = attach_outcome(&context, &key, &key.session_id, &refusal);
         if let Err(message) = &outcome {
             warn!(session = %key.session_id, error = %message, "attach failed");
         }
@@ -1328,7 +1328,13 @@ fn rename_outcome(
         })
 }
 
-fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> Result<(), String> {
+/// `label` names the session in the failure text.
+fn attach_outcome(
+    context: &AttachContext,
+    key: &SessionKey,
+    label: &str,
+    refusal: &str,
+) -> Result<(), String> {
     if !refusal.is_empty() {
         return Err(format!("Cannot attach: {refusal}"));
     }
@@ -1336,7 +1342,7 @@ fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> R
     let config_path = context.config_path.as_ref().map_err(Clone::clone)?;
     attach(settings, config_path, key).map_err(|err| match err {
         AttachError::NotConfigured { .. } => err.to_string(),
-        other => format!("Cannot attach {}: {other}", key.session_id),
+        other => format!("Cannot attach {label}: {other}"),
     })
 }
 
