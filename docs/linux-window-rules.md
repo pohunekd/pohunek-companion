@@ -59,6 +59,19 @@ sidebar is closed.
 On macOS the dialog is a regular (not accessory) app process; winit activates
 it on launch, which brings it to the front with keyboard focus.
 
+## Confirmation dialog
+
+Stop and Remove confirm in a small window (`pohunek-companion confirm ...`,
+started by the sidebar) with the Wayland `app_id`
+`pohunek-companion-confirm`. Float and centre it with:
+
+```
+for_window [app_id="^pohunek-companion-confirm$"] floating enable, resize set width 420 px height 300 px, move position center
+```
+
+Without the rule the dialog tiles like any other window. On macOS it is a
+regular process whose window winit brings to the front.
+
 ## Status tray
 
 The tray icon is a StatusNotifierItem. It needs a host: waybar with the `tray`
