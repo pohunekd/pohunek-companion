@@ -35,7 +35,7 @@ pub use config::{
 pub use error::CoreError;
 pub use filter::{
     ProjectChip, ProjectSelection, SessionFilter, StateChip, StateSelection, StoredFilter,
-    filter_sections, project_chips, state_chips, state_from_key, state_key,
+    filter_sections, fuzzy_matches, project_chips, state_chips, state_from_key, state_key,
 };
 pub use layout::{
     CreateAndMoveError, GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError,

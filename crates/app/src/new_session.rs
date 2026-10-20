@@ -9,13 +9,13 @@ use std::time::Duration;
 use pohunek_companion_core::{
     Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, FormError,
     Generation, LOCAL_HOST, NewSessionConfig, NewSessionForm, PendingStore, Recipe, SessionKey,
-    SessionNewParams, attach, build_params, create_session, load_choices, load_recipe,
-    load_templates, submit_blocker,
+    SessionNewParams, attach, build_params, create_session, fuzzy_matches, load_choices,
+    load_recipe, load_templates, submit_blocker,
 };
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
 
-use crate::NewSessionWindow;
+use crate::{Fuzzy, NewSessionWindow};
 
 /// Wayland app id of the dialog; distinct from the sidebar's so compositor
 /// rules can float it separately.
@@ -471,6 +471,14 @@ fn submit_in_background(
 pub fn run(args: Args) -> Result<(), slint::PlatformError> {
     info!("new-session dialog started");
     let window = NewSessionWindow::new()?;
+    window.global::<Fuzzy>().on_matches(|query, items| {
+        let items: Vec<SharedString> = items.iter().collect();
+        let matched: Vec<i32> = fuzzy_matches(query.as_str(), &items)
+            .into_iter()
+            .filter_map(|index| i32::try_from(index).ok())
+            .collect();
+        ModelRc::new(VecModel::from(matched))
+    });
     slint::set_xdg_app_id(APP_ID)?;
 
     let choices = Arc::new(Mutex::new(Choices::default()));

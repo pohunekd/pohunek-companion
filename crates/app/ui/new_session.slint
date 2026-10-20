@@ -16,20 +16,233 @@ global DialogTheme {
     out property <color> focus-border: #4a6fa5;
     out property <color> button-disabled: #3a3d44;
     out property <color> chip-disabled-text: #5d6068;
+    out property <length> field-height: 30px;
+    out property <length> field-padding: 8px;
+    out property <length> field-radius: 4px;
+    out property <length> list-row-height: 26px;
+    out property <int> list-max-rows: 8;
+    out property <length> list-gap: 2px;
+    out property <length> list-border-width: 1px;
+    out property <color> list-background: #26282c;
+    out property <color> list-border: #3a3d44;
+    out property <length> field-font-size: 13px;
+}
+
+// Fuzzy matching lives in Rust (`pohunek_companion_core::fuzzy_matches`): the
+// indices of `items` that match `query`, in their order.
+export global Fuzzy {
+    pure callback matches(string, [string]) -> [int];
+}
+
+// A searchable select: a text field showing the current choice and a list
+// drawn under it. Typing narrows the list, Up and Down move the highlight,
+// Enter picks, Escape closes the list. The list opens when the field gains
+// focus, so typing starts a search at once.
+component SearchSelect inherits Rectangle {
+    in property <[string]> model;
+    // Unlaunchable entries are listed but cannot be picked.
+    in property <[bool]> disabled;
+    in property <string> placeholder: "Select...";
+    // The choices are still being read; the list says so instead of "No match".
+    in property <bool> loading;
+    in-out property <int> selected-index: -1;
+    out property <bool> list-open: false;
+    callback selected(int);
+
+    property <string> query;
+    property <int> highlight: 0;
+    property <[int]> filtered: Fuzzy.matches(root.query, root.model);
+    property <string> current: root.selected-index >= 0 && root.selected-index < root.model.length
+        ? root.model[root.selected-index] : "";
+
+    min-height: DialogTheme.field-height;
+    max-height: DialogTheme.field-height;
+    forward-focus: input;
+    background: Theme.chip-background;
+    border-radius: DialogTheme.field-radius;
+    border-width: input.has-focus ? DialogTheme.focus-border-width : 0px;
+    border-color: DialogTheme.focus-border;
+
+    // Handles a navigation key of the focused field before its `TextInput`
+    // sees it; returns whether the key was consumed.
+    public function handle-key(text: string, control: bool) -> bool {
+        if text == Key.DownArrow {
+            root.move(1);
+            return true;
+        }
+        if text == Key.UpArrow {
+            root.move(-1);
+            return true;
+        }
+        if text == Key.Return && !control {
+            if root.list-open {
+                root.pick(root.highlight);
+            } else {
+                root.list-open = true;
+            }
+            return true;
+        }
+        if text == Key.Escape && root.list-open {
+            root.close();
+            return true;
+        }
+        return false;
+    }
+
+    public function close() {
+        root.list-open = false;
+        root.query = "";
+        root.reset-highlight();
+    }
+
+    // The highlight starts on the current choice when the list shows every
+    // entry, and on the first match while a query narrows it.
+    function reset-highlight() {
+        root.highlight = root.query == "" && root.selected-index >= 0 ? root.selected-index : 0;
+        list-flick.content-y = 0px;
+        root.scroll-to-highlight();
+    }
+
+    function scroll-to-highlight() {
+        if root.highlight * DialogTheme.list-row-height < -list-flick.content-y {
+            list-flick.content-y = -root.highlight * DialogTheme.list-row-height;
+        } else if (root.highlight + 1) * DialogTheme.list-row-height > -list-flick.content-y + list-flick.height {
+            list-flick.content-y = list-flick.height - (root.highlight + 1) * DialogTheme.list-row-height;
+        }
+    }
+
+    function pick(row: int) {
+        if row < 0 || row >= root.filtered.length || root.disabled[root.filtered[row]] {
+            return;
+        }
+        root.selected-index = root.filtered[row];
+        root.selected(root.filtered[row]);
+        root.close();
+    }
+
+    // Opens a closed list; on an open one moves the highlight, never onto a
+    // disabled entry.
+    function move(delta: int) {
+        if !root.list-open {
+            root.list-open = true;
+            return;
+        }
+        let next = clamp(root.highlight + delta, 0, max(root.filtered.length - 1, 0));
+        if root.disabled[root.filtered[next]] {
+            return;
+        }
+        root.highlight = next;
+        root.scroll-to-highlight();
+    }
+
+    changed filtered => {
+        root.highlight = clamp(root.highlight, 0, max(root.filtered.length - 1, 0));
+    }
+
+    out property <bool> focused: input.has-focus;
+    changed focused => {
+        root.query = "";
+        root.reset-highlight();
+        root.list-open = root.focused;
+    }
+
+    Rectangle {
+        Text {
+            x: DialogTheme.field-padding;
+            width: parent.width - 2 * DialogTheme.field-padding;
+            height: parent.height;
+            text: root.query != "" ? "" : root.current != "" ? root.current : root.placeholder;
+            color: root.current != "" && !root.list-open ? Theme.text : Theme.detail;
+            font-size: DialogTheme.field-font-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        input := TextInput {
+            x: DialogTheme.field-padding;
+            width: parent.width - 2 * DialogTheme.field-padding;
+            height: parent.height;
+            text <=> root.query;
+            color: Theme.text;
+            font-size: DialogTheme.field-font-size;
+            vertical-alignment: center;
+            single-line: true;
+            edited => {
+                root.list-open = true;
+                root.reset-highlight();
+            }
+        }
+
+        TouchArea {
+            clicked => {
+                if input.has-focus {
+                    root.list-open = !root.list-open;
+                } else {
+                    input.focus();
+                    root.list-open = true;
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        visible: root.list-open;
+        y: root.height + DialogTheme.list-gap;
+        width: root.width;
+        height: max(min(root.filtered.length, DialogTheme.list-max-rows), 1) * DialogTheme.list-row-height
+            + 2 * DialogTheme.list-border-width;
+        background: DialogTheme.list-background;
+        border-radius: DialogTheme.field-radius;
+        border-width: DialogTheme.list-border-width;
+        border-color: DialogTheme.list-border;
+
+        if root.filtered.length == 0: Text {
+            x: DialogTheme.field-padding;
+            text: root.loading ? "Loading..." : "No match";
+            color: Theme.detail;
+            font-size: DialogTheme.field-font-size;
+            vertical-alignment: center;
+        }
+        list-flick := Flickable {
+            x: DialogTheme.list-border-width;
+            y: DialogTheme.list-border-width;
+            width: parent.width - 2 * DialogTheme.list-border-width;
+            height: parent.height - 2 * DialogTheme.list-border-width;
+            content-height: root.filtered.length * DialogTheme.list-row-height;
+            for index[row] in root.filtered: Rectangle {
+                y: row * DialogTheme.list-row-height;
+                height: DialogTheme.list-row-height;
+                background: row == root.highlight ? Theme.chip-selected-background
+                    : row-touch.has-hover && !root.disabled[index] ? Theme.chip-hover-background
+                    : transparent;
+                Text {
+                    x: DialogTheme.field-padding;
+                    width: parent.width - 2 * DialogTheme.field-padding;
+                    text: root.model[index];
+                    color: root.disabled[index] ? DialogTheme.chip-disabled-text
+                        : row == root.highlight ? Theme.text
+                        : index == root.selected-index ? Theme.text : Theme.detail;
+                    font-size: DialogTheme.field-font-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                row-touch := TouchArea {
+                    clicked => { root.pick(row); }
+                }
+            }
+        }
+    }
 }
 
 // A single-choice chip row that takes keyboard focus: Left and Right move the
 // selection.
 component ChipField inherits FocusScope {
     in property <[string]> model;
-    // Unlaunchable entries are listed after the selectable ones.
-    in property <[bool]> disabled;
     in-out property <int> selected-index: -1;
     callback selected(int);
 
     key-pressed(event) => {
-        if event.text == Key.RightArrow && root.selected-index < root.model.length - 1
-            && !root.disabled[root.selected-index + 1] {
+        if event.text == Key.RightArrow && root.selected-index < root.model.length - 1 {
             root.selected-index += 1;
             root.selected(root.selected-index);
             return accept;
@@ -48,8 +261,6 @@ component ChipField inherits FocusScope {
         border-radius: DialogTheme.focus-radius;
         ChoiceChips {
             model: root.model;
-            disabled: root.disabled;
-            disabled-text-color: DialogTheme.chip-disabled-text;
             selected-index <=> root.selected-index;
             chip-height: Theme.chip-height;
             chip-padding: Theme.chip-padding;
@@ -70,6 +281,8 @@ component ChipField inherits FocusScope {
 }
 
 component FieldLabel inherits Text {
+    // Keeps the label at its text height when a field below it is fixed-size.
+    max-height: self.preferred-height;
     font-size: DialogTheme.label-font-size;
     color: Theme.detail;
 }
@@ -135,6 +348,12 @@ export component NewSessionWindow inherits Window {
         // Captured before the focused field sees the key: `TextEdit` consumes
         // Enter itself.
         capture-key-pressed(event) => {
+            if project-field.focused && project-field.handle-key(event.text, event.modifiers.control) {
+                return accept;
+            }
+            if agent-field.focused && agent-field.handle-key(event.text, event.modifiers.control) {
+                return accept;
+            }
             if event.text == Key.Escape {
                 root.cancel();
                 return accept;
@@ -151,18 +370,23 @@ export component NewSessionWindow inherits Window {
             spacing: DialogTheme.spacing;
 
             VerticalLayout {
+                // Above the fields below, which the open list overlaps.
+                z: project-field.list-open ? 2 : 0;
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Project"; }
-                project-field := ChipField {
+                project-field := SearchSelect {
+                    loading: root.loading;
                     model: root.project-names;
                     selected-index <=> root.project-index;
                     selected(index) => { root.project-changed(index); }
                 }
             }
             VerticalLayout {
+                z: agent-field.list-open ? 2 : 0;
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Agent"; }
-                agent-field := ChipField {
+                agent-field := SearchSelect {
+                    loading: root.loading;
                     model: root.agent-names;
                     disabled: root.agent-disabled;
                     selected-index <=> root.agent-index;
