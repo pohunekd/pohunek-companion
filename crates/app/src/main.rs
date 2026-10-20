@@ -128,6 +128,20 @@ fn chip_key(selection: &ProjectSelection) -> String {
     }
 }
 
+/// The sessions of the selected host, or all of them; the project and state
+/// chips offer only what exists there.
+fn host_rows(state: &LayoutState) -> Vec<SessionRow> {
+    match state.filter.host() {
+        Some(host) => state
+            .rows
+            .iter()
+            .filter(|row| row.key.host == host)
+            .cloned()
+            .collect(),
+        None => state.rows.clone(),
+    }
+}
+
 fn arrange(state: &LayoutState) -> Arranged {
     let started = Instant::now();
     let layout = state.store.layout();
@@ -141,12 +155,12 @@ fn arrange(state: &LayoutState) -> Arranged {
         sessions = state.rows.len(),
         "filter and present"
     );
-    let (project_chips, project_index) = project_chips(&state.rows, state.filter.project());
+    let (project_chips, project_index) = project_chips(&host_rows(state), state.filter.project());
     Arranged {
         filter_empty: state.filter.is_active()
             && !state.rows.is_empty()
             && sections.iter().all(|section| section.rows.is_empty()),
-        state_chips: state_chips(&state.rows, state.filter.states()),
+        state_chips: state_chips(&host_rows(state), state.filter.states()),
         host_options: host_options(&state.hosts, state.filter.host()),
         sections,
         project_chips,
@@ -519,7 +533,7 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
             Refusal::default()
         }
         LayoutRequest::SetProject(key) => {
-            let (chips, _) = project_chips(&state.rows, state.filter.project());
+            let (chips, _) = project_chips(&host_rows(state), state.filter.project());
             match chips
                 .into_iter()
                 .find(|chip| chip_key(&chip.selection) == key)
