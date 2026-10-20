@@ -210,6 +210,11 @@ pub struct NewSessionConfig {
     /// "Attach after creating" checkbox; when checked, a created session is
     /// opened with the attach settings. Optional; default true.
     pub attach_after_create: bool,
+    /// `new_session.pending_placement_max_age_secs`: how long a recorded
+    /// placement for a session created from a row's menu waits for that
+    /// session to show up in the sidebar before it is dropped, in seconds,
+    /// greater than zero. Optional; default 600.
+    pub pending_placement_max_age_secs: u64,
 }
 
 impl Default for NewSessionConfig {
@@ -219,11 +224,16 @@ impl Default for NewSessionConfig {
             rows: 24,
             create_timeout_ms: 120_000,
             attach_after_create: true,
+            pending_placement_max_age_secs: 600,
         }
     }
 }
 
 impl NewSessionConfig {
+    pub fn pending_placement_max_age(&self) -> Duration {
+        Duration::from_secs(self.pending_placement_max_age_secs)
+    }
+
     pub fn create_timeout(&self) -> Duration {
         Duration::from_millis(self.create_timeout_ms)
     }
@@ -399,6 +409,10 @@ impl Config {
             (
                 "new_session.create_timeout_ms",
                 self.new_session.create_timeout_ms,
+            ),
+            (
+                "new_session.pending_placement_max_age_secs",
+                self.new_session.pending_placement_max_age_secs,
             ),
             ("tray.idle_threshold_secs", self.tray.idle_threshold_secs),
             (

@@ -1061,7 +1061,7 @@ fn placement_log(placement: Placement<'_>) -> String {
 
 /// Writes `text` to a temporary file next to `path` and renames it over
 /// `path`, creating the directory with owner-only access.
-fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("layout path has no directory"))?;
@@ -1070,7 +1070,8 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         .mode(DIR_MODE)
         .create(dir)?;
     fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))?;
-    let tmp = dir.join(format!("{LAYOUT_FILE}.tmp-{}", std::process::id()));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!("{name}.tmp-{}", std::process::id()));
     // A stale temporary file from a crashed run is replaced first.
     let _ = fs::remove_file(&tmp);
     let written = (|| {

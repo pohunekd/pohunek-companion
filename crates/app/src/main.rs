@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
@@ -12,10 +12,11 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
-    INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState, Placement,
-    PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip,
-    TraySummary, View, ViewConfig, attach, clip_display, filter_sections, layout_path,
-    name_from_input, project_chips, rename_session, run_live, state_chips, state_from_key,
+    INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState,
+    PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection, SessionFilter,
+    SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, attach, clip_display,
+    filter_sections, layout_path, name_from_input, project_chips, rename_session, run_live,
+    state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -503,6 +504,33 @@ fn spawn_layout_worker(
     sender
 }
 
+/// Moves sessions the new-session dialog recorded a group for into that group
+/// (as a manual placement, so rules leave them alone) once they are in the
+/// session list, and drops entries that expired.
+fn apply_pending(
+    store: &mut LayoutStore,
+    pending: &PendingStore,
+    present: &[SessionKey],
+    max_age: Duration,
+) {
+    let present: HashSet<SessionKey> = present.iter().cloned().collect();
+    let settled = match pending.take(&present, max_age) {
+        Ok(settled) => settled,
+        Err(err) => {
+            warn!(error = %err, "read the pending placements");
+            return;
+        }
+    };
+    for key in &settled.expired {
+        warn!(session = %key.session_id, "pending placement expired before the session appeared");
+    }
+    for (key, group) in settled.apply {
+        if let Err(err) = store.move_session(&key, &group, Placement::End) {
+            warn!(session = %key.session_id, group = %group, error = %err, "pending placement refused");
+        }
+    }
+}
+
 /// Follows the daemon on a background thread and hands every update to the UI
 /// thread; the UI thread never waits on the daemon.
 fn follow_daemon(
@@ -511,6 +539,7 @@ fn follow_daemon(
     daemon: DaemonConfig,
     idle_threshold: Duration,
     rules: Vec<PlacementRule>,
+    pending: Option<(PendingStore, Duration)>,
     layout: SharedLayout,
 ) {
     std::thread::spawn(move || {
@@ -543,6 +572,9 @@ fn follow_daemon(
                     let mut state = lock(&layout);
                     let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
                     state.store.reconcile(&keys);
+                    if let Some((pending, max_age)) = &pending {
+                        apply_pending(&mut state.store, pending, &keys, *max_age);
+                    }
                     state.store.apply_rules(sessions, &rules);
                     let layout_error = save_layout(&mut state);
                     state.rows = sessions.clone();
@@ -685,7 +717,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Some(NEW_SESSION_COMMAND) => {
             let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
                 eprintln!(
-                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID]]"
+                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID] [--group ID]]"
                 );
                 std::process::exit(2);
             });
@@ -696,7 +728,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         Some(other) => {
             eprintln!(
-                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID]]"
+                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID] [--group ID]]"
             );
             std::process::exit(2);
         }
@@ -767,12 +799,20 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                 config_path,
                 settings: Ok(config.attach()),
             };
+            let pending = match PendingStore::open() {
+                Ok(store) => Some((store, config.new_session.pending_placement_max_age())),
+                Err(err) => {
+                    error!(error = %err, "locate the pending placements");
+                    None
+                }
+            };
             follow_daemon(
                 window.as_weak(),
                 tray.as_weak(),
                 config.daemon,
                 config.tray.idle_threshold(),
                 config.layout.rules,
+                pending,
                 layout.clone(),
             );
             (context, rename_daemon)
@@ -1020,7 +1060,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     {
         let weak = window.as_weak();
         tray.on_new_session(move || {
-            let outcome = launch::spawn_new_session(None);
+            let outcome = launch::spawn_new_session(None, None);
             if let Err(message) = &outcome {
                 error!(error = %message, "start the new-session dialog from the tray");
             }
@@ -1035,9 +1075,11 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     }
     {
         let weak = window.as_weak();
-        window.on_new_session(move |project| {
-            let outcome =
-                launch::spawn_new_session(Some(project.as_str()).filter(|id| !id.is_empty()));
+        window.on_new_session(move |project, group| {
+            let outcome = launch::spawn_new_session(
+                Some(project.as_str()).filter(|id| !id.is_empty()),
+                Some(group.as_str()).filter(|id| !id.is_empty()),
+            );
             if let Err(message) = &outcome {
                 error!(error = %message, "start the new-session dialog from the sidebar");
             }

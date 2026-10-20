@@ -139,6 +139,19 @@ Storage and reconciliation:
   by name); Inbox cannot be renamed or deleted. A collapsed group keeps its
   sessions that need the owner in the Needs-you section.
 - Drag never changes daemon state: no herd add/remove, no work relinking.
+- **A session created from a row's menu** lands in that row's group. The
+  dialog is a separate process, so the sidebar passes the group id as
+  `new-session --group <id>`. After `session.new` returns the id, the dialog
+  appends `(host, session id, group id, time)` to `pending-placement.toml` in
+  the state directory (atomic write, read-modify-write under an exclusive
+  `flock` on `pending-placement.lock`). The sidebar checks the file on every
+  session list: for a session that is present it moves the session to the
+  group's end as a manual placement (the layout stays the sidebar's alone) and
+  deletes the entry; an entry older than
+  `new_session.pending_placement_max_age_secs` whose session never appeared is
+  deleted and logged. A group deleted meanwhile refuses the move and the
+  session keeps its rule or Inbox placement. Without `--group` (tray, sidebar
+  button, standalone command) nothing is recorded.
 
 ## Tray states
 

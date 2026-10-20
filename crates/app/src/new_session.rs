@@ -4,12 +4,13 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use pohunek_companion_core::{
     Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, FormError,
-    Generation, LOCAL_HOST, NewSessionConfig, NewSessionForm, Recipe, SessionKey, SessionNewParams,
-    attach, build_params, create_session, load_choices, load_recipe, load_templates,
-    submit_blocker,
+    Generation, LOCAL_HOST, NewSessionConfig, NewSessionForm, PendingStore, Recipe, SessionKey,
+    SessionNewParams, attach, build_params, create_session, load_choices, load_recipe,
+    load_templates, submit_blocker,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -20,12 +21,15 @@ use crate::NewSessionWindow;
 /// rules can float it separately.
 const APP_ID: &str = "pohunek-companion-new-session";
 const PROJECT_FLAG: &str = "--project";
+const GROUP_FLAG: &str = "--group";
 
 /// Parsed `new-session` arguments.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Args {
     /// Project id to preselect.
     pub project: Option<String>,
+    /// Id of the My groups group the created session is placed in.
+    pub group: Option<String>,
 }
 
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -39,6 +43,13 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| format!("{PROJECT_FLAG} needs a project id"))?;
                 parsed.project = Some(id);
+            }
+            GROUP_FLAG => {
+                let id = args
+                    .next()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| format!("{GROUP_FLAG} needs a group id"))?;
+                parsed.group = Some(id);
             }
             other => return Err(format!("unknown argument `{other}`")),
         }
@@ -372,6 +383,27 @@ fn attach_created(after: &AttachAfter, session: &str) -> Result<(), String> {
     })
 }
 
+/// Where the created session goes in My groups.
+#[derive(Clone)]
+struct PlaceAfter {
+    group: String,
+    max_age: Duration,
+}
+
+/// Records the placement for the sidebar to apply; the error text reports
+/// that the session already exists.
+fn record_placement(place: &PlaceAfter, session: &str) -> Result<(), String> {
+    let key = SessionKey {
+        host: LOCAL_HOST.to_owned(),
+        session_id: session.to_owned(),
+    };
+    PendingStore::open()
+        .and_then(|store| store.record(&key, &place.group, place.max_age))
+        .map_err(|err| {
+            format!("Session {session} was created, but its group could not be recorded: {err}")
+        })
+}
+
 fn submit_in_background(
     window: slint::Weak<NewSessionWindow>,
     templates: Templates,
@@ -379,6 +411,7 @@ fn submit_in_background(
     config: NewSessionConfig,
     params: SessionNewParams,
     attach_after: Option<AttachAfter>,
+    place_after: Option<PlaceAfter>,
 ) {
     std::thread::spawn(move || {
         let outcome = match block_on(create_session(&daemon, &config, params)) {
@@ -391,6 +424,13 @@ fn submit_in_background(
             Ok(id) => info!(session = %id, "create succeeded"),
             Err(err) => warn!(code = err.code(), "create failed"),
         }
+        let placed = match (&outcome, &place_after) {
+            (Ok(id), Some(place)) => record_placement(place, id),
+            _ => Ok(()),
+        };
+        if let Err(message) = &placed {
+            warn!(error = %message, "record placement after create failed");
+        }
         let attached = match (&outcome, &attach_after) {
             (Ok(id), Some(after)) => attach_created(after, id),
             _ => Ok(()),
@@ -398,6 +438,8 @@ fn submit_in_background(
         if let Err(message) = &attached {
             warn!(error = %message, "attach after create failed");
         }
+        // The first failure after a successful create is the one shown.
+        let attached = placed.and(attached);
         let delivered = window.upgrade_in_event_loop(move |window| match (outcome, attached) {
             (Ok(_), Ok(())) => {
                 if let Err(err) = window.hide() {
@@ -476,6 +518,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                 }
             });
             let weak = window.as_weak();
+            let group = args.group;
             let submit_templates = templates.clone();
             window.on_submit(move || {
                 let templates = &submit_templates;
@@ -498,6 +541,10 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                             settings: config.attach(),
                             config_path: config_path.clone(),
                         });
+                        let place_after = group.clone().map(|group| PlaceAfter {
+                            group,
+                            max_age: config.new_session.pending_placement_max_age(),
+                        });
                         submit_in_background(
                             weak.clone(),
                             templates.clone(),
@@ -505,6 +552,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                             config.new_session.clone(),
                             params,
                             attach_after,
+                            place_after,
                         );
                     }
                     Err(err) => window.set_error(err.to_string().into()),
