@@ -327,13 +327,22 @@ fn project_choices(projects: Vec<ProjectInfo>) -> Vec<ProjectChoice> {
         .collect()
 }
 
-async fn read_choices(client: &mut Client) -> Result<Choices, CoreError> {
+async fn read_projects(client: &mut Client) -> Result<Vec<ProjectChoice>, CoreError> {
     let projects = client
         .call::<ProjectList>(ProjectListParams::default())
         .await?;
+    Ok(project_choices(projects))
+}
+
+async fn read_choices(
+    client: &mut Client,
+    projects_ready: impl FnOnce(&[ProjectChoice]),
+) -> Result<Choices, CoreError> {
+    let projects = read_projects(client).await?;
+    projects_ready(&projects);
     let capabilities = client.call::<HostInspect>(()).await?;
     Ok(Choices {
-        projects: project_choices(projects),
+        projects,
         agents: agent_choices(&capabilities.runtimes),
         git_available: capabilities.git_available,
         worktree_supported: capabilities.worktree_supported,
@@ -343,9 +352,20 @@ async fn read_choices(client: &mut Client) -> Result<Choices, CoreError> {
 /// Reads the projects and agents from the daemon of `host` (`local` or a
 /// configured remote target).
 pub async fn load_choices(host: &str, daemon: &DaemonConfig) -> Result<Choices, CoreError> {
+    load_choices_staged(host, daemon, |_| {}).await
+}
+
+/// Like [`load_choices`], and calls `projects_ready` with the projects as soon
+/// as `project.list` answers, before the slower `host.inspect` that lists the
+/// agents.
+pub async fn load_choices_staged(
+    host: &str,
+    daemon: &DaemonConfig,
+    projects_ready: impl FnOnce(&[ProjectChoice]),
+) -> Result<Choices, CoreError> {
     let socket = socket_for_host(host)?;
     let mut client = connect_host(host, &socket, daemon).await?;
-    let choices = read_choices(&mut client).await?;
+    let choices = read_choices(&mut client, projects_ready).await?;
     info!(
         projects = choices.projects.len(),
         agents = choices.agents.len(),

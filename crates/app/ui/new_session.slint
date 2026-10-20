@@ -324,6 +324,10 @@ export component NewSessionWindow inherits Window {
     in-out property <bool> advanced-open: false;
     // The choices are still being read from the daemon.
     in property <bool> loading: true;
+    // The projects are listed already; only the agents are still being read.
+    in property <bool> projects-ready;
+    // Other hosts are still being looked up; Local works meanwhile.
+    in property <bool> hosts-loading;
     // A create request is in flight, or its outcome is unknown and it must
     // not be repeated.
     in property <bool> busy;
@@ -393,6 +397,11 @@ export component NewSessionWindow inherits Window {
                     selected-index <=> root.host-index;
                     selected(index) => { root.host-changed(index); }
                 }
+                if root.hosts-loading: Text {
+                    text: "Looking for other hosts...";
+                    color: Theme.detail;
+                    font-size: Theme.detail-font-size;
+                }
                 if root.host-notes != "": host-notes-text := Text {
                     text: root.host-notes;
                     color: Theme.detail;
@@ -406,7 +415,7 @@ export component NewSessionWindow inherits Window {
                 FieldLabel { text: "Project"; }
                 project-field := SearchSelect {
                     z: self.list-open ? 1 : 0;
-                    loading: root.loading;
+                    loading: root.loading && !root.projects-ready;
                     model: root.project-names;
                     selected-index <=> root.project-index;
                     selected(index) => { root.project-changed(index); }

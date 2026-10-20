@@ -239,23 +239,36 @@ compositor rule can float it apart from the sidebar. It creates no tray icon
 and does not follow the session stream.
 
 - The Host select at the top offers Local, then every `[[hosts]]` entry, then
-  every peer the local daemon discovers (the sidebar's labels). The dialog is
-  its own process, so it asks `host.discover` itself at startup with the same
-  derivation as the sidebar (`discovery::plan`, shared core code) and
-  registers the discovered peers' routes before it connects; a peer that is
-  this machine is left out. A `version_mismatch` peer is listed but cannot be
-  picked, with a note naming the protocol version, like an unlaunchable agent.
-  A failed discovery is logged and leaves Local and the configured hosts.
-  `--host <target>` preselects `local`, a configured target or a discovered
-  key; any other target, or an incompatible peer, fails with a message naming
-  it. Choosing a host reloads the choices from that host's daemon and keeps
+  every peer the local daemon discovers (the sidebar's labels). The window and
+  the Local choices never wait for discovery. The sidebar passes the hosts it
+  already follows (targets, labels, routes, and why a peer is unpickable) as
+  `--known-hosts <json>`; the dialog lists them at once and registers their
+  routes. Without it (a standalone launch, or a sidebar whose first discovery
+  has not answered) the dialog asks `host.discover` itself in the background
+  with the same derivation as the sidebar (`discovery::plan`, shared core
+  code), shows "Looking for other hosts..." under the select, and fills it when
+  the answer arrives; a peer that is this machine is left out. A remote host's
+  choices load only after its route is registered, so picking a remote host
+  early waits for discovery, never Local. A `version_mismatch` peer is listed
+  but cannot be picked, with a note naming the protocol version, like an
+  unlaunchable agent. A failed discovery is logged and leaves Local and the
+  configured hosts. `--host <target>` preselects `local`, a configured target
+  or a discovered key; a target not listed yet is shown as a pending entry and
+  selected once discovery lists it, unless the owner picked another host
+  meanwhile. An unknown target or an incompatible peer shows its message in
+  the window, loads Local, and keeps Create disabled until a host is chosen.
+  Choosing a host reloads the choices from that host's daemon and keeps
   the project and agent when the host has them; a host that cannot be reached
   shows its error and leaves Create disabled. `session.new` goes to the chosen
   host, and "New session in ..." on a remote row passes the row's host key
   with its group, so the pending placement carries that host in the session
   key.
 - Choices come from `project.list` (projects) and `host.inspect` (agents) of
-  the chosen host. An
+  the chosen host. The projects are shown as soon as `project.list` answers;
+  the agents follow when `host.inspect` does, which can take seconds on a
+  daemon with many agent runtimes. The dialog logs `window shown`, `hosts
+  listed`, `projects loaded` and `choices loaded` with `elapsed_ms` since the
+  process entered the dialog. An
   agent is offered when its runtime is `available` and `supported` is not
   `false`.
 - The form becomes one `session.new` (`Client::session_new`): the chosen

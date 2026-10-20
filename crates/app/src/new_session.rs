@@ -4,15 +4,15 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use pohunek_companion_core::{
     Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, DialogHost,
-    DiscoveryPlan, FormError, Generation, LOCAL_HOST, NewSessionConfig, NewSessionForm,
-    PendingStore, Recipe, SessionKey, SessionNewParams, attach, build_params, create_session,
-    dialog_hosts, discover_dialog_hosts, fuzzy_matches, load_choices, load_recipe, load_templates,
-    submit_blocker,
+    DiscoveryPlan, FormError, Generation, HostConfig, LOCAL_HOST, NewSessionConfig, NewSessionForm,
+    PendingStore, ProjectChoice, Recipe, SessionKey, SessionNewParams, attach, build_params,
+    create_session, decode_dialog_hosts, dialog_hosts, discover_dialog_hosts, fuzzy_matches,
+    load_choices_staged, load_recipe, load_templates, register_dialog_routes, submit_blocker,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -25,6 +25,7 @@ const APP_ID: &str = "pohunek-companion-new-session";
 const HOST_FLAG: &str = "--host";
 const PROJECT_FLAG: &str = "--project";
 const GROUP_FLAG: &str = "--group";
+const KNOWN_HOSTS_FLAG: &str = "--known-hosts";
 
 /// Parsed `new-session` arguments.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -36,6 +37,9 @@ pub struct Args {
     pub project: Option<String>,
     /// Id of the My groups group the created session is placed in.
     pub group: Option<String>,
+    /// The remote hosts the sidebar already resolved, with their routes. The
+    /// dialog lists them at once and skips its own discovery.
+    pub known_hosts: Option<Vec<DialogHost>>,
 }
 
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -64,6 +68,13 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
                     .ok_or_else(|| format!("{GROUP_FLAG} needs a group id"))?;
                 parsed.group = Some(id);
             }
+            KNOWN_HOSTS_FLAG => {
+                let json = args
+                    .next()
+                    .ok_or_else(|| format!("{KNOWN_HOSTS_FLAG} needs the hosts"))?;
+                parsed.known_hosts =
+                    Some(decode_dialog_hosts(&json).map_err(|err| err.to_string())?);
+            }
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
@@ -88,21 +99,76 @@ fn host_targets(hosts: &[DialogHost]) -> Vec<String> {
         .collect()
 }
 
-/// Index in [`host_targets`] of the requested host (`local` when none), or the
-/// message that names an unknown or unpickable target.
-fn resolve_host(requested: Option<&str>, hosts: &[DialogHost]) -> Result<usize, String> {
+/// What the `--host` argument means for the hosts known so far.
+#[derive(Debug, PartialEq, Eq)]
+enum Requested {
+    Local,
+    /// Index in [`host_targets`].
+    Host(usize),
+    /// Not listed yet; discovery may still add it.
+    Pending(String),
+    /// Unknown after discovery, or listed but unpickable: the message to show.
+    Refused(String),
+}
+
+fn resolve_host(requested: Option<&str>, hosts: &[DialogHost], discovered: bool) -> Requested {
     let Some(target) = requested.filter(|target| *target != LOCAL_HOST) else {
-        return Ok(0);
+        return Requested::Local;
     };
-    let host = hosts
-        .iter()
-        .position(|host| host.target == target)
-        .ok_or_else(|| {
-            format!("unknown host `{target}`: it is not `local`, not a `[[hosts]]` target in companion.toml and not a reachable host the local daemon discovers")
-        })?;
+    let Some(host) = hosts.iter().position(|host| host.target == target) else {
+        return if discovered {
+            Requested::Refused(format!(
+                "unknown host `{target}`: it is not `local`, not a `[[hosts]]` target in companion.toml and not a reachable host the local daemon discovers"
+            ))
+        } else {
+            Requested::Pending(target.to_owned())
+        };
+    };
     match &hosts[host].unavailable {
-        Some(reason) => Err(format!("host `{target}` cannot be used: {reason}")),
-        None => Ok(host + 1),
+        Some(reason) => Requested::Refused(format!("host `{target}` cannot be used: {reason}")),
+        None => Requested::Host(host + 1),
+    }
+}
+
+/// Releases remote loads once discovery has registered its routes; Local
+/// never waits for it.
+#[derive(Default)]
+struct DiscoveryGate {
+    done: Mutex<bool>,
+    ready: Condvar,
+}
+
+impl DiscoveryGate {
+    fn open() -> Self {
+        Self {
+            done: Mutex::new(true),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn finish(&self) {
+        *lock(&self.done) = true;
+        self.ready.notify_all();
+    }
+
+    fn wait(&self) {
+        let mut done = lock(&self.done);
+        while !*done {
+            done = self
+                .ready
+                .wait(done)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// Opens the gate when dropped, so a discovery thread that ends early cannot
+/// leave a remote load waiting.
+struct FinishOnDrop(Arc<DiscoveryGate>);
+
+impl Drop for FinishOnDrop {
+    fn drop(&mut self) {
+        self.0.finish();
     }
 }
 
@@ -186,7 +252,12 @@ struct TemplateState {
 #[derive(Clone)]
 struct Templates {
     /// Targets of the host select, Local first.
-    hosts: Arc<Vec<String>>,
+    hosts: Arc<Mutex<Vec<String>>>,
+    /// Remote loads wait for it.
+    discovery: Arc<DiscoveryGate>,
+    /// Why the requested host cannot be used; Create stays disabled until
+    /// another host is chosen.
+    host_failure: Arc<Mutex<Option<String>>>,
     /// Target of the host the dialog works against.
     host: Arc<Mutex<String>>,
     /// Reading the host's choices failed; Create stays disabled.
@@ -199,6 +270,8 @@ struct Templates {
     state: Arc<Mutex<TemplateState>>,
     /// Project id from the command line.
     requested_project: Option<String>,
+    /// When the dialog process entered `run`; timestamps the load logs.
+    started: Instant,
 }
 
 fn selected_project(window: &NewSessionWindow, choices: &Mutex<Choices>) -> Option<String> {
@@ -218,13 +291,18 @@ fn show_template_names(window: &NewSessionWindow, names: &[String]) {
 impl Templates {
     fn new(
         hosts: Vec<String>,
+        discovery: Arc<DiscoveryGate>,
         host: String,
         daemon: DaemonConfig,
         choices: Arc<Mutex<Choices>>,
         requested_project: Option<String>,
+        started: Instant,
     ) -> Self {
         Self {
-            hosts: Arc::new(hosts),
+            started,
+            hosts: Arc::new(Mutex::new(hosts)),
+            discovery,
+            host_failure: Arc::new(Mutex::new(None)),
             host: Arc::new(Mutex::new(host)),
             load_failed: Arc::new(AtomicBool::new(false)),
             host_generation: Arc::new(Generation::default()),
@@ -272,14 +350,16 @@ impl Templates {
     fn host_changed(&self, window: &NewSessionWindow, index: i32) {
         let Some(target) = usize::try_from(index)
             .ok()
-            .and_then(|index| self.hosts.get(index))
+            .and_then(|index| lock(&self.hosts).get(index).cloned())
         else {
             return;
         };
         // The create goes to the host it was submitted for; the select snaps
         // back while a request is in flight or the session already exists.
         if window.get_busy() || window.get_created() {
-            let current = self.hosts.iter().position(|host| *host == self.host());
+            let current = lock(&self.hosts)
+                .iter()
+                .position(|host| *host == self.host());
             window.set_host_index(current.and_then(|i| i32::try_from(i).ok()).unwrap_or(0));
             return;
         }
@@ -292,11 +372,9 @@ impl Templates {
                     .get(index)
                     .map(|a| a.name.clone())
             });
-        info!(
-            host = %target,
-            "host chosen"
-        );
-        *lock(&self.host) = target.clone();
+        info!(host = %target, "host chosen");
+        *lock(&self.host) = target;
+        *lock(&self.host_failure) = None;
         self.load_failed.store(false, Ordering::SeqCst);
         // Pending template responses belong to the previous host.
         self.generation.advance();
@@ -305,12 +383,20 @@ impl Templates {
         *lock(&self.state) = TemplateState::default();
         window.set_error("".into());
         window.set_loading(true);
+        window.set_projects_ready(false);
         window.set_template_loading(false);
         show_choices(window, &Choices::default(), None, None);
         show_template_names(window, &[]);
         window.set_template_index(0);
         self.refresh_blocker(window);
-        load_in_background(window.as_weak(), self.clone(), token, project, agent);
+        load_in_background(
+            self.started,
+            window.as_weak(),
+            self.clone(),
+            token,
+            project,
+            agent,
+        );
     }
 
     fn activity(window: &NewSessionWindow) -> Activity {
@@ -322,6 +408,10 @@ impl Templates {
 
     /// Recomputes the line that says why Create is disabled.
     fn refresh_blocker(&self, window: &NewSessionWindow) {
+        if let Some(message) = lock(&self.host_failure).clone() {
+            window.set_blocker(message.into());
+            return;
+        }
         if self.load_failed.load(Ordering::SeqCst) {
             window.set_blocker(HOST_UNREADABLE.into());
             return;
@@ -451,9 +541,12 @@ impl Templates {
 }
 
 /// Reads the choices of the current host and shows them, selecting `project`
-/// and `agent` when the host has them. A failure clears the choices, shows the
-/// error, and leaves Create disabled.
+/// and `agent` when the host has them. The projects are shown as soon as the
+/// daemon lists them, the agents when it has probed its runtimes. A failure
+/// shows the error and leaves Create disabled. A remote host is read only
+/// after host discovery has registered its route.
 fn load_in_background(
+    started: Instant,
     window: slint::Weak<NewSessionWindow>,
     templates: Templates,
     token: u64,
@@ -462,7 +555,45 @@ fn load_in_background(
 ) {
     std::thread::spawn(move || {
         let host = templates.host();
-        let outcome = block_on(load_choices(&host, &templates.daemon))
+        if host != LOCAL_HOST {
+            templates.discovery.wait();
+        }
+        let early = {
+            let (window, templates, project) = (window.clone(), templates.clone(), project.clone());
+            move |projects: &[ProjectChoice]| {
+                let projects = projects.to_vec();
+                let delivered = window.upgrade_in_event_loop(move |window| {
+                    if !templates.host_generation.is_current(token) {
+                        return;
+                    }
+                    info!(
+                        elapsed_ms = elapsed_ms(started),
+                        projects = projects.len(),
+                        "projects loaded"
+                    );
+                    let preselected = project.as_deref().and_then(|id| {
+                        projects
+                            .iter()
+                            .position(|candidate| candidate.id == id)
+                            .and_then(|index| i32::try_from(index).ok())
+                    });
+                    window.set_project_names(ModelRc::new(VecModel::from(
+                        projects
+                            .iter()
+                            .map(|project| SharedString::from(project.label.as_str()))
+                            .collect::<Vec<_>>(),
+                    )));
+                    window.set_project_index(preselected.unwrap_or(-1));
+                    lock(&templates.choices).projects = projects;
+                    window.set_projects_ready(true);
+                    templates.project_changed(&window);
+                });
+                if let Err(err) = delivered {
+                    error!(error = %err, "deliver the new-session projects to the UI");
+                }
+            }
+        };
+        let outcome = block_on(load_choices_staged(&host, &templates.daemon, early))
             .map_err(|err| format!("cannot start the background runtime: {err}"))
             .and_then(|loaded| loaded.map_err(|err| err.to_string()));
         if let Err(message) = &outcome {
@@ -473,11 +604,18 @@ fn load_in_background(
                 return;
             }
             window.set_loading(false);
+            info!(
+                elapsed_ms = elapsed_ms(started),
+                ok = outcome.is_ok(),
+                "choices loaded"
+            );
             match outcome {
                 Ok(loaded) => {
-                    show_choices(&window, &loaded, project.as_deref(), agent.as_deref());
+                    // The project may have been picked while the agents loaded.
+                    let chosen = selected_project(&window, &templates.choices).or(project);
+                    show_choices(&window, &loaded, chosen.as_deref(), agent.as_deref());
                     *lock(&templates.choices) = loaded;
-                    templates.project_changed(&window);
+                    templates.refresh_blocker(&window);
                 }
                 Err(message) => {
                     templates.load_failed.store(true, Ordering::SeqCst);
@@ -490,6 +628,10 @@ fn load_in_background(
             error!(error = %err, "deliver the new-session choices to the UI");
         }
     });
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// How to attach the created session, when the owner asked for it.
@@ -600,7 +742,115 @@ fn submit_in_background(
     });
 }
 
+/// Fills the host select with Local followed by `hosts`.
+fn show_hosts(window: &NewSessionWindow, hosts: &[DialogHost]) {
+    window.set_host_names(ModelRc::new(VecModel::from(
+        std::iter::once(SharedString::from("Local"))
+            .chain(
+                hosts
+                    .iter()
+                    .map(|host| SharedString::from(host.label.as_str())),
+            )
+            .collect::<Vec<_>>(),
+    )));
+    window.set_host_disabled(ModelRc::new(VecModel::from(
+        std::iter::once(false)
+            .chain(hosts.iter().map(|host| host.unavailable.is_some()))
+            .collect::<Vec<_>>(),
+    )));
+    window.set_host_notes(
+        hosts
+            .iter()
+            .filter_map(|host| host.unavailable.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into(),
+    );
+}
+
+/// Discovers the remote hosts without holding the window back: the host select
+/// is filled when the local daemon answers. `requested` is a `--host` target
+/// that was not listed yet; it is selected, and its choices loaded, once
+/// discovery lists it and the owner has not picked another host meanwhile.
+fn discover_in_background(
+    started: Instant,
+    window: slint::Weak<NewSessionWindow>,
+    templates: Templates,
+    configured: Vec<HostConfig>,
+    requested: Option<String>,
+    launch_token: u64,
+    project: Option<String>,
+) {
+    std::thread::spawn(move || {
+        let _open_gate = FinishOnDrop(templates.discovery.clone());
+        let (hosts, failure) = block_on(discover_dialog_hosts(&templates.daemon, &configured))
+            .unwrap_or_else(|err| {
+                (
+                    dialog_hosts(&configured, &DiscoveryPlan::default()),
+                    Some(format!("cannot start the background runtime: {err}")),
+                )
+            });
+        // Routes are registered; remote loads may proceed.
+        templates.discovery.finish();
+        if let Some(message) = failure {
+            warn!(error = %message, "host discovery failed; the dialog lists configured hosts only");
+        }
+        let delivered = window.upgrade_in_event_loop(move |window| {
+            info!(
+                elapsed_ms = elapsed_ms(started),
+                hosts = hosts.len(),
+                "hosts listed"
+            );
+            let picked_since = !templates.host_generation.is_current(launch_token);
+            let awaited = requested.is_some() && !picked_since;
+            let target = requested.filter(|_| !picked_since);
+            let resolved = resolve_host(target.as_deref(), &hosts, true);
+            let mut index = None;
+            match &resolved {
+                Requested::Host(position) => index = Some(*position),
+                Requested::Refused(message) => {
+                    error!(error = %message, "resolve the requested host");
+                    *lock(&templates.host_failure) = Some(message.clone());
+                    index = Some(0);
+                }
+                Requested::Local | Requested::Pending(_) => {}
+            }
+            let targets = host_targets(&hosts);
+            if index.is_none() {
+                // Keep what the owner has selected, wherever it moved to.
+                let current = templates.host();
+                index = targets.iter().position(|target| *target == current);
+            }
+            *lock(&templates.hosts) = targets.clone();
+            show_hosts(&window, &hosts);
+            window.set_hosts_loading(false);
+            let index = index.unwrap_or(0);
+            window.set_host_index(i32::try_from(index).unwrap_or(0));
+            if awaited {
+                *lock(&templates.host) = targets[index].clone();
+                let token = templates.host_generation.advance();
+                *lock(&templates.choices) = Choices::default();
+                window.set_projects_ready(false);
+                window.set_loading(true);
+                templates.refresh_blocker(&window);
+                load_in_background(
+                    started,
+                    window.as_weak(),
+                    templates.clone(),
+                    token,
+                    project,
+                    None,
+                );
+            }
+        });
+        if let Err(err) = delivered {
+            error!(error = %err, "deliver the discovered hosts to the UI");
+        }
+    });
+}
+
 pub fn run(args: Args) -> Result<(), slint::PlatformError> {
+    let started = Instant::now();
     info!("new-session dialog started");
     let window = NewSessionWindow::new()?;
     window.global::<Fuzzy>().on_matches(|query, items| {
@@ -618,64 +868,90 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
     window.set_blocker(FormError::Loading.to_string().into());
     match Config::load() {
         Ok(config) => {
-            let (remote_hosts, failure) =
-                block_on(discover_dialog_hosts(&config.daemon, &config.hosts)).unwrap_or_else(
-                    |err| {
-                        (
-                            dialog_hosts(&config.hosts, &DiscoveryPlan::default()),
-                            Some(format!("cannot start the background runtime: {err}")),
-                        )
-                    },
-                );
-            if let Some(message) = failure {
-                warn!(error = %message, "host discovery failed; the dialog lists configured hosts only");
-            }
-            let host_index =
-                resolve_host(args.host.as_deref(), &remote_hosts).unwrap_or_else(|message| {
+            let discovered = args.known_hosts.is_some();
+            let remote_hosts = match &args.known_hosts {
+                Some(known) => {
+                    register_dialog_routes(known);
+                    known.clone()
+                }
+                None => dialog_hosts(&config.hosts, &DiscoveryPlan::default()),
+            };
+            let requested = resolve_host(args.host.as_deref(), &remote_hosts, discovered);
+            let mut targets = host_targets(&remote_hosts);
+            let mut host_index = 0;
+            let mut shown_hosts = remote_hosts.clone();
+            let mut waiting_for = None;
+            let mut host_failure = None;
+            match &requested {
+                Requested::Local => {}
+                Requested::Host(index) => host_index = *index,
+                Requested::Pending(target) => {
+                    // A placeholder keeps the requested host selected, unpickable,
+                    // until discovery lists it.
+                    shown_hosts.push(DialogHost {
+                        target: target.clone(),
+                        label: target.clone(),
+                        unavailable: Some(format!("{target}: looking for this host...")),
+                        route: None,
+                    });
+                    targets.push(target.clone());
+                    host_index = targets.len() - 1;
+                    waiting_for = Some(target.clone());
+                }
+                Requested::Refused(message) => {
                     error!(error = %message, "resolve the requested host");
-                    eprintln!("{message}");
-                    std::process::exit(2);
-                });
-            let targets = host_targets(&remote_hosts);
-            window.set_host_names(ModelRc::new(VecModel::from(
-                std::iter::once(SharedString::from("Local"))
-                    .chain(
-                        remote_hosts
-                            .iter()
-                            .map(|host| SharedString::from(host.label.as_str())),
-                    )
-                    .collect::<Vec<_>>(),
-            )));
-            window.set_host_disabled(ModelRc::new(VecModel::from(
-                std::iter::once(false)
-                    .chain(remote_hosts.iter().map(|host| host.unavailable.is_some()))
-                    .collect::<Vec<_>>(),
-            )));
-            window.set_host_notes(
-                remote_hosts
-                    .iter()
-                    .filter_map(|host| host.unavailable.as_deref())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .into(),
-            );
+                    host_failure = Some(message.clone());
+                }
+            }
+            let gate = Arc::new(if discovered {
+                DiscoveryGate::open()
+            } else {
+                DiscoveryGate::default()
+            });
+            show_hosts(&window, &shown_hosts);
+            window.set_hosts_loading(!discovered);
             window.set_host_index(i32::try_from(host_index).unwrap_or(0));
+            if discovered {
+                info!(
+                    elapsed_ms = elapsed_ms(started),
+                    hosts = remote_hosts.len(),
+                    "hosts listed"
+                );
+            }
             let templates = Templates::new(
                 targets.clone(),
+                gate.clone(),
                 targets[host_index].clone(),
                 config.daemon.clone(),
                 choices.clone(),
                 args.project.clone(),
+                started,
             );
+            *lock(&templates.host_failure) = host_failure;
             window.set_attach_after_create(config.new_session.attach_after_create);
             let config_path = Config::path().map_err(|err| err.to_string());
-            load_in_background(
-                window.as_weak(),
-                templates.clone(),
-                templates.host_generation.advance(),
-                args.project,
-                None,
-            );
+            let load_token = templates.host_generation.advance();
+            if waiting_for.is_none() {
+                load_in_background(
+                    started,
+                    window.as_weak(),
+                    templates.clone(),
+                    load_token,
+                    args.project.clone(),
+                    None,
+                );
+            }
+            if !discovered {
+                discover_in_background(
+                    started,
+                    window.as_weak(),
+                    templates.clone(),
+                    config.hosts.clone(),
+                    args.host.clone().filter(|_| waiting_for.is_some()),
+                    load_token,
+                    args.project.clone(),
+                );
+            }
             let on_host = templates.clone();
             let weak = window.as_weak();
             window.on_host_changed(move |index| {
@@ -768,5 +1044,9 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
             error!(error = %err, "hide the new-session window");
         }
     });
+    info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "window shown"
+    );
     window.run()
 }
