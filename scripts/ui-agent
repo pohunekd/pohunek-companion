@@ -27,6 +27,16 @@
 # XDG_RUNTIME_DIR, state, config, data, and cache directories under one
 # temporary directory, registers synthetic git projects, creates the synthetic
 # sessions, and `stop` stops the daemon and deletes that directory.
+# The synthetic shells run /bin/sh (the daemon passes only an allowlisted
+# environment, so SHELL is the lever), so they never source the owner's
+# shell profile (whose plugins can spawn background helpers such as `op daemon`).
+# Processes are stopped by containment, not by environment: on Linux with
+# systemd the isolated daemon runs in a transient `systemd-run --user --scope`
+# unit and `stop` stops that unit, which also reaches detached, non-dumpable
+# helpers whose /proc/<pid>/environ cannot be read. Without systemd (macOS) the
+# daemon runs in its own process group, which `stop` signals via the pid file.
+# In every case `stop` then reads `$iso/run/op-daemon.pid` and terminates that
+# `op daemon` if it still runs, and finally removes the directory.
 # `--sessions N` adds N generated sessions to the four fixed ones.
 # `--owner-daemon` connects to the owner's real daemon instead; its output must never be published (see
 # .agents/instructions/verification.md).
@@ -71,6 +81,7 @@ pidfile=$state/pid
 endpoint_file=$state/endpoint
 iso_file=$state/isolated-dir
 daemon_pidfile=$state/daemon-pid
+daemon_scopefile=$state/daemon-scope
 iso_prefix=ph-ui-agent
 session_parallelism=${UI_AGENT_PARALLELISM:-8}
 cli=${POHUNEK_CLI:-pohunek}
@@ -274,6 +285,55 @@ isolated_env() {
     echo "XDG_CONFIG_HOME=$iso/config"
     echo "XDG_DATA_HOME=$iso/data"
     echo "XDG_CACHE_HOME=$iso/cache"
+    echo "SHELL=/bin/sh"
+}
+
+# True when transient user scopes are usable (Linux with a systemd user manager).
+have_user_scope() {
+    command -v systemd-run >/dev/null 2>&1 || return 1
+    case $(systemctl --user is-system-running 2>/dev/null) in
+        running | degraded) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Terminates the `op daemon` recorded in the isolated runtime dir, if it is
+# still that process. Its environment is unreadable, so the pid file is the
+# only handle.
+kill_op_daemon() {
+    local pid_file=$1/run/op-daemon.pid pid i
+    [ -f "$pid_file" ] || return 0
+    pid=$(cat "$pid_file" 2>/dev/null) || return 0
+    case $pid in '' | *[!0-9]*) return 0 ;; esac
+    case $(ps -o command= -p "$pid" 2>/dev/null) in
+        *"op daemon"*) ;;
+        *) return 0 ;;
+    esac
+    kill -TERM "$pid" 2>/dev/null || true
+    for i in $(seq 1 30); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+}
+
+# Stops the scope and the process group the isolated daemon was started in.
+kill_contained() {
+    local unit pgid
+    if [ -f "$daemon_scopefile" ]; then
+        unit=$(cat "$daemon_scopefile")
+        case $unit in
+            ph-ui-agent-[A-Za-z0-9]*.scope) systemctl --user stop "$unit" >/dev/null 2>&1 || true ;;
+        esac
+    fi
+    if [ -f "$daemon_pidfile" ]; then
+        pgid=$(cat "$daemon_pidfile")
+        case $pgid in '' | *[!0-9]*) return 0 ;; esac
+        # setsid makes the recorded pid its own group leader.
+        case $(ps -o command= -p "$pgid" 2>/dev/null) in
+            *"daemon start --dev-subprocess"*) kill -TERM -- "-$pgid" 2>/dev/null || true ;;
+        esac
+    fi
 }
 
 # Removes the isolated directory, but only a directory this script created.
@@ -323,9 +383,17 @@ start_isolated_daemon() {
         { stop >/dev/null 2>&1 || true; die "cannot prepare the isolated directory"; }
     local -a envs
     mapfile -t envs < <(isolated_env "$iso")
+    local -a scope=()
+    if have_user_scope; then
+        local unit=ph-ui-agent-${iso##*.}.scope
+        echo "$unit" >"$daemon_scopefile"
+        scope=(systemd-run --user --scope --quiet --collect "--unit=$unit")
+    fi
     (
         cd "$iso/work"
-        exec env "${envs[@]}" "PATH=$iso/bin:$PATH" setsid "$cli" daemon start --dev-subprocess \
+        # systemd-run must see the caller's XDG_RUNTIME_DIR to reach the user
+        # manager, so the isolated environment is applied inside the scope.
+        exec setsid "${scope[@]}" env "${envs[@]}" "PATH=$iso/bin:$PATH" "$cli" daemon start --dev-subprocess \
             >"$iso/daemon.log" 2>&1 </dev/null
     ) &
     echo $! >"$daemon_pidfile"
@@ -398,7 +466,7 @@ stop_isolated_daemon() {
     esac
     if [ -z "$iso" ] || [ ! -d "$iso" ]; then
         echo "ui-agent: ignoring an invalid isolated directory record" >&2
-        rm -f "$iso_file" "$daemon_pidfile"
+        rm -f "$iso_file" "$daemon_pidfile" "$daemon_scopefile"
         return 0
     fi
     local -a envs
@@ -416,7 +484,9 @@ stop_isolated_daemon() {
         kill_isolated "$iso" KILL
         sleep 0.5
     fi
-    rm -f "$daemon_pidfile"
+    kill_contained
+    kill_op_daemon "$iso"
+    rm -f "$daemon_pidfile" "$daemon_scopefile"
     remove_iso_dir
 }
 
