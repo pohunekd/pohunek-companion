@@ -3,9 +3,10 @@
 ## Boundaries
 
 - The companion is an external client of the Pohunek daemon. It talks to it
-  only through the `pohunek-client` crate, pinned to a Pohunek git tag, and the
-  public protocol in Pohunek's `docs/public-api.md`. Other Pohunek crates are
-  not a stable API: do not depend on them.
+  only through the `pohunek-client` crate and the `pohunek-assistant` launch
+  crate, both pinned to the same Pohunek git tag, and the public protocol in
+  Pohunek's `docs/public-api.md`. Other Pohunek crates are not a stable API: do
+  not depend on them.
 - The daemon owns session, herd, and notification state. The companion only
   reads it and calls public methods; it never infers or caches authority.
 - The owner's layout (groups, order) is client-side state in the companion's

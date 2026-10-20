@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use pohunek_assistant::runtime_is_assistant_capable;
 use pohunek_client::protocol::method::{HostInspect, ProjectAction, ProjectActions, ProjectList};
 use pohunek_client::protocol::{
     ActionSummary, AgentRuntime, ProjectActionParams, ProjectActionResult, ProjectActionsParams,
@@ -54,6 +55,9 @@ pub struct Choices {
     pub git_available: bool,
     /// The daemon's host supports a worktree per session.
     pub worktree_supported: bool,
+    /// Agents that can host an assistant session, in the daemon's order:
+    /// launchable and not shell-backed.
+    pub assistant_agents: Vec<String>,
 }
 
 impl Choices {
@@ -216,7 +220,7 @@ fn agent_choices(runtimes: &[AgentRuntime]) -> Vec<AgentChoice> {
     launchable.into_iter().chain(blocked).collect()
 }
 
-fn trimmed_or_none(text: &str) -> Option<String> {
+pub(crate) fn trimmed_or_none(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_owned())
 }
@@ -346,6 +350,12 @@ async fn read_choices(
         agents: agent_choices(&capabilities.runtimes),
         git_available: capabilities.git_available,
         worktree_supported: capabilities.worktree_supported,
+        assistant_agents: capabilities
+            .runtimes
+            .iter()
+            .filter(|runtime| runtime_is_assistant_capable(runtime))
+            .map(|runtime| runtime.agent.clone())
+            .collect(),
     })
 }
 
@@ -466,7 +476,7 @@ pub async fn create_session(
 
 /// Splits a failed `session.new` into a daemon refusal, a failure proven to
 /// precede the request, and an unknown outcome.
-fn classify(err: ClientError) -> CreateError {
+pub(crate) fn classify(err: ClientError) -> CreateError {
     match err {
         ClientError::Protocol(err) => CreateError::Refused {
             code: err.code,
@@ -519,6 +529,7 @@ mod tests {
             ],
             git_available: true,
             worktree_supported: true,
+            assistant_agents: Vec::new(),
         }
     }
 

@@ -317,7 +317,8 @@ mod tests {
             exec_lines(&entry),
             [
                 "Exec=/home/o/bin/pohunek-companion",
-                "Exec=/home/o/bin/pohunek-companion new-session"
+                "Exec=/home/o/bin/pohunek-companion new-session",
+                "Exec=/home/o/bin/pohunek-companion assistant"
             ]
         );
     }
@@ -343,8 +344,9 @@ mod tests {
             "Terminal=false",
             "Categories=Development;",
             "StartupWMClass=pohunek-companion",
-            "Actions=new-session;",
+            "Actions=new-session;assistant;",
             "[Desktop Action new-session]",
+            "[Desktop Action assistant]",
         ] {
             assert!(entry.lines().any(|l| l == key), "missing {key}");
         }

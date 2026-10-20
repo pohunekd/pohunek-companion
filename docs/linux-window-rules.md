@@ -64,6 +64,14 @@ The sidebar's "+ New session" control and the tray's "New session..." entry
 start the same command as a separate process, so the dialog stays open if the
 sidebar is closed.
 
+The assistant dialog (`pohunek-companion assistant`) has the `app_id`
+`pohunek-companion-assistant`; float it the same way and bind it to a key:
+
+```
+for_window [app_id="^pohunek-companion-assistant$"] floating enable, resize set width 480 px height 560 px, move position center
+bindsym $mod+Shift+a exec pohunek-companion assistant
+```
+
 On macOS the dialog is a regular (not accessory) app process; winit activates
 it on launch, which brings it to the front with keyboard focus.
 

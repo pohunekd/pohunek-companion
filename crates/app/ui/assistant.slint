@@ -1,0 +1,234 @@
+import { CheckBox, Palette } from "std-widgets.slint";
+import { Theme } from "app.slint";
+import { ChipField, DialogTheme, FieldLabel, MultiLineField, SearchSelect } from "dialog_fields.slint";
+
+export component AssistantWindow inherits Window {
+    title: "Pohunek assistant";
+    icon: @image-url("../../../assets/icons/pohunek-app-256.png");
+    preferred-width: 480px;
+    preferred-height: 560px;
+    background: Theme.background;
+    forward-focus: request-edit;
+
+    // The window background is dark; the stock checkbox label follows it.
+    init => { Palette.color-scheme = ColorScheme.dark; }
+
+    // Host labels, Local first.
+    in property <[string]> host-names;
+    in-out property <int> host-index: 0;
+    // Hosts that are listed but cannot be picked, and why.
+    in property <[bool]> host-disabled;
+    in property <string> host-notes;
+    // "No project" followed by the host's projects; index 0 is no project.
+    in property <[string]> project-names;
+    in-out property <int> project-index: 0;
+    in property <[string]> intent-names;
+    in-out property <int> intent-index: 0;
+    // "Automatic" followed by the host's assistant-capable agents; index 0 is
+    // automatic.
+    in property <[string]> agent-names;
+    in-out property <int> agent-index: 0;
+    in-out property <string> request;
+    // Why Start is disabled; empty when it is allowed.
+    in property <string> blocker;
+    // The choices are still being read from the daemon.
+    in property <bool> loading: true;
+    // The projects are listed already; only the agents are still being read.
+    in property <bool> projects-ready;
+    // Other hosts are still being looked up; Local works meanwhile.
+    in property <bool> hosts-loading;
+    // A launch is in flight, or its outcome is unknown and it must not be
+    // repeated.
+    in property <bool> busy;
+    // Why the choices or the launch failed (first line of the message), and the
+    // recovery hint that follows it; empty when there is nothing to show.
+    in property <string> error;
+    in property <string> error-hint;
+    // The session exists but could not be attached; Start is not offered again.
+    in property <bool> created;
+    in-out property <bool> attach-after-create: true;
+    callback host-changed(int);
+    callback project-changed(int);
+    callback intent-changed(int);
+    callback agent-changed(int);
+    callback submit();
+    callback cancel();
+
+    pure function can-submit() -> bool {
+        !root.loading && !root.busy && !root.created && root.blocker == ""
+    }
+
+    function try-submit() {
+        if root.can-submit() {
+            root.submit();
+        }
+    }
+
+    FocusScope {
+        // Only routes keys; Tab skips it.
+        focus-on-tab-navigation: false;
+        // Captured before the focused field sees the key: `TextEdit` consumes
+        // Enter itself, and a select consumes it to pick.
+        capture-key-pressed(event) => {
+            if host-field.focused && host-field.handle-key(event.text, event.modifiers.control) {
+                return accept;
+            }
+            if project-field.focused && project-field.handle-key(event.text, event.modifiers.control) {
+                return accept;
+            }
+            if agent-field.focused && agent-field.handle-key(event.text, event.modifiers.control) {
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            // Enter starts everywhere except in the request, where it types a
+            // newline and Ctrl+Enter starts.
+            if event.text == Key.Return && (event.modifiers.control || !request-edit.focused) {
+                root.try-submit();
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            padding: DialogTheme.padding;
+            spacing: DialogTheme.spacing;
+
+            VerticalLayout {
+                // Above the fields below, which the open list overlaps.
+                z: host-field.list-open ? 3 : 0;
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Host"; }
+                host-field := SearchSelect {
+                    z: self.list-open ? 1 : 0;
+                    model: root.host-names;
+                    disabled: root.host-disabled;
+                    selected-index <=> root.host-index;
+                    selected(index) => { root.host-changed(index); }
+                }
+                if root.hosts-loading: Text {
+                    text: "Looking for other hosts...";
+                    color: Theme.detail;
+                    font-size: Theme.detail-font-size;
+                }
+                if root.host-notes != "": host-notes-text := Text {
+                    text: root.host-notes;
+                    color: Theme.detail;
+                    font-size: Theme.detail-font-size;
+                    wrap: word-wrap;
+                }
+            }
+            VerticalLayout {
+                z: project-field.list-open ? 2 : 0;
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Project (required on a remote host)"; }
+                project-field := SearchSelect {
+                    z: self.list-open ? 1 : 0;
+                    loading: root.loading && !root.projects-ready;
+                    model: root.project-names;
+                    selected-index <=> root.project-index;
+                    selected(index) => { root.project-changed(index); }
+                }
+            }
+            VerticalLayout {
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Intent"; }
+                intent-field := ChipField {
+                    model: root.intent-names;
+                    selected-index <=> root.intent-index;
+                    selected(index) => { root.intent-changed(index); }
+                }
+            }
+            VerticalLayout {
+                z: agent-field.list-open ? 2 : 0;
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Agent"; }
+                agent-field := SearchSelect {
+                    z: self.list-open ? 1 : 0;
+                    loading: root.loading;
+                    model: root.agent-names;
+                    selected-index <=> root.agent-index;
+                    selected(index) => { root.agent-changed(index); }
+                }
+            }
+            VerticalLayout {
+                vertical-stretch: 1;
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Request (optional, Ctrl+Enter starts)"; }
+                request-edit := MultiLineField {
+                    text <=> root.request;
+                }
+            }
+            attach-checkbox := CheckBox {
+                text: "Attach after starting";
+                checked <=> root.attach-after-create;
+                enabled: !root.busy && !root.created;
+            }
+            if root.error != "": error-text := Text {
+                text: root.error;
+                color: Theme.error;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
+            if root.error-hint != "": error-hint-text := Text {
+                text: root.error-hint;
+                color: Theme.detail;
+                font-size: Theme.detail-font-size;
+                wrap: word-wrap;
+            }
+            if root.blocker != "": blocker-text := Text {
+                text: root.blocker;
+                color: Theme.detail;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: DialogTheme.spacing;
+                cancel-button := Rectangle {
+                    width: DialogTheme.button-width;
+                    height: DialogTheme.button-height;
+                    border-radius: DialogTheme.button-radius;
+                    background: cancel-touch.has-hover ? Theme.chip-hover-background : Theme.chip-background;
+                    Text {
+                        text: root.created ? "Close" : "Cancel";
+                        color: Theme.text;
+                    }
+                    cancel-touch := TouchArea {
+                        clicked => { root.cancel(); }
+                    }
+                }
+                start-button := FocusScope {
+                    width: DialogTheme.button-width;
+                    height: DialogTheme.button-height;
+                    key-pressed(event) => {
+                        if event.text == " " {
+                            root.try-submit();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                    Rectangle {
+                        border-radius: DialogTheme.button-radius;
+                        // The ring is light: the button itself is the focus colour.
+                        border-width: start-button.has-focus ? 2 * DialogTheme.focus-border-width : 0px;
+                        border-color: Theme.text;
+                        background: !root.can-submit() ? DialogTheme.button-disabled
+                            : start-touch.has-hover ? Theme.chip-selected-background.brighter(0.2)
+                            : Theme.chip-selected-background;
+                        Text {
+                            text: root.busy ? "Starting..." : "Start";
+                            color: root.can-submit() ? Theme.text : Theme.detail;
+                        }
+                        start-touch := TouchArea {
+                            enabled: root.can-submit();
+                            clicked => { root.try-submit(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
