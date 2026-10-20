@@ -53,9 +53,9 @@ cp -r share/. "${XDG_DATA_HOME:-$HOME/.local/share}/"
 (`~/.local/share` when `XDG_DATA_HOME` is unset) and the icons under
 `$XDG_DATA_HOME/icons/hicolor/`. Its `Exec` is the absolute path of the binary
 that ran it, so run it from the final location; run it again after moving the
-binary. It refreshes the desktop and icon caches with `update-desktop-database`
-and `gtk-update-icon-cache` when they are installed. The entry has a
-`New session` action (`pohunek-companion new-session`). The manual route needs
+binary. It refreshes the desktop database with `update-desktop-database` when
+it is installed, and the icon cache with `gtk-update-icon-cache` only where the
+hicolor directory has an `index.theme`. The entry has a `New session` action (`pohunek-companion new-session`). The manual route needs
 `~/.local/bin` on `PATH`, because the archive's entry runs `pohunek-companion`
 by name. The subcommand is Linux-only; macOS uses the app bundle.
 

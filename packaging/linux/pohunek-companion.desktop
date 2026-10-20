@@ -6,7 +6,7 @@ Comment=Sidebar of Pohunek sessions and their live state
 Exec=pohunek-companion
 Icon=pohunek-companion
 Terminal=false
-Categories=Development;Utility;
+Categories=Development;
 StartupWMClass=pohunek-companion
 Actions=new-session;
 
