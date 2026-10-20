@@ -7,7 +7,7 @@ use pohunek_client::protocol::{
     SessionListParams,
 };
 use pohunek_client::{
-    Client, ClientError, ClientOptions, LOCAL_HOST, OriginSource, Subscription, is_local_host,
+    Client, ClientError, ClientOptions, OriginSource, Subscription, is_local_host,
     names_this_machine,
 };
 use tracing::{error, info};
@@ -52,14 +52,10 @@ pub(crate) fn socket_for_host(host: &str) -> Result<PathBuf, CoreError> {
     }
 }
 
-/// The origin is omitted so a companion started inside a Pohunek session does
-/// not tag its requests with that session's identity.
-pub(crate) async fn connect(socket: &Path, config: &DaemonConfig) -> Result<Client, CoreError> {
-    connect_host(LOCAL_HOST, socket, config).await
-}
-
 /// Connects to the local daemon (`host` is `local`) or to the remote host
-/// route `host`; `socket` is only used for the local daemon.
+/// route `host`; `socket` is only used for the local daemon. The origin is
+/// omitted so a companion started inside a Pohunek session does not tag its
+/// requests with that session's identity.
 pub(crate) async fn connect_host(
     host: &str,
     socket: &Path,
