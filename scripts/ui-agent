@@ -114,8 +114,8 @@ synthetic_projects=(proj-alpha proj-beta proj-gamma)
 # Synthetic sessions of the isolated daemon: name, project (empty for none),
 # then optional Work metadata, separated by `|`.
 synthetic_sessions=(
-    "alpha-agent|proj-alpha|work.link.provider=github work.link.kind=pr work.link.id=12 work.role=implementer"
-    "beta-review|proj-beta|work.link.provider=github work.link.kind=issue work.link.id=34 work.role=reviewer"
+    "alpha-agent|proj-alpha|work.link.provider=github work.link.kind=pr work.link.id=12 work.link.url=https://example.invalid/proj-alpha/pull/12 work.role=implementer"
+    "beta-review|proj-beta|work.link.provider=github work.link.kind=issue work.link.id=34 work.link.url=file:///etc/hostname work.role=reviewer"
     "gamma-docs|proj-gamma|"
     "delta-build||"
 )

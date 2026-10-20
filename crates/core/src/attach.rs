@@ -204,11 +204,14 @@ pub struct AttachConfig {
 /// Resolves a program word: an absolute path as is, a bare name in the search
 /// path (see `attach_path`); the result is an absolute path to an executable
 /// file.
-fn resolve_program(program: &str, config: &AttachConfig) -> Result<PathBuf, AttachError> {
+pub(crate) fn resolve_program(
+    program: &str,
+    login_shell_timeout: Duration,
+) -> Result<PathBuf, AttachError> {
     if Path::new(program).is_absolute() || program.contains('/') {
         return resolve_program_in(program, &[]);
     }
-    resolve_program_in(program, &search_path(config.login_shell_timeout))
+    resolve_program_in(program, &search_path(login_shell_timeout))
 }
 
 fn resolve_program_in(program: &str, search: &[PathBuf]) -> Result<PathBuf, AttachError> {
@@ -287,14 +290,14 @@ fn launch(
             config: config_path.to_owned(),
         })?;
     let bin = if template.uses_bin() {
-        resolve_program(&config.pohunek_bin, config)?
+        resolve_program(&config.pohunek_bin, config.login_shell_timeout)?
             .to_string_lossy()
             .into_owned()
     } else {
         String::new()
     };
     let argv = template.render(&bin, &key.host, &key.session_id);
-    let program = resolve_program(&argv[0], config)?;
+    let program = resolve_program(&argv[0], config.login_shell_timeout)?;
     let child = spawn_detached(&program, &argv[1..])?;
     observe(child, &program, config.observe)?;
     Ok(program)
@@ -309,7 +312,7 @@ fn launch_terminal(
     if !cfg!(target_os = "macos") {
         return Err(AttachError::TerminalUnsupported);
     }
-    let bin = resolve_program(&config.pohunek_bin, config)?;
+    let bin = resolve_program(&config.pohunek_bin, config.login_shell_timeout)?;
     let home = std::env::var_os(HOME_ENV)
         .map(PathBuf::from)
         .filter(|home| home.is_absolute())
@@ -332,7 +335,7 @@ fn launch_terminal(
     Ok(open)
 }
 
-fn spawn_detached<S: AsRef<std::ffi::OsStr>>(
+pub(crate) fn spawn_detached<S: AsRef<std::ffi::OsStr>>(
     program: &Path,
     args: &[S],
 ) -> Result<Child, AttachError> {
@@ -351,7 +354,11 @@ fn spawn_detached<S: AsRef<std::ffi::OsStr>>(
 
 /// Waits up to `window` for an early exit. A child that outlives the window
 /// is reaped by a background thread once it exits.
-fn observe(mut child: Child, program: &Path, window: Duration) -> Result<(), AttachError> {
+pub(crate) fn observe(
+    mut child: Child,
+    program: &Path,
+    window: Duration,
+) -> Result<(), AttachError> {
     let deadline = Instant::now() + window;
     loop {
         match child.try_wait() {

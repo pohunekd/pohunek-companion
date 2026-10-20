@@ -15,6 +15,7 @@ mod live;
 mod model;
 mod needs_you;
 mod new_session;
+mod open;
 mod owner_state;
 mod pending_placement;
 mod rename;
@@ -48,6 +49,9 @@ pub use new_session::{
     Activity, AgentChoice, Choices, CreateError, FormError, Generation, NewSessionForm,
     ProjectChoice, Recipe, TemplateError, UNCONFIRMED_MESSAGE, build_params, create_session,
     load_choices, load_recipe, load_templates, recipe_from_action, submit_blocker, template_names,
+};
+pub use open::{
+    OpenConfig, OpenKind, OpenTargets, OpenTemplate, default_open_template, is_openable_url, open,
 };
 pub use owner_state::{OwnerState, derive};
 pub use pending_placement::{Pending, PendingEntry, PendingError, PendingStore, Settled};
