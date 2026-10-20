@@ -6,7 +6,7 @@ use pohunek_client::protocol::method::{
 use tracing::error;
 
 use crate::config::DaemonConfig;
-use crate::connect::{connect_for_session_action, resolve_socket};
+use crate::connect::{connect_for_session_action, socket_for_host};
 
 /// A daemon mutation that ends or deletes a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,14 +82,16 @@ pub struct LifecycleOutcome {
 }
 
 /// Sends one `session.stop`, `session.remove` or
-/// `session.remove_accepting_unconfirmed` for `session_id`.
+/// `session.remove_accepting_unconfirmed` for `session_id` to the daemon of
+/// `host` (the local host or a remote host route).
 pub async fn run_lifecycle_action(
     daemon: &DaemonConfig,
+    host: &str,
     session_id: &str,
     action: LifecycleAction,
 ) -> Result<LifecycleOutcome, LifecycleError> {
-    let socket = resolve_socket().map_err(|err| LifecycleError::Failed(err.to_string()))?;
-    let mut client = connect_for_session_action(&socket, daemon)
+    let socket = socket_for_host(host).map_err(|err| LifecycleError::Failed(err.to_string()))?;
+    let mut client = connect_for_session_action(host, &socket, daemon)
         .await
         .map_err(|err| LifecycleError::Failed(err.to_string()))?;
     let id = SessionId(session_id.to_owned());

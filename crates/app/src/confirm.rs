@@ -3,13 +3,11 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use pohunek_companion_core::{
-    DaemonConfig, LOCAL_HOST, LifecycleAction, SessionKey, run_lifecycle_action,
-};
+use pohunek_companion_core::{DaemonConfig, LifecycleAction, SessionKey, run_lifecycle_action};
 use slint::ComponentHandle;
 use tracing::{error, info, warn};
 
-use crate::{AppWindow, SharedLayout, lock};
+use crate::{AppWindow, SharedLayout, lock, remote_host_name};
 
 /// Modal wording for one action.
 struct Wording {
@@ -41,7 +39,10 @@ fn wording(action: LifecycleAction) -> Wording {
 /// Sentence added to the consequence for a session with a runtime problem.
 const RUNTIME_PROBLEM_NOTE: &str = " The session's runtime is in a conflicting or incompatible state, so the daemon may refuse; its message is shown here.";
 
-fn show_wording(window: &AppWindow, action: LifecycleAction, runtime_problem: bool) {
+/// Where a remote removal deletes the worktree checkout.
+const REMOTE_WORKTREE_NOTE: &str = " The worktree checkout is deleted on that host.";
+
+fn show_wording(window: &AppWindow, action: LifecycleAction, runtime_problem: bool, remote: bool) {
     let wording = wording(action);
     window.set_confirm_heading(wording.heading.into());
     window.set_confirm_label(wording.confirm_label.into());
@@ -50,7 +51,12 @@ fn show_wording(window: &AppWindow, action: LifecycleAction, runtime_problem: bo
     } else {
         ""
     };
-    window.set_confirm_consequence(format!("{}{note}", wording.consequence).into());
+    let location = if remote && action != LifecycleAction::Stop {
+        REMOTE_WORKTREE_NOTE
+    } else {
+        ""
+    };
+    window.set_confirm_consequence(format!("{}{location}{note}", wording.consequence).into());
     window.set_confirm_selected(false);
 }
 
@@ -67,6 +73,7 @@ struct ActionReport {
 fn lifecycle_report(
     daemon: &Result<DaemonConfig, String>,
     host: &str,
+    host_name: Option<&str>,
     session_id: &str,
     action: LifecycleAction,
 ) -> ActionReport {
@@ -74,12 +81,7 @@ fn lifecycle_report(
         error,
         ..Default::default()
     };
-    if host != LOCAL_HOST {
-        return failure(format!(
-            "Cannot {}: only the local daemon is supported",
-            action_label(action, session_id)
-        ));
-    }
+    let label = action_label(action, session_id, host_name);
     let daemon = match daemon {
         Ok(daemon) => daemon,
         Err(message) => return failure(message.clone()),
@@ -91,9 +93,9 @@ fn lifecycle_report(
         Ok(runtime) => runtime,
         Err(err) => return failure(format!("cannot start the background runtime: {err}")),
     };
-    match runtime.block_on(run_lifecycle_action(daemon, session_id, action)) {
+    match runtime.block_on(run_lifecycle_action(daemon, host, session_id, action)) {
         Err(err) => ActionReport {
-            error: format!("Cannot {}: {err}", action_label(action, session_id)),
+            error: format!("Cannot {label}: {err}"),
             offer_unconfirmed: action == LifecycleAction::Remove && err.is_unconfirmed(),
             ..Default::default()
         },
@@ -115,7 +117,11 @@ fn lifecycle_report(
                 ActionReport::default()
             } else {
                 ActionReport {
-                    notice: format!("Removed {session_id}, but {}", parts.join("; ")),
+                    notice: format!(
+                        "Removed {}, but {}",
+                        subject(session_id, host_name),
+                        parts.join("; ")
+                    ),
                     ..Default::default()
                 }
             }
@@ -123,18 +129,31 @@ fn lifecycle_report(
     }
 }
 
-fn action_label(action: LifecycleAction, session_id: &str) -> String {
+/// The session id, followed by its host for a remote session.
+fn subject(session_id: &str, host_name: Option<&str>) -> String {
+    match host_name {
+        Some(name) => format!("{session_id} on {name}"),
+        None => session_id.to_owned(),
+    }
+}
+
+fn action_label(action: LifecycleAction, session_id: &str, host_name: Option<&str>) -> String {
     let verb = match action {
         LifecycleAction::Stop => "stop",
         LifecycleAction::Remove | LifecycleAction::RemoveAcceptingUnconfirmed => "remove",
     };
-    format!("{verb} {session_id}")
+    format!("{verb} {}", subject(session_id, host_name))
 }
 
-fn show_report(window: &AppWindow, report: ActionReport) {
+fn show_report(window: &AppWindow, report: ActionReport, remote: bool) {
     window.set_confirm_busy(false);
     if report.offer_unconfirmed {
-        show_wording(window, LifecycleAction::RemoveAcceptingUnconfirmed, false);
+        show_wording(
+            window,
+            LifecycleAction::RemoveAcceptingUnconfirmed,
+            false,
+            remote,
+        );
         window.set_confirm_error(report.error.into());
     } else if !report.error.is_empty() {
         window.set_confirm_selected(false);
@@ -149,6 +168,8 @@ fn show_report(window: &AppWindow, report: ActionReport) {
 /// The session the open modal acts on and the call its confirmation sends.
 struct Pending {
     host: String,
+    /// The host's display name for a remote session.
+    host_name: Option<String>,
     session_id: String,
     /// Becomes `RemoveAcceptingUnconfirmed` only after the daemon refused a
     /// safe removal and the owner saw the risk.
@@ -184,16 +205,18 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
             .rows
             .iter()
             .any(|row| row.key == key && !row.runtime_detail.is_empty());
+        let host_name = remote_host_name(&layout, &key);
         info!(host = %host, session = %id, action = action.verb(), "confirmation requested from the sidebar");
         *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(Pending {
             host: host.into(),
+            host_name: host_name.clone(),
             session_id: id.into(),
             action,
         });
-        window.set_confirm_name(name);
+        window.set_confirm_name(subject(name.as_str(), host_name.as_deref()).into());
         window.set_confirm_error("".into());
         window.set_confirm_notice("".into());
-        show_wording(&window, action, runtime_problem);
+        show_wording(&window, action, runtime_problem, host_name.is_some());
         window.set_confirm_open(true);
     });
 
@@ -204,11 +227,16 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
         if window.get_confirm_busy() {
             return;
         }
-        let Some((host, session_id, action)) = slot
+        let Some((host, host_name, session_id, action)) = slot
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(|p| (p.host.clone(), p.session_id.clone(), p.action))
+            .map(|p| (
+                p.host.clone(),
+                p.host_name.clone(),
+                p.session_id.clone(),
+                p.action,
+            ))
         else {
             return;
         };
@@ -219,7 +247,7 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
         let slot = slot.clone();
         let daemon = daemon.clone();
         std::thread::spawn(move || {
-            let report = lifecycle_report(&daemon, &host, &session_id, action);
+            let report = lifecycle_report(&daemon, &host, host_name.as_deref(), &session_id, action);
             if !report.error.is_empty() {
                 warn!(session = %session_id, action = action.verb(), error = %report.error, "session action failed");
             }
@@ -228,7 +256,7 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
             {
                 pending.action = LifecycleAction::RemoveAcceptingUnconfirmed;
             }
-            let applied = weak.upgrade_in_event_loop(move |window| show_report(&window, report));
+            let applied = weak.upgrade_in_event_loop(move |window| show_report(&window, report, host_name.is_some()));
             if let Err(err) = applied {
                 error!(error = %err, "deliver session action outcome to the UI");
             }
