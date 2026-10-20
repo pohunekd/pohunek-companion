@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::attach::{AttachConfig, AttachTemplate};
 use crate::attach_macos::AttachTerminal;
+use crate::open::{OpenConfig, OpenTemplate, default_open_template};
 
 const CONFIG_HOME_ENV: &str = "XDG_CONFIG_HOME";
 const HOME_ENV: &str = "HOME";
@@ -92,6 +93,15 @@ pub struct Config {
     /// the login shell's `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin`,
     /// `~/.local/bin`). Optional; default `pohunek`. Example: `pohunek_bin = "/opt/pohunek/bin/pohunek"`.
     pub pohunek_bin: String,
+    /// `open_command`: argv template that opens a session's folder or Work
+    /// link, as an array of words (no shell is involved). The only
+    /// placeholder is `{target}` (the folder path or the `http(s)` URL), which
+    /// must appear at least once and is replaced in each word in one pass.
+    /// The first word is the program: an absolute path, or a bare name
+    /// resolved on `PATH`. Optional; default `["xdg-open", "{target}"]` on
+    /// Linux and `["open", "{target}"]` on macOS. Example:
+    /// `open_command = ["firefox", "--new-tab", "{target}"]`.
+    pub open_command: Option<OpenTemplate>,
     /// `attach_observe_ms`: how long a freshly started attach program is
     /// watched for an early failed exit, in milliseconds, greater than zero.
     /// Optional; default 1000. Example: `attach_observe_ms = 2000`.
@@ -117,6 +127,7 @@ impl Default for Config {
             attach_command: None,
             attach_terminal: None,
             pohunek_bin: "pohunek".to_owned(),
+            open_command: None,
             attach_observe_ms: 1000,
             login_shell_timeout_ms: 2000,
             attach_script_max_age_s: 3600,
@@ -385,6 +396,19 @@ impl Config {
             observe: Duration::from_millis(self.attach_observe_ms),
             login_shell_timeout: Duration::from_millis(self.login_shell_timeout_ms),
             script_max_age: Duration::from_secs(self.attach_script_max_age_s),
+        }
+    }
+
+    /// The open settings as the launcher consumes them; `attach_observe_ms`
+    /// and `login_shell_timeout_ms` apply to the opener as well.
+    pub fn open(&self) -> OpenConfig {
+        OpenConfig {
+            command: self
+                .open_command
+                .clone()
+                .unwrap_or_else(default_open_template),
+            observe: Duration::from_millis(self.attach_observe_ms),
+            login_shell_timeout: Duration::from_millis(self.login_shell_timeout_ms),
         }
     }
 

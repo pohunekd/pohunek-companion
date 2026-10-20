@@ -1,5 +1,6 @@
 use crate::attach::AttachRefusal;
 use crate::badge::{WorkBadge, WorkFacts, sanitize};
+use crate::open::OpenTargets;
 use crate::owner_state::OwnerState;
 use pohunek_client::LOCAL_HOST;
 use pohunek_client::protocol::SessionInfo;
@@ -45,6 +46,8 @@ pub struct SessionRow {
     pub can_stop: bool,
     /// The daemon accepts `session.remove` for this session.
     pub can_remove: bool,
+    /// Folder and link the row can open.
+    pub open: OpenTargets,
 }
 
 impl SessionRow {
@@ -55,6 +58,7 @@ impl SessionRow {
         known_label: Option<&str>,
     ) -> Self {
         let (can_stop, can_remove) = (info.can_stop(), info.can_remove());
+        let open = OpenTargets::from_info(&info);
         let display_name = info.name.unwrap_or_else(|| info.id.0.clone());
         let project = info.project_id.as_deref().map(|id| {
             let label = [info.project_label.as_deref(), known_label]
@@ -84,6 +88,7 @@ impl SessionRow {
             attach_refusal: AttachRefusal::for_session(info.external, info.state),
             can_stop,
             can_remove,
+            open,
         }
     }
 }

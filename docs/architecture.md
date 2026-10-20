@@ -239,6 +239,27 @@ the timeout has an unknown outcome and may still complete in the daemon. A
 removal that could not delete worktree checkouts is reported with their count.
 Log lines carry the session id and the error code.
 
+## Row action icons
+
+While the pointer is on a row, small monochrome icons appear at its right
+edge, each with a tooltip: Open folder, Open link, Stop and Remove. They are
+shown on hover only (the sidebar has no keyboard-selected row, so the context
+menu is the keyboard route); each also has a context-menu entry. Stop and
+Remove use the confirmation flow above and appear under the same
+`can_stop`/`can_remove` rules.
+
+- **Open folder:** the session's `worktree_path` when it has one, else its
+  `cwd`; offered only when the path is absolute and an existing directory,
+  and checked again when clicked.
+- **Open link:** `work.link.url`, else the legacy `link.url`; offered only for
+  an `http` or `https` URL with a host and no whitespace or control
+  characters. Session metadata is untrusted, so any other value is never
+  offered or opened.
+- **Opener:** `open_command` in `companion.toml`, an argv template whose only
+  placeholder is `{target}` (default `xdg-open` on Linux, `open` on macOS).
+  The target is one argv element; no shell is involved. A failure to start
+  the opener, or an early failed exit, is shown in the window.
+
 ## Window placement
 
 A Wayland client cannot position itself or stay on top. The sidebar position

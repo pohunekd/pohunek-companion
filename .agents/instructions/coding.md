@@ -39,7 +39,8 @@
 - Design tokens (spacing, colours, sizes) are global `.slint` properties, not
   literals scattered across components.
 - Per-session actions live in the session row's right-click context menu
-  (`ContextMenuArea` in `SessionRow`), not in buttons on the row.
+  (`ContextMenuArea` in `SessionRow`). The most used ones (Open folder, Open
+  link, Stop, Remove) are also small monochrome icons that appear on row hover.
 
 ## Configuration
 

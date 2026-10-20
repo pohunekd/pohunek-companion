@@ -13,10 +13,10 @@ mod tray;
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
     INBOX_ID, LOCAL_HOST, LayoutStore, LifecycleAction, LiveUpdate, MoveError, NEEDS_YOU_ID,
-    OwnerState, PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection,
-    SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, attach,
-    clip_display, filter_sections, layout_path, name_from_input, project_chips, rename_session,
-    run_lifecycle_action, run_live, state_chips, state_from_key,
+    OpenConfig, OpenKind, OwnerState, PendingStore, Placement, PlacementRule, ProjectChip,
+    ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View,
+    ViewConfig, attach, clip_display, filter_sections, layout_path, name_from_input, open,
+    project_chips, rename_session, run_lifecycle_action, run_live, state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -69,6 +69,8 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 id: s.key.session_id.into(),
                 can_stop: s.can_stop,
                 can_remove: s.can_remove,
+                open_folder: s.open.existing_folder().is_some(),
+                open_link: s.open.link.is_some(),
                 attach_refusal: s
                     .attach_refusal
                     .map(|reason| reason.to_string())
@@ -655,6 +657,63 @@ fn start_attach(
     });
 }
 
+/// The folder path or link URL to open for `key`, from the session's current
+/// snapshot; an error text when it is no longer offered.
+fn open_target(rows: &[SessionRow], key: &SessionKey, kind: OpenKind) -> Result<String, String> {
+    let row = rows.iter().find(|row| &row.key == key).ok_or_else(|| {
+        format!(
+            "Cannot open {} of {}: the session is gone",
+            kind.label(),
+            key.session_id
+        )
+    })?;
+    let target = match kind {
+        OpenKind::Folder => row
+            .open
+            .existing_folder()
+            .map(|path| path.to_string_lossy().into_owned()),
+        OpenKind::Link => row.open.link.clone(),
+    };
+    target.ok_or_else(|| {
+        format!(
+            "Cannot open {} of {}: {}",
+            kind.label(),
+            key.session_id,
+            match kind {
+                OpenKind::Folder => "the folder does not exist",
+                OpenKind::Link => "the session has no http(s) link",
+            }
+        )
+    })
+}
+
+/// Runs the opener on a background thread (the launcher waits out its
+/// observation window) and shows a failure in the window.
+fn start_open(
+    window: slint::Weak<AppWindow>,
+    settings: Result<OpenConfig, String>,
+    kind: OpenKind,
+    session_id: String,
+    target: Result<String, String>,
+) {
+    std::thread::spawn(move || {
+        let outcome = target.and_then(|target| {
+            let settings = settings?;
+            open(&settings, kind, &target)
+                .map_err(|err| format!("Cannot open {} of {session_id}: {err}", kind.label()))
+        });
+        if let Err(message) = &outcome {
+            warn!(session = %session_id, kind = kind.label(), error = %message, "open failed");
+        }
+        let applied = window.upgrade_in_event_loop(move |window| {
+            window.set_action_error(outcome.err().unwrap_or_default().into());
+        });
+        if let Err(err) = applied {
+            error!(error = %err, "deliver open outcome to the UI");
+        }
+    });
+}
+
 /// Renames on a background thread and shows a failure in the window. The new
 /// name appears through the daemon's session event, not from this outcome.
 fn start_rename(
@@ -900,8 +959,9 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     window.set_editable(view.is_editable());
 
     let config_path = Config::path().map_err(|err| err.to_string());
-    let (attach_context, rename_daemon) = match Config::load() {
+    let (attach_context, rename_daemon, open_settings) = match Config::load() {
         Ok(config) => {
+            let open_settings = Ok(config.open());
             let rename_daemon = Ok(config.daemon.clone());
             {
                 let mut state = lock(&layout);
@@ -928,7 +988,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                 pending,
                 layout.clone(),
             );
-            (context, rename_daemon)
+            (context, rename_daemon, open_settings)
         }
         Err(err) => {
             error!(error = %err, "load companion.toml");
@@ -938,9 +998,27 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                 config_path,
                 settings: Err(err.to_string()),
             };
-            (context, rename_daemon)
+            (context, rename_daemon, Err(err.to_string()))
         }
     };
+    for kind in [OpenKind::Folder, OpenKind::Link] {
+        let weak = window.as_weak();
+        let layout = layout.clone();
+        let settings = open_settings.clone();
+        let handler = move |host: slint::SharedString, id: slint::SharedString| {
+            let key = SessionKey {
+                host: host.into(),
+                session_id: id.into(),
+            };
+            info!(host = %key.host, session = %key.session_id, kind = kind.label(), "open requested from the row");
+            let target = open_target(&lock(&layout).rows, &key, kind);
+            start_open(weak.clone(), settings.clone(), kind, key.session_id, target);
+        };
+        match kind {
+            OpenKind::Folder => window.on_open_folder(handler),
+            OpenKind::Link => window.on_open_link(handler),
+        }
+    }
     for (name, action) in [
         ("stop", LifecycleAction::Stop),
         ("remove", LifecycleAction::Remove),

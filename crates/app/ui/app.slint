@@ -27,6 +27,9 @@ export struct SessionRowData {
     // The daemon accepts session.stop / session.remove for this session.
     can-stop: bool,
     can-remove: bool,
+    // The session's folder exists / its Work link is an http(s) URL.
+    open-folder: bool,
+    open-link: bool,
 }
 
 export struct OwnerGroupData {
@@ -68,6 +71,12 @@ export global Theme {
     out property <length> group-button-width: 22px;
     out property <color> group-button: #8a8f98;
     out property <color> group-button-hover: #e6e6e6;
+    out property <length> action-icon-size: 22px;
+    out property <length> action-icon-glyph: 12px;
+    out property <length> action-icon-stroke: 1.5px;
+    out property <length> action-tip-padding: 4px;
+    out property <color> action-icon: #8a8f98;
+    out property <color> action-icon-hover: #e6e6e6;
     out property <length> group-edit-height: 22px;
     out property <length> new-group-height: 26px;
     out property <length> confirm-spacing: 4px;
@@ -124,6 +133,67 @@ export global Theme {
     }
 }
 
+component ActionIcon inherits Rectangle {
+    // "stop", "remove", "folder" or "link".
+    in property <string> kind;
+    // Tooltip and accessible label.
+    in property <string> tip;
+    callback activated();
+    out property <bool> hovered: icon-touch.has-hover;
+    width: Theme.action-icon-size;
+    height: Theme.action-icon-size;
+
+    icon-touch := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.tip;
+        clicked => { root.activated(); }
+    }
+
+    property <color> tint: icon-touch.has-hover ? Theme.action-icon-hover : Theme.action-icon;
+
+    if root.kind == "stop": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: Theme.action-icon-glyph - 3px;
+        height: self.width;
+        background: root.tint;
+    }
+    if root.kind == "remove": Path {
+        x: (parent.width - Theme.action-icon-glyph) / 2;
+        y: (parent.height - Theme.action-icon-glyph) / 2;
+        width: Theme.action-icon-glyph;
+        height: Theme.action-icon-glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 2 2 L 10 10 M 10 2 L 2 10";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+    if root.kind == "folder": Path {
+        x: (parent.width - Theme.action-icon-glyph) / 2;
+        y: (parent.height - Theme.action-icon-glyph) / 2;
+        width: Theme.action-icon-glyph;
+        height: Theme.action-icon-glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 1 2.5 L 4.5 2.5 L 6 4 L 11 4 L 11 10 L 1 10 Z";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+    if root.kind == "link": Path {
+        x: (parent.width - Theme.action-icon-glyph) / 2;
+        y: (parent.height - Theme.action-icon-glyph) / 2;
+        width: Theme.action-icon-glyph;
+        height: Theme.action-icon-glyph;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 7 1.5 L 10.5 1.5 L 10.5 5 M 10.5 1.5 L 5.5 6.5 M 9 7.5 L 9 10.5 L 1.5 10.5 L 1.5 3 L 4.5 3";
+        stroke: root.tint;
+        stroke-width: Theme.action-icon-stroke;
+    }
+}
+
 component SessionRow inherits Rectangle {
     in property <SessionRowData> data;
     // False in the Needs-you section, which is not a drag source.
@@ -142,6 +212,8 @@ component SessionRow inherits Rectangle {
     callback new-session-in-project(string, string);
     callback stop();
     callback remove();
+    callback open-folder();
+    callback open-link();
 
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: row-drag.dragging ? Theme.row-dragging : Theme.row;
@@ -173,6 +245,14 @@ component SessionRow inherits Rectangle {
             MenuItem {
                 title: "Rename...";
                 activated => { root.rename(); }
+            }
+            if root.data.open-folder: MenuItem {
+                title: "Open folder";
+                activated => { root.open-folder(); }
+            }
+            if root.data.open-link: MenuItem {
+                title: "Open link";
+                activated => { root.open-link(); }
             }
             if root.data.can-stop: MenuItem {
                 title: "Stop...";
@@ -271,6 +351,68 @@ component SessionRow inherits Rectangle {
                 overflow: elide;
                 vertical-alignment: center;
             }
+        }
+    }
+
+    // Action icons, right-aligned over the row while the pointer is on it. The
+    // strip is opaque so the name underneath stays out of the way.
+    property <bool> any-action: root.data.can-stop || root.data.can-remove || root.data.open-folder || root.data.open-link;
+    property <bool> icons-hovered: open-folder-icon.hovered || open-link-icon.hovered || stop-icon.hovered || remove-icon.hovered;
+    property <string> active-tip: open-folder-icon.hovered ? open-folder-icon.tip
+        : open-link-icon.hovered ? open-link-icon.tip
+        : stop-icon.hovered ? stop-icon.tip
+        : remove-icon.hovered ? remove-icon.tip : "";
+    action-strip := Rectangle {
+        visible: root.any-action && (row-touch.has-hover || root.icons-hovered);
+        x: root.width - self.width;
+        y: 0;
+        width: strip-layout.preferred-width;
+        height: Theme.row-height;
+        background: root.background;
+        border-radius: Theme.row-radius;
+        strip-layout := HorizontalLayout {
+            open-folder-icon := ActionIcon {
+                visible: root.data.open-folder;
+                width: root.data.open-folder ? Theme.action-icon-size : 0px;
+                kind: "folder";
+                tip: "Open folder";
+                activated => { root.open-folder(); }
+            }
+            open-link-icon := ActionIcon {
+                visible: root.data.open-link;
+                width: root.data.open-link ? Theme.action-icon-size : 0px;
+                kind: "link";
+                tip: "Open link";
+                activated => { root.open-link(); }
+            }
+            stop-icon := ActionIcon {
+                visible: root.data.can-stop;
+                width: root.data.can-stop ? Theme.action-icon-size : 0px;
+                kind: "stop";
+                tip: "Stop...";
+                activated => { root.stop(); }
+            }
+            remove-icon := ActionIcon {
+                visible: root.data.can-remove;
+                width: root.data.can-remove ? Theme.action-icon-size : 0px;
+                kind: "remove";
+                tip: "Remove...";
+                activated => { root.remove(); }
+            }
+        }
+    }
+    action-tip := Rectangle {
+        visible: root.active-tip != "";
+        x: root.width - action-strip.width - self.width;
+        y: 0;
+        width: tip-text.preferred-width + 2 * Theme.action-tip-padding;
+        height: Theme.row-height;
+        background: root.background;
+        tip-text := Text {
+            text: root.active-tip;
+            color: Theme.text;
+            font-size: Theme.detail-font-size;
+            vertical-alignment: center;
         }
     }
 
@@ -466,6 +608,9 @@ export component AppWindow inherits Window {
     // actions.
     in property <bool> editable;
     callback attach(string, string, string);
+    // Opens the folder / the Work link of the session (host, id).
+    callback open-folder(string, string);
+    callback open-link(string, string);
     // Hands a manually placed session (host, id) back to the placement rules.
     callback return-to-rule(string, string);
     // Moves a session (host, id) to the end of an owner group.
@@ -1001,6 +1146,8 @@ export component AppWindow inherits Window {
                                     root.confirm-name = session.name;
                                     root.confirm-kind = "remove";
                                 }
+                                open-folder => { root.open-folder(session.host, session.id); }
+                                open-link => { root.open-link(session.host, session.id); }
                                 return-to-rule => { root.return-to-rule(session.host, session.id); }
                                 new-session-in-project(project, group) => { root.new-session(project, group); }
                             }
