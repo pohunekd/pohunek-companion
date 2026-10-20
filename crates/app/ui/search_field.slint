@@ -1,0 +1,88 @@
+// Single-line text field with an optional search glyph and clear button.
+// Colours and sizes come from the caller so the component does not depend on
+// the window's `Theme`.
+export component SearchField inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    // Accessible name of the text input.
+    in property <string> label;
+    in property <bool> search-glyph;
+    // Shows a clear button while the field holds text.
+    in property <bool> clearable;
+    in property <length> field-height;
+    in property <length> field-radius;
+    in property <length> field-padding;
+    in property <length> font-size;
+    in property <color> field-background;
+    in property <color> idle-border-color;
+    in property <color> focus-border-color;
+    in property <color> text-color;
+    in property <color> placeholder-color;
+    in property <color> glyph-color;
+    in property <color> glyph-hover-color;
+    in property <color> selection-background;
+    callback edited(string);
+    callback accepted(string);
+
+    forward-focus: input;
+    public function select-all() { input.select-all(); }
+
+    height: root.field-height;
+    border-radius: root.field-radius;
+    background: root.field-background;
+    border-color: input.has-focus ? root.focus-border-color : root.idle-border-color;
+
+    HorizontalLayout {
+        padding-left: root.field-padding;
+        padding-right: root.field-padding;
+        spacing: root.field-padding / 2;
+        if root.search-glyph: Text {
+            text: "⌕";
+            color: root.glyph-color;
+            font-size: root.font-size;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            input := TextInput {
+                width: parent.width;
+                height: self.preferred-height;
+                y: (parent.height - self.height) / 2;
+                single-line: true;
+                font-size: root.font-size;
+                color: root.text-color;
+                selection-background-color: root.selection-background;
+                selection-foreground-color: root.text-color;
+                accessible-role: text-input;
+                accessible-label: root.label;
+                edited => { root.edited(self.text); }
+                accepted => { root.accepted(self.text); }
+            }
+            if input.text == "": Text {
+                text: root.placeholder;
+                color: root.placeholder-color;
+                font-size: root.font-size;
+                vertical-alignment: center;
+                overflow: elide;
+                width: parent.width;
+            }
+        }
+        if root.clearable && input.text != "": clear-touch := TouchArea {
+            width: root.field-height - root.field-padding;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Clear " + root.label;
+            clicked => {
+                input.text = "";
+                root.edited("");
+                root.focus();
+            }
+            Text {
+                text: "×";
+                color: clear-touch.has-hover ? root.glyph-hover-color : root.glyph-color;
+                font-size: root.font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
