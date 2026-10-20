@@ -255,6 +255,11 @@ impl SessionFilter {
             // an owner choice to hide everything.
             if !parsed.is_empty() || keys.is_empty() {
                 filter.states = StateSelection(parsed);
+                // A list saved before the Runtime problem state existed must
+                // not hide it; the state is never persistently deselected.
+                if !filter.states.contains(OwnerState::RuntimeProblem) {
+                    filter.states.toggle(OwnerState::RuntimeProblem);
+                }
             }
         }
         filter.project = match (&stored.project_id, stored.no_project) {
@@ -657,6 +662,17 @@ mod tests {
         let loaded = SessionFilter::from_stored(&stale);
         assert_eq!(loaded.states(), &StateSelection::default());
         assert!(matching(&loaded).is_empty());
+    }
+
+    #[test]
+    fn a_stored_state_list_without_runtime_problem_still_shows_it() {
+        let stored = StoredFilter {
+            states: Some(vec!["working".into(), "idle".into()]),
+            ..StoredFilter::default()
+        };
+        let loaded = SessionFilter::from_stored(&stored);
+        assert!(loaded.states().contains(OwnerState::RuntimeProblem));
+        assert!(!loaded.states().contains(OwnerState::Ended));
     }
 
     #[test]
