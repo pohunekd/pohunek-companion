@@ -290,10 +290,13 @@ component FieldLabel inherits Text {
 export component NewSessionWindow inherits Window {
     title: "New session";
     preferred-width: 480px;
-    preferred-height: 520px;
+    preferred-height: 600px;
     background: Theme.background;
     forward-focus: project-field;
 
+    // Host labels, Local first.
+    in property <[string]> host-names;
+    in-out property <int> host-index: 0;
     // Project labels and launchable agent names, in the order offered.
     in property <[string]> project-names;
     in property <[string]> agent-names;
@@ -325,6 +328,7 @@ export component NewSessionWindow inherits Window {
     // The session exists but could not be attached; Create is not offered again.
     in property <bool> created;
     in-out property <bool> attach-after-create: true;
+    callback host-changed(int);
     callback project-changed(int);
     callback agent-changed(int);
     // The branch or base branch text changed.
@@ -348,6 +352,9 @@ export component NewSessionWindow inherits Window {
         // Captured before the focused field sees the key: `TextEdit` consumes
         // Enter itself.
         capture-key-pressed(event) => {
+            if host-field.focused && host-field.handle-key(event.text, event.modifiers.control) {
+                return accept;
+            }
             if project-field.focused && project-field.handle-key(event.text, event.modifiers.control) {
                 return accept;
             }
@@ -371,6 +378,16 @@ export component NewSessionWindow inherits Window {
 
             VerticalLayout {
                 // Above the fields below, which the open list overlaps.
+                z: host-field.list-open ? 3 : 0;
+                spacing: DialogTheme.field-spacing;
+                FieldLabel { text: "Host"; }
+                host-field := SearchSelect {
+                    model: root.host-names;
+                    selected-index <=> root.host-index;
+                    selected(index) => { root.host-changed(index); }
+                }
+            }
+            VerticalLayout {
                 z: project-field.list-open ? 2 : 0;
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Project"; }

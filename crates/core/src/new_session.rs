@@ -14,7 +14,7 @@ use pohunek_client::{Client, ClientError};
 use tracing::{error, info};
 
 use crate::config::{DaemonConfig, NewSessionConfig};
-use crate::connect::{connect, connect_for_create, resolve_socket};
+use crate::connect::{connect_for_create, connect_host, socket_for_host};
 use crate::error::CoreError;
 
 /// Shown when a create may or may not have happened. `session.new` has no
@@ -340,10 +340,11 @@ async fn read_choices(client: &mut Client) -> Result<Choices, CoreError> {
     })
 }
 
-/// Reads the projects and launchable agents from the local daemon.
-pub async fn load_choices(daemon: &DaemonConfig) -> Result<Choices, CoreError> {
-    let socket = resolve_socket()?;
-    let mut client = connect(&socket, daemon).await?;
+/// Reads the projects and agents from the daemon of `host` (`local` or a
+/// configured remote target).
+pub async fn load_choices(host: &str, daemon: &DaemonConfig) -> Result<Choices, CoreError> {
+    let socket = socket_for_host(host)?;
+    let mut client = connect_host(host, &socket, daemon).await?;
     let choices = read_choices(&mut client).await?;
     info!(
         projects = choices.projects.len(),
@@ -380,13 +381,14 @@ pub fn recipe_from_action(
     })
 }
 
-/// Reads the templates of `project` (a project id) from the local daemon.
+/// Reads the templates of `project` (a project id) from the daemon of `host`.
 pub async fn load_templates(
+    host: &str,
     daemon: &DaemonConfig,
     project: &str,
 ) -> Result<Vec<String>, CoreError> {
-    let socket = resolve_socket()?;
-    let mut client = connect(&socket, daemon).await?;
+    let socket = socket_for_host(host)?;
+    let mut client = connect_host(host, &socket, daemon).await?;
     let result = client
         .call::<ProjectActions>(ProjectActionsParams {
             reference: project.to_owned(),
@@ -397,12 +399,13 @@ pub async fn load_templates(
 
 /// Resolves the template `name` of `project` to its recipe.
 pub async fn load_recipe(
+    host: &str,
     daemon: &DaemonConfig,
     project: &str,
     name: &str,
 ) -> Result<Recipe, TemplateError> {
-    let socket = resolve_socket()?;
-    let mut client = connect(&socket, daemon).await?;
+    let socket = socket_for_host(host)?;
+    let mut client = connect_host(host, &socket, daemon).await?;
     let result = client
         .call::<ProjectAction>(ProjectActionParams {
             reference: project.to_owned(),
@@ -413,17 +416,18 @@ pub async fn load_recipe(
     recipe_from_action(name, result)
 }
 
-/// Sends exactly one `session.new` and returns the new session's id. Never
+/// Sends exactly one `session.new` to the daemon of `host` and returns the new session's id. Never
 /// retries: a failure that may have happened after the request left is
 /// reported as [`CreateError::Unconfirmed`]. A prompt the daemon did not
 /// confirm as delivered is [`CreateError::PromptUnconfirmed`].
 pub async fn create_session(
+    host: &str,
     daemon: &DaemonConfig,
     config: &NewSessionConfig,
     params: SessionNewParams,
 ) -> Result<String, CreateError> {
-    let socket = resolve_socket().map_err(|err| CreateError::NotSent(err.to_string()))?;
-    let mut client = connect_for_create(&socket, daemon, config)
+    let socket = socket_for_host(host).map_err(|err| CreateError::NotSent(err.to_string()))?;
+    let mut client = connect_for_create(host, &socket, daemon, config)
         .await
         .map_err(|err| CreateError::NotSent(err.to_string()))?;
     let sent_input = params.input.is_some();

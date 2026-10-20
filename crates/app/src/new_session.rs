@@ -3,14 +3,15 @@
 //! session stream.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use pohunek_companion_core::{
     Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, FormError,
-    Generation, LOCAL_HOST, NewSessionConfig, NewSessionForm, PendingStore, Recipe, SessionKey,
-    SessionNewParams, attach, build_params, create_session, fuzzy_matches, load_choices,
-    load_recipe, load_templates, submit_blocker,
+    Generation, HostConfig, LOCAL_HOST, NewSessionConfig, NewSessionForm, PendingStore, Recipe,
+    SessionKey, SessionNewParams, attach, build_params, create_session, fuzzy_matches,
+    load_choices, load_recipe, load_templates, submit_blocker,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -20,12 +21,15 @@ use crate::{Fuzzy, NewSessionWindow};
 /// Wayland app id of the dialog; distinct from the sidebar's so compositor
 /// rules can float it separately.
 const APP_ID: &str = "pohunek-companion-new-session";
+const HOST_FLAG: &str = "--host";
 const PROJECT_FLAG: &str = "--project";
 const GROUP_FLAG: &str = "--group";
 
 /// Parsed `new-session` arguments.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Args {
+    /// Host target to preselect; `local` or a configured `[[hosts]]` target.
+    pub host: Option<String>,
     /// Project id to preselect.
     pub project: Option<String>,
     /// Id of the My groups group the created session is placed in.
@@ -37,6 +41,13 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            HOST_FLAG => {
+                let target = args
+                    .next()
+                    .filter(|target| !target.is_empty())
+                    .ok_or_else(|| format!("{HOST_FLAG} needs a host target"))?;
+                parsed.host = Some(target);
+            }
             PROJECT_FLAG => {
                 let id = args
                     .next()
@@ -68,7 +79,34 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, std::io::Err
         .block_on(future))
 }
 
-fn show_choices(window: &NewSessionWindow, choices: &Choices, preselect: Option<&str>) {
+/// Host targets offered by the dialog: Local, then every configured host.
+fn host_targets(hosts: &[HostConfig]) -> Vec<String> {
+    std::iter::once(LOCAL_HOST.to_owned())
+        .chain(hosts.iter().map(|host| host.target.clone()))
+        .collect()
+}
+
+/// Index in [`host_targets`] of the requested host (`local` when none), or the
+/// message that names an unknown target.
+fn resolve_host(requested: Option<&str>, hosts: &[HostConfig]) -> Result<usize, String> {
+    let Some(target) = requested.filter(|target| *target != LOCAL_HOST) else {
+        return Ok(0);
+    };
+    hosts
+        .iter()
+        .position(|host| host.target == target)
+        .map(|index| index + 1)
+        .ok_or_else(|| {
+            format!("unknown host `{target}`: it is not `local` and not a `[[hosts]]` target in companion.toml")
+        })
+}
+
+fn show_choices(
+    window: &NewSessionWindow,
+    choices: &Choices,
+    preselect: Option<&str>,
+    agent: Option<&str>,
+) {
     window.set_project_names(ModelRc::new(VecModel::from(
         choices
             .projects
@@ -111,12 +149,19 @@ fn show_choices(window: &NewSessionWindow, choices: &Choices, preselect: Option<
         .unwrap_or(-1);
     window.set_project_index(project);
     // Launchable agents are listed first, so index 0 is selectable if any is.
-    window.set_agent_index(if choices.has_launchable_agent() {
-        0
-    } else {
-        -1
-    });
+    let agent = agent
+        .and_then(|name| choices.launchable_position(name))
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(if choices.has_launchable_agent() {
+            0
+        } else {
+            -1
+        });
+    window.set_agent_index(agent);
 }
+
+/// Why Create is disabled when the host's projects and agents could not be read.
+const HOST_UNREADABLE: &str = "This host's projects and agents could not be read.";
 
 /// Label of the chip that means "no template".
 const BLANK_LABEL: &str = "Blank";
@@ -135,6 +180,14 @@ struct TemplateState {
 /// dropped.
 #[derive(Clone)]
 struct Templates {
+    /// Targets of the host select, Local first.
+    hosts: Arc<Vec<String>>,
+    /// Target of the host the dialog works against.
+    host: Arc<Mutex<String>>,
+    /// Reading the host's choices failed; Create stays disabled.
+    load_failed: Arc<AtomicBool>,
+    /// Advances on every host change so a late choices response is dropped.
+    host_generation: Arc<Generation>,
     daemon: DaemonConfig,
     choices: Arc<Mutex<Choices>>,
     generation: Arc<Generation>,
@@ -159,11 +212,17 @@ fn show_template_names(window: &NewSessionWindow, names: &[String]) {
 
 impl Templates {
     fn new(
+        hosts: Vec<String>,
+        host: String,
         daemon: DaemonConfig,
         choices: Arc<Mutex<Choices>>,
         requested_project: Option<String>,
     ) -> Self {
         Self {
+            hosts: Arc::new(hosts),
+            host: Arc::new(Mutex::new(host)),
+            load_failed: Arc::new(AtomicBool::new(false)),
+            host_generation: Arc::new(Generation::default()),
             daemon,
             choices,
             requested_project,
@@ -198,6 +257,57 @@ impl Templates {
         }
     }
 
+    fn host(&self) -> String {
+        lock(&self.host).clone()
+    }
+
+    /// Switches to the host at `index` of the host select: drops the current
+    /// choices and reads the new host's. The chosen project and agent stay
+    /// selected when the new host has them.
+    fn host_changed(&self, window: &NewSessionWindow, index: i32) {
+        let Some(target) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.hosts.get(index))
+        else {
+            return;
+        };
+        // The create goes to the host it was submitted for; the select snaps
+        // back while a request is in flight or the session already exists.
+        if window.get_busy() || window.get_created() {
+            let current = self.hosts.iter().position(|host| *host == self.host());
+            window.set_host_index(current.and_then(|i| i32::try_from(i).ok()).unwrap_or(0));
+            return;
+        }
+        let project = selected_project(window, &self.choices);
+        let agent = usize::try_from(window.get_agent_index())
+            .ok()
+            .and_then(|index| {
+                lock(&self.choices)
+                    .agents
+                    .get(index)
+                    .map(|a| a.name.clone())
+            });
+        info!(
+            host = %target,
+            "host chosen"
+        );
+        *lock(&self.host) = target.clone();
+        self.load_failed.store(false, Ordering::SeqCst);
+        // Pending template responses belong to the previous host.
+        self.generation.advance();
+        let token = self.host_generation.advance();
+        *lock(&self.choices) = Choices::default();
+        *lock(&self.state) = TemplateState::default();
+        window.set_error("".into());
+        window.set_loading(true);
+        window.set_template_loading(false);
+        show_choices(window, &Choices::default(), None, None);
+        show_template_names(window, &[]);
+        window.set_template_index(0);
+        self.refresh_blocker(window);
+        load_in_background(window.as_weak(), self.clone(), token, project, agent);
+    }
+
     fn activity(window: &NewSessionWindow) -> Activity {
         Activity {
             loading: window.get_loading(),
@@ -207,6 +317,10 @@ impl Templates {
 
     /// Recomputes the line that says why Create is disabled.
     fn refresh_blocker(&self, window: &NewSessionWindow) {
+        if self.load_failed.load(Ordering::SeqCst) {
+            window.set_blocker(HOST_UNREADABLE.into());
+            return;
+        }
         let blocker = submit_blocker(
             &self.form(window),
             &lock(&self.choices),
@@ -228,9 +342,10 @@ impl Templates {
             return;
         };
         let this = self.clone();
+        let host = self.host();
         let weak = window.as_weak();
         std::thread::spawn(move || {
-            let outcome = block_on(load_templates(&this.daemon, &project))
+            let outcome = block_on(load_templates(&host, &this.daemon, &project))
                 .map_err(|err| format!("cannot start the background runtime: {err}"))
                 .and_then(|loaded| loaded.map_err(|err| err.to_string()));
             if let Err(message) = &outcome {
@@ -278,9 +393,10 @@ impl Templates {
         window.set_template_loading(true);
         self.refresh_blocker(window);
         let this = self.clone();
+        let host = self.host();
         let weak = window.as_weak();
         std::thread::spawn(move || {
-            let outcome = block_on(load_recipe(&this.daemon, &project, &name))
+            let outcome = block_on(load_recipe(&host, &this.daemon, &project, &name))
                 .map_err(|err| format!("cannot start the background runtime: {err}"))
                 .and_then(|loaded| loaded.map_err(|err| err.to_string()));
             if let Err(message) = &outcome {
@@ -329,29 +445,40 @@ impl Templates {
     }
 }
 
+/// Reads the choices of the current host and shows them, selecting `project`
+/// and `agent` when the host has them. A failure clears the choices, shows the
+/// error, and leaves Create disabled.
 fn load_in_background(
     window: slint::Weak<NewSessionWindow>,
-    daemon: DaemonConfig,
-    preselect: Option<String>,
-    choices: Arc<Mutex<Choices>>,
     templates: Templates,
+    token: u64,
+    project: Option<String>,
+    agent: Option<String>,
 ) {
     std::thread::spawn(move || {
-        let outcome = block_on(load_choices(&daemon))
+        let host = templates.host();
+        let outcome = block_on(load_choices(&host, &templates.daemon))
             .map_err(|err| format!("cannot start the background runtime: {err}"))
             .and_then(|loaded| loaded.map_err(|err| err.to_string()));
         if let Err(message) = &outcome {
-            error!(error = %message, "load new-session choices");
+            error!(host = %host, error = %message, "load new-session choices");
         }
         let delivered = window.upgrade_in_event_loop(move |window| {
+            if !templates.host_generation.is_current(token) {
+                return;
+            }
             window.set_loading(false);
             match outcome {
                 Ok(loaded) => {
-                    show_choices(&window, &loaded, preselect.as_deref());
-                    *lock(&choices) = loaded;
+                    show_choices(&window, &loaded, project.as_deref(), agent.as_deref());
+                    *lock(&templates.choices) = loaded;
                     templates.project_changed(&window);
                 }
-                Err(message) => window.set_error(message.into()),
+                Err(message) => {
+                    templates.load_failed.store(true, Ordering::SeqCst);
+                    window.set_error(message.into());
+                    templates.refresh_blocker(&window);
+                }
             }
         });
         if let Err(err) = delivered {
@@ -367,12 +494,12 @@ struct AttachAfter {
 }
 
 /// Attaches `session`; the error text reports that the session already exists.
-fn attach_created(after: &AttachAfter, session: &str) -> Result<(), String> {
+fn attach_created(after: &AttachAfter, host: &str, session: &str) -> Result<(), String> {
     let config_path = after.config_path.as_ref().map_err(|err| {
         format!("Session {session} was created, but it could not be attached: {err}")
     })?;
     let key = SessionKey {
-        host: LOCAL_HOST.to_owned(),
+        host: host.to_owned(),
         session_id: session.to_owned(),
     };
     attach(&after.settings, config_path, &key).map_err(|err| match err {
@@ -392,9 +519,9 @@ struct PlaceAfter {
 
 /// Records the placement for the sidebar to apply; the error text reports
 /// that the session already exists.
-fn record_placement(place: &PlaceAfter, session: &str) -> Result<(), String> {
+fn record_placement(place: &PlaceAfter, host: &str, session: &str) -> Result<(), String> {
     let key = SessionKey {
-        host: LOCAL_HOST.to_owned(),
+        host: host.to_owned(),
         session_id: session.to_owned(),
     };
     PendingStore::open()
@@ -407,32 +534,32 @@ fn record_placement(place: &PlaceAfter, session: &str) -> Result<(), String> {
 fn submit_in_background(
     window: slint::Weak<NewSessionWindow>,
     templates: Templates,
-    daemon: DaemonConfig,
+    host: String,
     config: NewSessionConfig,
     params: SessionNewParams,
     attach_after: Option<AttachAfter>,
     place_after: Option<PlaceAfter>,
 ) {
     std::thread::spawn(move || {
-        let outcome = match block_on(create_session(&daemon, &config, params)) {
+        let outcome = match block_on(create_session(&host, &templates.daemon, &config, params)) {
             Ok(outcome) => outcome,
             Err(err) => Err(CreateError::NotSent(format!(
                 "cannot start the background runtime: {err}"
             ))),
         };
         match &outcome {
-            Ok(id) => info!(session = %id, "create succeeded"),
-            Err(err) => warn!(code = err.code(), "create failed"),
+            Ok(id) => info!(host = %host, session = %id, "create succeeded"),
+            Err(err) => warn!(host = %host, code = err.code(), "create failed"),
         }
         let placed = match (&outcome, &place_after) {
-            (Ok(id), Some(place)) => record_placement(place, id),
+            (Ok(id), Some(place)) => record_placement(place, &host, id),
             _ => Ok(()),
         };
         if let Err(message) = &placed {
             warn!(error = %message, "record placement after create failed");
         }
         let attached = match (&outcome, &attach_after) {
-            (Ok(id), Some(after)) => attach_created(after, id),
+            (Ok(id), Some(after)) => attach_created(after, &host, id),
             _ => Ok(()),
         };
         if let Err(message) = &attached {
@@ -486,17 +613,47 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
     window.set_blocker(FormError::Loading.to_string().into());
     match Config::load() {
         Ok(config) => {
-            let templates =
-                Templates::new(config.daemon.clone(), choices.clone(), args.project.clone());
+            let host_index =
+                resolve_host(args.host.as_deref(), &config.hosts).unwrap_or_else(|message| {
+                    error!(error = %message, "resolve the requested host");
+                    eprintln!("{message}");
+                    std::process::exit(2);
+                });
+            let targets = host_targets(&config.hosts);
+            window.set_host_names(ModelRc::new(VecModel::from(
+                std::iter::once(SharedString::from("Local"))
+                    .chain(
+                        config
+                            .hosts
+                            .iter()
+                            .map(|host| SharedString::from(host.display_label())),
+                    )
+                    .collect::<Vec<_>>(),
+            )));
+            window.set_host_index(i32::try_from(host_index).unwrap_or(0));
+            let templates = Templates::new(
+                targets.clone(),
+                targets[host_index].clone(),
+                config.daemon.clone(),
+                choices.clone(),
+                args.project.clone(),
+            );
             window.set_attach_after_create(config.new_session.attach_after_create);
             let config_path = Config::path().map_err(|err| err.to_string());
             load_in_background(
                 window.as_weak(),
-                config.daemon.clone(),
-                args.project,
-                choices.clone(),
                 templates.clone(),
+                templates.host_generation.advance(),
+                args.project,
+                None,
             );
+            let on_host = templates.clone();
+            let weak = window.as_weak();
+            window.on_host_changed(move |index| {
+                if let Some(window) = weak.upgrade() {
+                    on_host.host_changed(&window, index);
+                }
+            });
             let on_project = templates.clone();
             let weak = window.as_weak();
             window.on_project_changed(move |_| {
@@ -556,7 +713,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                         submit_in_background(
                             weak.clone(),
                             templates.clone(),
-                            config.daemon.clone(),
+                            templates.host(),
                             config.new_session.clone(),
                             params,
                             attach_after,

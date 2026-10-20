@@ -7,18 +7,24 @@ use tracing::{info, warn};
 /// Subcommand that runs the dialog (see `new_session`).
 pub const NEW_SESSION_COMMAND: &str = "new-session";
 
-/// Starts `<current exe> new-session [--project <id>] [--group <id>]` without
-/// a shell and returns once the process exists; each id is a single argv word.
+/// Starts `<current exe> new-session [--host <target>] [--project <id>]
+/// [--group <id>]` without a shell and returns once the process exists; each
+/// value is a single argv word.
 /// A thread reaps the child and logs a non-zero exit.
-pub fn spawn_new_session(project: Option<&str>, group: Option<&str>) -> Result<(), String> {
+pub fn spawn_new_session(
+    host: Option<&str>,
+    project: Option<&str>,
+    group: Option<&str>,
+) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|err| format!("Cannot start the new-session dialog: {err}"))?;
-    let child = command(&exe, project, group)
+    let child = command(&exe, host, project, group)
         .spawn()
         .map_err(|err| format!("Cannot start the new-session dialog: {err}"))?;
     let pid = child.id();
     info!(
         pid,
+        host = host.unwrap_or(""),
         project = project.unwrap_or(""),
         group = group.unwrap_or(""),
         "new-session dialog process started"
@@ -27,9 +33,17 @@ pub fn spawn_new_session(project: Option<&str>, group: Option<&str>) -> Result<(
     Ok(())
 }
 
-fn command(exe: &std::path::Path, project: Option<&str>, group: Option<&str>) -> Command {
+fn command(
+    exe: &std::path::Path,
+    host: Option<&str>,
+    project: Option<&str>,
+    group: Option<&str>,
+) -> Command {
     let mut command = Command::new(exe);
     command.arg(NEW_SESSION_COMMAND);
+    if let Some(host) = host {
+        command.arg("--host").arg(host);
+    }
     if let Some(project) = project {
         command.arg("--project").arg(project);
     }

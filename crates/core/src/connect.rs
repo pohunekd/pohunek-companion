@@ -86,10 +86,11 @@ pub async fn host_naming_this_machine(
     Ok(None)
 }
 
-/// Client whose options govern the dedicated connection `session_new` opens:
-/// its request timeout is the creation timeout, because creation runs project
-/// hooks and waits for the agent.
+/// Client for `session.new` on `host` (`local` or a remote route): its request
+/// timeout is the creation timeout, because creation runs project hooks and
+/// waits for the agent. `socket` is only used for the local daemon.
 pub(crate) async fn connect_for_create(
+    host: &str,
     socket: &Path,
     daemon: &DaemonConfig,
     config: &NewSessionConfig,
@@ -98,7 +99,7 @@ pub(crate) async fn connect_for_create(
         .with_origin_source(OriginSource::Omitted)
         .with_connect_timeout(daemon.connect_timeout())
         .with_request_timeout(config.create_timeout());
-    Ok(Client::connect_local_with_options(socket, options).await?)
+    Ok(Client::connect_with_options(host, socket, options).await?)
 }
 
 /// Client for `session.stop` and `session.remove` on the local daemon or the
