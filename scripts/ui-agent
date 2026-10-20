@@ -555,6 +555,10 @@ launch_daemon() {
             pohunek daemon start --dev-subprocess >>"$iso/daemon.log" 2>&1 </dev/null &
     )
 }
+# Fails unless launchd is readable, so the job check after the start can run.
+require_launchd() {
+    launchctl print "gui/$(id -u)" >/dev/null 2>&1 || fail "cannot read launchd; refusing to start"
+}
 # Waits for the local socket and for the overlay listener on the isolated port;
 # prints the listener address and the daemon pid.
 wait_ready() {
@@ -565,6 +569,9 @@ wait_ready() {
         sleep 0.2
     done
     iso_run pohunek health >/dev/null 2>&1 || { tail -n 10 "$iso/daemon.log" >&2; fail "the daemon did not start"; }
+    # Workers must be plain child processes before any session exists.
+    grep -q 'supervising workers as direct children' "$iso/daemon.log" ||
+        fail "the daemon does not supervise workers as direct children; refusing to create sessions"
     i=0
     while [ "$i" -lt 100 ]; do
         listener=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fpn 2>/dev/null || true)
@@ -608,7 +615,7 @@ halt_daemon() {
 require_iso() {
     case $iso in
         */../* | */..) fail "invalid isolated directory" ;;
-        /tmp/ph-ui-r.* | /private/tmp/ph-ui-r.*) [ -d "$iso" ] || fail "no such isolated directory: $iso" ;;
+        /tmp/ph-ui-r.* | /private/tmp/ph-ui-r.*) ;;
         *) fail "invalid isolated directory" ;;
     esac
 }
@@ -655,6 +662,7 @@ command -v netbird >/dev/null || fail "netbird is not on PATH"
 mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/work"
 chmod 700 "$iso" "$iso/run"
 ln -s "$pd" "$iso/bin/pohunekd"
+require_launchd
 launch_daemon
 wait_ready
 mkdir -p "$iso/work/$project"
@@ -702,7 +710,9 @@ stop_remote_host() {
     if ! out=$(remote_sh "$dest" "$port" "$iso" <<'EOF'
 port=$1; iso=$2
 require_iso
-halt_daemon
+halted=$(halt_daemon)
+echo "$halted"
+[ "$halted" = "processes_left=0" ] || fail "processes of the isolated daemon survive; directory kept"
 rm -rf "$iso"
 if [ -e "$iso" ]; then echo "directory_left=yes"; else echo "directory_left=no"; fi
 EOF
@@ -740,7 +750,9 @@ remote_start() {
     remote_sh "$dest" "$port" "$iso" <<'EOF'
 port=$1; iso=$2
 require_iso
+[ -d "$iso" ] || fail "the isolated directory is gone; run scripts/ui-agent stop"
 [ -z "$(isolated_pids)" ] || fail "the isolated daemon is already running"
+require_launchd
 launch_daemon
 wait_ready
 check_launchd
