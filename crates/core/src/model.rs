@@ -70,8 +70,8 @@ pub struct SeedChange {
     pub added: usize,
     /// Sessions the store held that the seed lacks.
     pub removed: usize,
-    /// Sessions in both whose snapshot differs, ignoring `updated_at` and
-    /// `native_last_activity_at`.
+    /// Sessions in both whose snapshot differs, ignoring `updated_at`,
+    /// `native_last_activity_at`, and `state_source`.
     pub changed: usize,
     /// Attention notifications added, removed, or differing.
     pub attention: usize,
@@ -83,15 +83,17 @@ impl SeedChange {
     }
 }
 
-/// Whether two snapshots of one session differ beyond the activity timestamps,
-/// which the daemon advances while a session works without an event for each
-/// step.
+/// Whether two snapshots of one session differ beyond the activity timestamps
+/// and the state source. The daemon advances the timestamps while a session
+/// works and switches the source between detectors without an event for each
+/// step; the companion never reads the source.
 fn differs_materially(old: &SessionInfo, new: &SessionInfo) -> bool {
     let mut aligned = new.clone();
     aligned.updated_at.clone_from(&old.updated_at);
     aligned
         .native_last_activity_at
         .clone_from(&old.native_last_activity_at);
+    aligned.state_source = old.state_source;
     // Events omit the label that a seed carries.
     if old.project_label.is_none() {
         aligned.project_label = None;
@@ -1000,6 +1002,19 @@ mod tests {
             [],
         );
         assert_eq!((next.added, next.removed, next.changed), (1, 1, 1));
+    }
+
+    #[test]
+    fn a_state_source_switch_alone_is_not_a_seed_change() {
+        let mut store = SessionStore::default();
+        store.apply_seed([session("s-1", 1, "2026-01-01T00:00:01Z")], []);
+        let mut switched = session_json("s-1", 1, "2026-01-01T00:00:09Z");
+        switched["state_source"] = json!("process");
+        let change = store.apply_seed(
+            [serde_json::from_value(switched).expect("session fixture")],
+            [],
+        );
+        assert!(change.is_empty());
     }
 
     #[test]
