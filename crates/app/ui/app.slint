@@ -701,7 +701,7 @@ component ConfirmModal inherits Rectangle {
                 root.confirm-selected = true;
                 return accept;
             }
-            if event.text == Key.Tab {
+            if event.text == Key.Tab || event.text == Key.Backtab {
                 root.confirm-selected = !root.confirm-selected;
                 return accept;
             }
