@@ -48,6 +48,10 @@ rm -rf -- "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/$executable_name"
 chmod 0755 "$app/Contents/MacOS/$executable_name"
+icon_name=pohunek-companion.icns
+icon=$script_dir/../../assets/icons/$icon_name
+[ -f "$icon" ] || fail "missing the app icon: $icon"
+cp "$icon" "$app/Contents/Resources/$icon_name"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 
 plist=$app/Contents/Info.plist
@@ -59,6 +63,7 @@ set_string CFBundleIdentifier "$bundle_identifier"
 set_string CFBundleName "Pohunek Companion"
 set_string CFBundleDisplayName "Pohunek Companion"
 set_string CFBundleExecutable "$executable_name"
+set_string CFBundleIconFile "$icon_name"
 set_string CFBundlePackageType APPL
 set_string CFBundleSignature '????'
 set_string CFBundleInfoDictionaryVersion 6.0

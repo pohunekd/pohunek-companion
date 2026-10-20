@@ -128,10 +128,15 @@ export global Theme {
     out property <color> badge-text: #c9d1d9;
     out property <length> about-width: 360px;
     out property <length> about-height: 320px;
+    out property <length> about-logo-size: 128px;
+    out property <length> about-spacing: 8px;
+    out property <length> about-title-font-size: 20px;
     out property <color> about-background: #ffffff;
     out property <int> tray-icon-size: 32;
     out property <int> tray-label-max-chars: 40;
     out property <color> tray-digit: #ffffff;
+    out property <color> tray-badge: #202020;
+    out property <color> tray-halo: #202020;
     out property <length> owner-dot-size: 8px;
     out property <length> owner-spacing: 5px;
     out property <color> owner-needs-owner: #e0a030;
@@ -830,6 +835,7 @@ component ConfirmModal inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "Pohunek Companion";
+    icon: @image-url("../../../assets/icons/pohunek-app-256.png");
     preferred-width: 320px;
     preferred-height: 800px;
     background: Theme.background;
@@ -1344,6 +1350,41 @@ export struct TrayEntryData {
     attach-refusal: string,
 }
 
+export component AboutCompanionWindow inherits Window {
+    title: "About Pohunek Companion";
+    icon: @image-url("../../../assets/icons/pohunek-app-256.png");
+    preferred-width: Theme.about-width;
+    preferred-height: Theme.about-height;
+    background: Theme.background;
+    in property <string> version;
+    VerticalLayout {
+        alignment: center;
+        spacing: Theme.about-spacing;
+        Image {
+            source: @image-url("../../../assets/icons/pohunek-app-256.png");
+            width: Theme.about-logo-size;
+            height: Theme.about-logo-size;
+        }
+        Text {
+            text: "Pohunek Companion";
+            color: Theme.text;
+            font-size: Theme.about-title-font-size;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Version " + root.version;
+            color: Theme.detail;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Icon artwork derived from the Pohunek assets (MIT)";
+            color: Theme.detail;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+}
+
 export component AboutWindow inherits Window {
     title: "About Slint";
     preferred-width: Theme.about-width;
@@ -1360,6 +1401,7 @@ export component Tray inherits SystemTrayIcon {
     callback attach-entry(string, string, string);
     callback show-window();
     callback show-about();
+    callback show-about-companion();
     callback new-session();
     callback quit();
 
@@ -1383,6 +1425,10 @@ export component Tray inherits SystemTrayIcon {
         MenuItem {
             title: "Show window";
             activated => { root.show-window(); }
+        }
+        MenuItem {
+            title: "About Pohunek Companion";
+            activated => { root.show-about-companion(); }
         }
         MenuItem {
             title: "About Slint";

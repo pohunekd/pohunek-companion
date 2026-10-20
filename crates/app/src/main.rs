@@ -1691,6 +1691,22 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        let about: RefCell<Option<AboutCompanionWindow>> = RefCell::new(None);
+        tray.on_show_about_companion(move || {
+            let mut about = about.borrow_mut();
+            let shown = match about.as_ref() {
+                Some(window) => Ok(window),
+                None => AboutCompanionWindow::new().map(|window| {
+                    window.set_version(env!("CARGO_PKG_VERSION").into());
+                    about.insert(window) as &AboutCompanionWindow
+                }),
+            };
+            if let Err(err) = shown.and_then(|window| window.show()) {
+                error!(error = %err, "show the about window");
+            }
+        });
+    }
+    {
         let about: RefCell<Option<AboutWindow>> = RefCell::new(None);
         tray.on_show_about(move || {
             let mut about = about.borrow_mut();
