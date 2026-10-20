@@ -254,7 +254,7 @@ impl Dialog {
         self.load_failed.store(false, Ordering::SeqCst);
         let token = self.host_generation.advance();
         *lock(&self.choices) = Choices::default();
-        show_error(&window, "");
+        show_error(window, "");
         window.set_loading(true);
         window.set_projects_ready(false);
         show_projects(window, &[], None);
