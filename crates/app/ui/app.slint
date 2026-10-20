@@ -476,6 +476,8 @@ component GroupHeader inherits Rectangle {
     in property <color> name-color: Theme.group-text;
     // False for the Needs-you section, which is derived and has no controls.
     in property <bool> owner-group: true;
+    // False for the Needs-you section, which is always expanded.
+    in property <bool> collapsible: true;
     // False for Inbox: no rename or delete.
     in property <bool> editable: true;
     pure callback payload() -> data-transfer;
@@ -517,7 +519,7 @@ component GroupHeader inherits Rectangle {
         padding-right: Theme.row-padding;
         spacing: Theme.badge-spacing;
         alignment: start;
-        if root.owner-group: collapse-touch := TouchArea {
+        if root.collapsible: collapse-touch := TouchArea {
             width: Theme.group-button-width;
             mouse-cursor: pointer;
             accessible-role: button;
@@ -1177,6 +1179,7 @@ export component AppWindow inherits Window {
                         count: group.count;
                         name-color: Theme.owner-needs-owner;
                         owner-group: false;
+                        collapsible: false;
                         is-group(data) => { root.is-group(data) }
                     }
                     if !group.needs-you: GroupHeader {

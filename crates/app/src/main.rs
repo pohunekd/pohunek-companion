@@ -583,6 +583,10 @@ fn follow_daemon(
                         apply_pending(&mut state.store, pending, &keys, *max_age);
                     }
                     state.store.apply_rules(sessions, &rules);
+                    let title_max_chars = state.title_max_chars;
+                    state
+                        .store
+                        .prune_collapsed_sections(sessions, title_max_chars);
                     let layout_error = save_layout(&mut state);
                     state.rows = sessions.clone();
                     let arranged = arrange(&state);

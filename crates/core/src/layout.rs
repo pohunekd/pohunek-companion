@@ -2,7 +2,7 @@
 //! persisted in `layout.toml` under the state directory. Never stored in
 //! session metadata and never sent to the daemon.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 use crate::config::PlacementRule;
 use crate::filter::StoredFilter;
+use crate::needs_you::NEEDS_YOU_ID;
 use crate::session::{SessionKey, SessionRow};
 use crate::sort_key;
 use crate::view::View;
@@ -122,6 +123,10 @@ pub struct Layout {
     /// default filter.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     filters: BTreeMap<String, StoredFilter>,
+    /// Ids of the collapsed sections of each derived view by view id. My
+    /// groups keeps its state on the groups themselves.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    collapsed_sections: BTreeMap<String, BTreeSet<String>>,
     #[serde(default)]
     groups: Vec<Group>,
     #[serde(default)]
@@ -269,6 +274,7 @@ impl Default for Layout {
             version: FORMAT_VERSION,
             view: None,
             filters: BTreeMap::new(),
+            collapsed_sections: BTreeMap::new(),
             groups: vec![inbox_group(sort_key::between(None, None))],
             items: Vec::new(),
         }
@@ -311,7 +317,47 @@ impl Layout {
     /// Sections of the selected view for display; derived section titles are
     /// clipped to `title_max_chars`.
     pub fn present(&self, rows: &[SessionRow], title_max_chars: usize) -> Vec<GroupSection> {
-        self.view().sections(self.arrange(rows), title_max_chars)
+        let view = self.view();
+        let mut sections = view.sections(self.arrange(rows), title_max_chars);
+        if view.is_editable() {
+            return sections;
+        }
+        if let Some(collapsed) = self.collapsed_sections.get(view.id()) {
+            for section in &mut sections {
+                section.collapsed = section.id != NEEDS_YOU_ID && collapsed.contains(&section.id);
+            }
+        }
+        sections
+    }
+
+    /// Drops stored collapsed ids of derived views that no section of the
+    /// current `rows` has, so the file stays bounded by the live sections.
+    /// Does nothing without rows, so a disconnected daemon keeps the state.
+    /// Returns whether anything was dropped.
+    pub fn prune_collapsed_sections(
+        &mut self,
+        rows: &[SessionRow],
+        title_max_chars: usize,
+    ) -> bool {
+        if rows.is_empty() || self.collapsed_sections.is_empty() {
+            return false;
+        }
+        let arranged = self.arrange(rows);
+        let before: usize = self.collapsed_sections.values().map(BTreeSet::len).sum();
+        for view in View::ALL.into_iter().filter(|v| !v.is_editable()) {
+            let Some(collapsed) = self.collapsed_sections.get_mut(view.id()) else {
+                continue;
+            };
+            let live: HashSet<String> = view
+                .sections(arranged.clone(), title_max_chars)
+                .into_iter()
+                .map(|section| section.id)
+                .collect();
+            collapsed.retain(|id| live.contains(id));
+        }
+        self.collapsed_sections.retain(|_, ids| !ids.is_empty());
+        let after: usize = self.collapsed_sections.values().map(BTreeSet::len).sum();
+        after != before
     }
 
     pub fn groups(&self) -> &[Group] {
@@ -627,8 +673,26 @@ impl Layout {
         Ok(true)
     }
 
-    /// Returns whether the collapsed state changed.
+    /// Collapses or expands a section of the selected view: an owner group in
+    /// My groups, a section id in a derived view. Returns whether the
+    /// collapsed state changed.
     pub fn set_collapsed(&mut self, id: &str, collapsed: bool) -> Result<bool, GroupError> {
+        let view = self.view();
+        if !view.is_editable() {
+            let ids = self
+                .collapsed_sections
+                .entry(view.id().to_owned())
+                .or_default();
+            let changed = if collapsed {
+                ids.insert(id.to_owned())
+            } else {
+                ids.remove(id)
+            };
+            if ids.is_empty() {
+                self.collapsed_sections.remove(view.id());
+            }
+            return Ok(changed);
+        }
         let index = self.group_index(id)?;
         let group = &mut self.groups[index];
         let changed = group.collapsed != collapsed;
@@ -1004,9 +1068,17 @@ impl LayoutStore {
         let changed = self.layout.set_collapsed(id, collapsed)?;
         if changed {
             let operation = if collapsed { "collapse" } else { "expand" };
-            info!(group = %id, operation, "group changed");
+            info!(group = %id, view = self.layout.view().id(), operation, "group changed");
         }
         Ok(changed)
+    }
+
+    /// Drops collapsed ids that no section of `rows` has any more; saved by
+    /// the next [`save_if_changed`](Self::save_if_changed).
+    pub fn prune_collapsed_sections(&mut self, rows: &[SessionRow], title_max_chars: usize) {
+        if self.layout.prune_collapsed_sections(rows, title_max_chars) {
+            info!("stale collapsed sections dropped");
+        }
     }
 
     pub fn move_group(
@@ -1349,6 +1421,43 @@ order = "t"
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].key(), key("a"));
         assert!(moved[0].manual);
+    }
+
+    #[test]
+    fn collapsed_sections_persist_per_view_and_stale_ids_are_dropped() {
+        let dir = scratch("collapsed-sections");
+        let path = dir.join(LAYOUT_FILE);
+        let (mut store, _) = LayoutStore::open(path.clone());
+        let rows = [
+            session("s1", Some("alpha"), None),
+            session("s2", Some("beta"), None),
+        ];
+        let keys: Vec<SessionKey> = rows.iter().map(|r| r.key.clone()).collect();
+        store.reconcile(&keys);
+        store.set_view(View::ByProject);
+        let alpha = store.layout().present(&rows, 40)[0].id.clone();
+        assert_eq!(store.set_collapsed(&alpha, true), Ok(true));
+        assert_eq!(store.set_collapsed(&alpha, true), Ok(false));
+        assert_eq!(store.set_collapsed("gone", true), Ok(true));
+        store.prune_collapsed_sections(&rows, 40);
+        assert!(store.save_if_changed().expect("saves"));
+
+        let (mut reloaded, error) = LayoutStore::open(path);
+        assert!(error.is_none());
+        let collapsed = |layout: &Layout| -> Vec<bool> {
+            layout
+                .present(&rows, 40)
+                .iter()
+                .map(|s| s.collapsed)
+                .collect()
+        };
+        assert_eq!(collapsed(reloaded.layout()), [true, false]);
+        reloaded.set_view(View::ByState);
+        assert!(collapsed(reloaded.layout()).iter().all(|c| !c));
+        reloaded.set_view(View::ByProject);
+        assert_eq!(reloaded.set_collapsed(&alpha, false), Ok(true));
+        assert!(collapsed(reloaded.layout()).iter().all(|c| !c));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
