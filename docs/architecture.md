@@ -80,8 +80,28 @@ All facts come from the public protocol (Pohunek `docs/public-api.md`):
   another entry is refused at startup with a message naming the entry. The
   sidebar shows the union of every host's latest list; a remote row carries its
   host label (the configured `label`, else the `target`) on its detail line and
-  offers no Open folder, because its path exists on the other machine. More
-  hosts will come from `host.discover` once it is wired in (#139).
+  offers no Open folder, because its path exists on the other machine.
+- Hosts are also learned from the local daemon's `host.discover`
+  (`HostDiscoverParams { force: false }`), asked at startup and every
+  `daemon.discover_interval_secs`; the owner chose to connect every reachable
+  one without configuration (#139 Q1: A). The target rule is the Pohunek CLI's
+  host fan-out rule, rebuilt from `pohunek_client` items: only
+  `reachable_daemon` records with an IP address and a peer id (else fqdn)
+  qualify. The host key is `<overlay>:<identity selector>`, without the port;
+  the route that is dialled (and handed to the attach command) is the key with
+  the record's port, kept in a process-wide key-to-route table so layout
+  positions survive a port change. The label is the record's name, else its
+  fqdn, else the key, sanitized, and never enters a key or an argv. A
+  configured `[[hosts]]` entry that names the same peer (its target, without
+  `@port`, equals the key or the peer id, fqdn or name, bare or prefixed with
+  the overlay) keeps its configured key and is not followed twice; without an
+  explicit `@port` it dials the record's port. A
+  `version_mismatch` peer is listed in the status line as incompatible, and
+  `unreachable` and `candidate` peers are ignored. A peer that leaves the answer
+  is treated like a lost host: its loop stops, its rows stay marked
+  unreachable and its placements are kept. A failed discovery (no overlay
+  configured, no local daemon) is logged once at `warn` per distinct cause and
+  leaves local and configured hosts working.
 - Pohunek Work metadata: `work.link.provider|kind|id|url|branch`, `work.role`,
   `work.rev`, and the legacy `link.*` family.
 - Herds (Pohunek #1300-#1307, not shipped yet): member metadata `herd`,

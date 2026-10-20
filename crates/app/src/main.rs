@@ -16,9 +16,9 @@ use pohunek_companion_core::{
     HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, LOCAL_HOST, LayoutStore, LiveHost,
     LiveUpdate, MoveError, NEEDS_YOU_ID, OpenConfig, OpenKind, OwnerState, PendingStore, Placement,
     PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip,
-    TraySummary, View, ViewConfig, attach, clip_display, filter_sections, host_naming_this_machine,
-    host_options, layout_path, name_from_input, open, project_chips, rename_session, run_live,
-    state_chips, state_from_key,
+    TraySummary, View, ViewConfig, attach, clip_display, discover_records, filter_sections,
+    host_naming_this_machine, host_options, layout_path, name_from_input, open, plan_discovery,
+    project_chips, rename_session, run_live, set_route, state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -638,6 +638,9 @@ struct HostsView {
     down: Vec<(String, String)>,
     /// Display name per host target.
     labels: Vec<(String, String)>,
+    /// Status line per discovered peer whose daemon is incompatible; these
+    /// peers have no rows and are not connected.
+    incompatible: Vec<String>,
 }
 
 impl HostsView {
@@ -652,7 +655,18 @@ impl HostsView {
                     (h.target.clone(), label)
                 })
                 .collect(),
+            incompatible: Vec::new(),
         }
+    }
+
+    /// Starts tracking a host that was not known at startup.
+    fn add_host(&mut self, host: &LiveHost) {
+        if self.rows.iter().any(|(target, _)| *target == host.target) {
+            return;
+        }
+        self.rows.push((host.target.clone(), None));
+        let label = host.label.clone().unwrap_or_else(|| host.target.clone());
+        self.labels.push((host.target.clone(), label));
     }
 
     /// Stores `sessions` as `host`'s list.
@@ -737,6 +751,7 @@ impl HostsView {
         down.sort_by_key(|(target, _)| order(target));
         down.into_iter()
             .map(|(_, line)| line.as_str())
+            .chain(self.incompatible.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .join("; ")
     }
@@ -755,6 +770,28 @@ impl Publisher {
             window.set_status(status.into());
         }) {
             error!(error = %err, "deliver the hosts error to the UI");
+        }
+    }
+
+    /// Starts tracking `host` before its loop runs.
+    fn add_host(&self, host: &LiveHost) {
+        self.hosts.borrow_mut().add_host(host);
+    }
+
+    /// Replaces the incompatible-peer status lines.
+    fn set_incompatible(&self, lines: Vec<String>) {
+        let status = {
+            let mut hosts = self.hosts.borrow_mut();
+            if hosts.incompatible == lines {
+                return;
+            }
+            hosts.incompatible = lines;
+            hosts.status()
+        };
+        if let Err(err) = self.window.upgrade_in_event_loop(move |window| {
+            window.set_status(status.into());
+        }) {
+            error!(error = %err, "deliver the incompatible hosts to the UI");
         }
     }
 
@@ -789,12 +826,24 @@ impl Publisher {
                 hosts.set_down(&host.target, Some(line));
                 Some(hosts.status())
             }
+            LiveUpdate::Lost { reason } => {
+                let line = match &host.label {
+                    Some(label) => format!("{label}: {reason}"),
+                    None => reason.clone(),
+                };
+                let mut hosts = self.hosts.borrow_mut();
+                hosts.set_down(&host.target, Some(line));
+                Some(hosts.status())
+            }
             LiveUpdate::Sessions(_) => None,
         };
         // The list changes with a host's sessions and when a remote host
         // becomes unreachable; a reconnect is followed by its seed.
         let union = (matches!(update, LiveUpdate::Sessions(_))
-            || (matches!(update, LiveUpdate::Reconnecting { .. }) && !local))
+            || (matches!(
+                update,
+                LiveUpdate::Reconnecting { .. } | LiveUpdate::Lost { .. }
+            ) && !local))
             .then(|| self.hosts.borrow().union());
         // The tray reflects the local daemon: while it is down the tray stays
         // offline whatever a remote host reports.
@@ -849,7 +898,7 @@ impl Publisher {
                         window.set_layout_error(layout_error.unwrap_or_default().into());
                     }
                 }
-                LiveUpdate::Reconnecting { .. } => {
+                LiveUpdate::Reconnecting { .. } | LiveUpdate::Lost { .. } => {
                     // The tray goes offline with the local daemon only; a lost
                     // remote host's rows stay, marked unreachable, and leave
                     // the tray counts.
@@ -931,6 +980,12 @@ fn follow_daemons(
         });
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, async {
+            tokio::task::spawn_local(follow_discovered(
+                publisher.clone(),
+                daemon.clone(),
+                remotes.clone(),
+                idle_threshold,
+            ));
             let loops: Vec<_> = hosts
                 .into_iter()
                 .map(|host| {
@@ -967,6 +1022,112 @@ fn follow_daemons(
             }
         });
     });
+}
+
+/// Asks the local daemon for its peers every `daemon.discover_interval_secs`
+/// and follows each reachable one. A peer that leaves the answer is treated
+/// like a lost host: its loop stops and its rows stay, marked unreachable.
+async fn follow_discovered(
+    publisher: Rc<Publisher>,
+    daemon: DaemonConfig,
+    configured: Vec<HostConfig>,
+    idle_threshold: Duration,
+) {
+    let mut followed: HashMap<String, (LiveHost, Option<tokio::task::JoinHandle<()>>)> =
+        HashMap::new();
+    let mut last_failure: Option<String> = None;
+    loop {
+        match discover_records(&daemon).await {
+            Ok(records) => {
+                if last_failure.take().is_some() {
+                    info!("host discovery works again");
+                }
+                let plan = plan_discovery(&records, &configured);
+                debug!(
+                    records = records.len(),
+                    connect = plan.connect.len(),
+                    incompatible = plan.incompatible.len(),
+                    "host discovery answered"
+                );
+                for (key, (host, handle)) in &mut followed {
+                    if handle.is_some() && !plan.connect.iter().any(|found| &found.key == key) {
+                        if let Some(handle) = handle.take() {
+                            handle.abort();
+                        }
+                        info!(host = %key, "host no longer discovered");
+                        publisher.publish(
+                            host,
+                            LiveUpdate::Lost {
+                                reason: "no longer discovered".to_owned(),
+                            },
+                        );
+                    }
+                }
+                for (target, route) in &plan.configured_routes {
+                    set_route(target, route);
+                }
+                for found in &plan.connect {
+                    // The route follows the peer's current port even while its
+                    // loop runs; the next reconnect dials it.
+                    let host = LiveHost::discovered(found);
+                    if followed
+                        .get(&found.key)
+                        .is_some_and(|(_, handle)| handle.is_some())
+                    {
+                        continue;
+                    }
+                    match host_naming_this_machine(std::slice::from_ref(&found.key), &daemon).await
+                    {
+                        Ok(None) => {}
+                        Ok(Some(_)) => {
+                            debug!(host = %found.key, "discovered peer is this machine");
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!(host = %found.key, error = %err, "cannot check the discovered host");
+                            continue;
+                        }
+                    }
+                    info!(host = %found.key, label = %found.label, route = %found.route, "following discovered host");
+                    publisher.add_host(&host);
+                    let handle = {
+                        let (host, daemon, publisher) =
+                            (host.clone(), daemon.clone(), publisher.clone());
+                        tokio::task::spawn_local(async move {
+                            run_live(&host, &daemon, idle_threshold, |update| {
+                                publisher.publish(&host, update);
+                            })
+                            .await;
+                        })
+                    };
+                    followed.insert(found.key.clone(), (host, Some(handle)));
+                }
+                publisher.set_incompatible(
+                    plan.incompatible
+                        .iter()
+                        .map(|peer| {
+                            format!(
+                                "{}: incompatible daemon (protocol {})",
+                                peer.label, peer.protocol_version
+                            )
+                        })
+                        .collect(),
+                );
+            }
+            Err(err) => {
+                // One warning per distinct failure; the retry every interval
+                // stays quiet until the cause changes or discovery recovers.
+                let message = err.to_string();
+                if last_failure.as_deref() == Some(message.as_str()) {
+                    debug!(error = %message, "host discovery still failing");
+                } else {
+                    warn!(error = %message, "host discovery failed; local and configured hosts keep working");
+                    last_failure = Some(message);
+                }
+            }
+        }
+        tokio::time::sleep(daemon.discover_interval()).await;
+    }
 }
 
 /// What an attach click needs from startup: the config file location and

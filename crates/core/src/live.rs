@@ -12,8 +12,10 @@ use tracing::{info, warn};
 
 use crate::config::{DaemonConfig, HostConfig};
 use crate::connect::{fetch_seed, socket_for_host, subscribe};
+use crate::discovery::DiscoveredHost;
 use crate::error::CoreError;
 use crate::model::{Applied, SessionStore};
+use crate::routes::set_route;
 use crate::session::SessionRow;
 use pohunek_client::LOCAL_HOST;
 
@@ -33,6 +35,9 @@ pub enum LiveUpdate {
         reason: String,
         code: Option<String>,
     },
+    /// The host is no longer followed because discovery stopped listing it;
+    /// `reason` is shown as its status. Never sent by [`run_live`].
+    Lost { reason: String },
 }
 
 type EventMessage = Result<Event, CoreError>;
@@ -61,6 +66,16 @@ impl LiveHost {
         Self {
             target: LOCAL_HOST.to_owned(),
             label: None,
+        }
+    }
+
+    /// A discovered peer: followed under its port-free key, dialled through
+    /// the registered route.
+    pub fn discovered(host: &DiscoveredHost) -> Self {
+        set_route(&host.key, &host.route);
+        Self {
+            target: host.key.clone(),
+            label: Some(host.label.clone()),
         }
     }
 
