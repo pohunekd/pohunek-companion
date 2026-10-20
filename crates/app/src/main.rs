@@ -1325,7 +1325,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Some(NEW_SESSION_COMMAND) => {
             let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
                 eprintln!(
-                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID]]"
+                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]]"
                 );
                 std::process::exit(2);
             });
@@ -1336,7 +1336,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         Some(other) => {
             eprintln!(
-                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID]]"
+                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]]"
             );
             std::process::exit(2);
         }

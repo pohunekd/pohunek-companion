@@ -440,7 +440,7 @@ export component NewSessionWindow inherits Window {
                     wrap: word-wrap;
                 }
             }
-            if root.template-names.length > 1: VerticalLayout {
+            if root.template-names.length > 1 && !root.loading: VerticalLayout {
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: root.template-loading ? "Template (loading...)" : "Template"; }
                 template-field := ChipField {
