@@ -195,17 +195,18 @@ fn show_report(window: &ConfirmWindow, report: ActionReport) {
         show_wording(window, LifecycleAction::RemoveAcceptingUnconfirmed);
         window.set_error(report.error.into());
     } else if !report.error.is_empty() {
+        window.set_confirm_selected(false);
         window.set_error(report.error.into());
     } else if !report.notice.is_empty() {
         window.set_notice(report.notice.into());
     } else {
-        quit();
+        close(window);
     }
 }
 
-fn quit() {
-    if let Err(err) = slint::quit_event_loop() {
-        error!(error = %err, "quit the confirm dialog");
+fn close(window: &ConfirmWindow) {
+    if let Err(err) = window.hide() {
+        error!(error = %err, "hide the confirm dialog");
     }
 }
 
@@ -258,10 +259,23 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
             }
         });
     });
-    window.on_cancel(|| {
-        info!("confirm dialog closed without a further action");
-        quit();
+    let weak = window.as_weak();
+    window.on_cancel(move || {
+        let Some(window) = weak.upgrade() else { return };
+        // A running request is not abandoned: its outcome is shown.
+        if !window.get_busy() {
+            info!("confirm dialog closed without a further action");
+            close(&window);
+        }
     });
-    window.show()?;
-    slint::run_event_loop_until_quit()
+    let weak = window.as_weak();
+    window.window().on_close_requested(move || {
+        let busy = weak.upgrade().is_some_and(|window| window.get_busy());
+        if busy {
+            slint::CloseRequestResponse::KeepWindowShown
+        } else {
+            slint::CloseRequestResponse::HideWindow
+        }
+    });
+    window.run()
 }
