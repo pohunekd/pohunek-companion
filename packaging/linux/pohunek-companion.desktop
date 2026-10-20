@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Pohunek Companion
+Comment=Sidebar of Pohunek sessions and their live state
+Exec=pohunek-companion
+Icon=pohunek-companion
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=pohunek-companion
+Actions=new-session;
+
+[Desktop Action new-session]
+Name=New session
+Exec=pohunek-companion new-session

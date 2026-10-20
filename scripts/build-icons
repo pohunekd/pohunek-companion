@@ -9,6 +9,8 @@
 #
 #   pohunek-app-256.png          window icon and About logo (Slint @image-url)
 #   pohunek-companion.icns       macOS app bundle icon (Apple icon grid margin)
+#   hicolor/             freedesktop hicolor theme: PNGs at 16 to 512 px and the SVG
+#                        master as scalable/apps, installed on Linux as pohunek-companion
 #   pohunek-tray-mask-128.gray   128x128 8-bit coverage mask of the herder figure
 #                                for the tray icon: no prompt, no field lines,
 #                                thickened whip and outline so it survives 16-32 px
@@ -26,6 +28,15 @@ trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$out"
 
 rsvg-convert -w 256 -h 256 "$master" -o "$out/pohunek-app-256.png"
+
+# Linux icon theme: full-bleed renders, one directory per size.
+for size in 16 32 48 64 128 256 512; do
+    dir=$out/hicolor/${size}x${size}/apps
+    mkdir -p "$dir"
+    rsvg-convert -w "$size" -h "$size" "$master" -o "$dir/pohunek-companion.png"
+done
+mkdir -p "$out/hicolor/scalable/apps"
+cp "$master" "$out/hicolor/scalable/apps/pohunek-companion.svg"
 
 # macOS draws icons inside an 824 px square of a 1024 px canvas.
 for size in 16 32 64 128 256 512 1024; do

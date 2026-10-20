@@ -33,6 +33,32 @@ brotli), libgcc_s, libm and libc. Wayland, X11 and GL libraries are loaded at
 run time by the window system layer, so a working Wayland or X11 desktop with
 its usual Mesa/EGL stack is also required.
 
+### Application launchers (desktop entry and icons)
+
+Launchers such as wofi, rofi (`drun`), GNOME and KDE list an app only when an
+XDG desktop entry exists. Two routes install it, both for the current user:
+
+```bash
+# 1. From the binary: writes the entry and the hicolor icons.
+pohunek-companion desktop install
+pohunek-companion desktop uninstall   # removes exactly those files
+
+# 2. By hand, from the release archive.
+cd pohunek-companion-<version>-x86_64-unknown-linux-gnu
+install -Dm755 pohunek-companion ~/.local/bin/pohunek-companion
+cp -r share/. "${XDG_DATA_HOME:-$HOME/.local/share}/"
+```
+
+`desktop install` writes `$XDG_DATA_HOME/applications/pohunek-companion.desktop`
+(`~/.local/share` when `XDG_DATA_HOME` is unset) and the icons under
+`$XDG_DATA_HOME/icons/hicolor/`. Its `Exec` is the absolute path of the binary
+that ran it, so run it from the final location; run it again after moving the
+binary. It refreshes the desktop and icon caches with `update-desktop-database`
+and `gtk-update-icon-cache` when they are installed. The entry has a
+`New session` action (`pohunek-companion new-session`). The manual route needs
+`~/.local/bin` on `PATH`, because the archive's entry runs `pohunek-companion`
+by name. The subcommand is Linux-only; macOS uses the app bundle.
+
 ## Install (Apple Silicon macOS)
 
 Each `vX.Y.Z` release has `pohunek-companion-<version>-aarch64-apple-darwin.tar.gz`
