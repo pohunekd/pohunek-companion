@@ -293,6 +293,12 @@ pub struct DaemonConfig {
     /// answered, in milliseconds, greater than zero. Optional; default 5000
     /// (the `pohunek-client` default).
     pub request_timeout_ms: u64,
+    /// `daemon.session_action_timeout_ms`: time allowed for the daemon to
+    /// answer `session.stop` or `session.remove`, in milliseconds, greater
+    /// than zero. Both wait for the session's runtime to end and sweep its
+    /// processes, so it is longer than an ordinary request. Optional; default
+    /// 60000.
+    pub session_action_timeout_ms: u64,
     /// `daemon.reconnect_initial_ms`: wait before the first reconnect attempt
     /// after the daemon connection is lost or fails, in milliseconds, greater
     /// than zero and not above `reconnect_max_ms`. The wait doubles on every
@@ -319,6 +325,7 @@ impl Default for DaemonConfig {
         Self {
             connect_timeout_ms: 5000,
             request_timeout_ms: 5000,
+            session_action_timeout_ms: 60_000,
             reconnect_initial_ms: 500,
             reconnect_max_ms: 30_000,
             notification_page_size: 200,
@@ -334,6 +341,10 @@ impl DaemonConfig {
 
     pub fn request_timeout(&self) -> Duration {
         Duration::from_millis(self.request_timeout_ms)
+    }
+
+    pub fn session_action_timeout(&self) -> Duration {
+        Duration::from_millis(self.session_action_timeout_ms)
     }
 
     pub fn reconnect_initial(&self) -> Duration {
@@ -403,6 +414,10 @@ impl Config {
         let zero_key = [
             ("daemon.connect_timeout_ms", self.daemon.connect_timeout_ms),
             ("daemon.request_timeout_ms", self.daemon.request_timeout_ms),
+            (
+                "daemon.session_action_timeout_ms",
+                self.daemon.session_action_timeout_ms,
+            ),
             ("attach_observe_ms", self.attach_observe_ms),
             ("new_session.cols", u64::from(self.new_session.cols)),
             ("new_session.rows", u64::from(self.new_session.rows)),

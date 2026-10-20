@@ -12,11 +12,11 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
-    INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState,
-    PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection, SessionFilter,
-    SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, attach, clip_display,
-    filter_sections, layout_path, name_from_input, project_chips, rename_session, run_live,
-    state_chips, state_from_key,
+    INBOX_ID, LOCAL_HOST, LayoutStore, LifecycleAction, LiveUpdate, MoveError, NEEDS_YOU_ID,
+    OwnerState, PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection,
+    SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, attach,
+    clip_display, filter_sections, layout_path, name_from_input, project_chips, rename_session,
+    run_lifecycle_action, run_live, state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -67,6 +67,8 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 badge_role: badge_role.into(),
                 host: s.key.host.into(),
                 id: s.key.session_id.into(),
+                can_stop: s.can_stop,
+                can_remove: s.can_remove,
                 attach_refusal: s
                     .attach_refusal
                     .map(|reason| reason.to_string())
@@ -697,6 +699,51 @@ fn rename_outcome(
         .map_err(|err| format!("Cannot rename {session_id}: {err}"))
 }
 
+/// Stops or removes on a background thread and shows a failure in the window.
+/// The row changes through the daemon's session event, not from this outcome.
+fn start_lifecycle(
+    window: slint::Weak<AppWindow>,
+    daemon: Result<DaemonConfig, String>,
+    host: String,
+    session_id: String,
+    action: LifecycleAction,
+) {
+    std::thread::spawn(move || {
+        let outcome = lifecycle_outcome(&daemon, &host, &session_id, action);
+        if let Err(message) = &outcome {
+            warn!(session = %session_id, action = action.verb(), error = %message, "session action failed");
+        }
+        let applied = window.upgrade_in_event_loop(move |window| {
+            window.set_action_error(outcome.err().unwrap_or_default().into());
+        });
+        if let Err(err) = applied {
+            error!(error = %err, "deliver session action outcome to the UI");
+        }
+    });
+}
+
+fn lifecycle_outcome(
+    daemon: &Result<DaemonConfig, String>,
+    host: &str,
+    session_id: &str,
+    action: LifecycleAction,
+) -> Result<(), String> {
+    let verb = action.verb();
+    if host != LOCAL_HOST {
+        return Err(format!(
+            "Cannot {verb} {session_id}: only the local daemon is supported"
+        ));
+    }
+    let daemon = daemon.as_ref().map_err(Clone::clone)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("cannot start the background runtime: {err}"))?;
+    runtime
+        .block_on(run_lifecycle_action(daemon, session_id, action))
+        .map_err(|err| format!("Cannot {verb} {session_id}: {err}"))
+}
+
 fn attach_outcome(context: &AttachContext, key: &SessionKey, refusal: &str) -> Result<(), String> {
     if !refusal.is_empty() {
         return Err(format!("Cannot attach: {refusal}"));
@@ -828,6 +875,34 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
             (context, rename_daemon)
         }
     };
+    {
+        let weak = window.as_weak();
+        let daemon = rename_daemon.clone();
+        window.on_stop_session(move |host, id| {
+            info!(host = %host, session = %id, "stop confirmed from the context menu");
+            start_lifecycle(
+                weak.clone(),
+                daemon.clone(),
+                host.into(),
+                id.into(),
+                LifecycleAction::Stop,
+            );
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let daemon = rename_daemon.clone();
+        window.on_remove_session(move |host, id| {
+            info!(host = %host, session = %id, "remove confirmed from the context menu");
+            start_lifecycle(
+                weak.clone(),
+                daemon.clone(),
+                host.into(),
+                id.into(),
+                LifecycleAction::Remove,
+            );
+        });
+    }
     {
         let weak = window.as_weak();
         window.on_rename_session(move |host, id, name| {

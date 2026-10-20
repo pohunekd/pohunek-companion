@@ -10,6 +10,7 @@ mod connect;
 mod error;
 mod filter;
 mod layout;
+mod lifecycle;
 mod live;
 mod model;
 mod needs_you;
@@ -39,6 +40,7 @@ pub use layout::{
     CreateAndMoveError, GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError,
     LayoutStore, MoveError, Placement, Reconciled, RulePlacement, layout_path, state_dir,
 };
+pub use lifecycle::{LifecycleAction, LifecycleError, run_lifecycle_action};
 pub use live::{LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
 pub use needs_you::{NEEDS_YOU_ID, with_needs_you};

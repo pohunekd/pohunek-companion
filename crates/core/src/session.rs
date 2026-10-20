@@ -41,6 +41,10 @@ pub struct SessionRow {
     pub work: Option<WorkFacts>,
     /// Why the session cannot be attached; `None` when it can.
     pub attach_refusal: Option<AttachRefusal>,
+    /// The daemon accepts `session.stop` for this session.
+    pub can_stop: bool,
+    /// The daemon accepts `session.remove` for this session.
+    pub can_remove: bool,
 }
 
 impl SessionRow {
@@ -50,6 +54,7 @@ impl SessionRow {
         waiting_since: Option<OffsetDateTime>,
         known_label: Option<&str>,
     ) -> Self {
+        let (can_stop, can_remove) = (info.can_stop(), info.can_remove());
         let display_name = info.name.unwrap_or_else(|| info.id.0.clone());
         let project = info.project_id.as_deref().map(|id| {
             let label = [info.project_label.as_deref(), known_label]
@@ -77,6 +82,8 @@ impl SessionRow {
             project,
             work,
             attach_refusal: AttachRefusal::for_session(info.external, info.state),
+            can_stop,
+            can_remove,
         }
     }
 }
