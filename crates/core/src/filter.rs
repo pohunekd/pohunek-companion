@@ -794,6 +794,9 @@ mod tests {
         assert_eq!(filter.host(), None);
         filter.toggle_host(None);
         assert_eq!(filter.host(), None);
+        filter.toggle_host(Some("host-b".into()));
+        filter.toggle_host(None);
+        assert_eq!(filter.host(), None);
         assert_eq!(filter.to_stored(), StoredFilter::default());
     }
 
