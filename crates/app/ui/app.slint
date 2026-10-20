@@ -421,7 +421,8 @@ component SessionRow inherits Rectangle {
 
     VerticalLayout {
         padding-left: Theme.row-padding;
-        padding-right: Theme.row-padding;
+        // The labels end where the opaque action strip starts while it is shown.
+        padding-right: Theme.row-padding + (action-strip.visible ? action-strip.width : 0px);
         padding-top: Theme.row-vertical-padding;
         padding-bottom: Theme.row-vertical-padding;
         alignment: center;
