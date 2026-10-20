@@ -125,8 +125,6 @@ component SessionRow inherits Rectangle {
     in property <bool> indicator-below;
     // Owner groups in display order, offered by "Move to group".
     in property <[OwnerGroupData]> owner-groups;
-    // Whether the session can be moved or handed back to the rules.
-    in property <bool> arrangeable;
     pure callback payload(SessionRowData) -> data-transfer;
     callback clicked();
     callback move-to-group(string);
@@ -165,7 +163,7 @@ component SessionRow inherits Rectangle {
                 title: "New session in " + root.data.project-label;
                 activated => { root.new-session-in-project(root.data.project-id); }
             }
-            if root.arrangeable: Menu {
+            Menu {
                 title: "Move to group";
                 for owner-group in root.owner-groups: MenuItem {
                     title: owner-group.name;
@@ -180,7 +178,7 @@ component SessionRow inherits Rectangle {
                     activated => { root.new-group(); }
                 }
             }
-            if root.arrangeable && root.data.manual: MenuItem {
+            if root.data.manual: MenuItem {
                 title: "Return to rule placement";
                 activated => { root.return-to-rule(); }
             }
@@ -435,8 +433,9 @@ export component AppWindow inherits Window {
     // Labels of the selectable views, in order.
     in property <[string]> view-names;
     in-out property <int> view-index;
-    // Whether the selected view lets the owner rearrange sessions; derived
-    // views are read-only.
+    // Whether the selected view lets the owner rearrange sessions by drag and
+    // drop and manage groups; derived views only offer the row menu's layout
+    // actions.
     in property <bool> editable;
     callback attach(string, string, string);
     // Hands a manually placed session (host, id) back to the placement rules.
@@ -477,10 +476,10 @@ export component AppWindow inherits Window {
     // for; empty when the editor was opened by "+ New group".
     in-out property <string> pending-host;
     in-out property <string> pending-id;
-    // The name editor is only shown in an editable view; leaving one ends the
-    // edit so it cannot resume later for the old session.
+    // A standalone group name editor ("+ New group") belongs to the editable
+    // view; leaving it ends that edit. A row menu's edit stays open.
     changed editable => {
-        if !self.editable {
+        if !self.editable && self.pending-id == "" {
             self.creating-group = false;
             self.pending-host = "";
             self.pending-id = "";
@@ -647,7 +646,7 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
             }
         }
-        if root.editable && root.creating-group: new-group-scope := FocusScope {
+        if root.creating-group: new-group-scope := FocusScope {
             height: Theme.new-group-height;
             capture-key-pressed(event) => {
                 if event.text == Key.Escape {
@@ -734,7 +733,6 @@ export component AppWindow inherits Window {
                                 indicator-below: row-drop.has-drag && root.indicator-after;
                                 payload(row) => { root.payload(row) }
                                 owner-groups: root.owner-groups;
-                                arrangeable: root.editable;
                                 clicked => { root.attach(session.host, session.id, session.attach-refusal); }
                                 move-to-group(target) => { root.move-to-group(session.host, session.id, target); }
                                 new-group => {

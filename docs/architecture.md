@@ -96,7 +96,10 @@ Owner decisions of 2026-10-19 (epic #3):
   Inbox, or under their `spawned_by` parent when it is known.
 - **Four views** over the same sessions: My groups (default, the only view
   that accepts drag and drop), By state, By project, and By Work item / herd.
-  The derived views are read-only; the selected view survives a restart.
+  The derived views are read-only as views (no drag and drop, no group
+  editing), but a session's context menu offers "Move to group", "New
+  group..." and "Return to rule placement" in every view; they change the My
+  groups layout and persist like a drag. The selected view survives a restart.
 - **Needs you** is a separate section above all groups in every view. A session
   that needs the owner is lifted out temporarily and returns to its place when
   it no longer does.
