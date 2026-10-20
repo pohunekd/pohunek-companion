@@ -19,6 +19,8 @@ export struct SessionRowData {
     // Name of the remote host the session lives on, shown on the detail line;
     // empty for a local session.
     host-label: string,
+    // The row's remote host is not connected: the facts are the last known ones.
+    host-unreachable: bool,
     id: string,
     // Why the session cannot be attached; empty when it can.
     attach-refusal: string,
@@ -58,6 +60,8 @@ export struct GroupData {
 export global Theme {
     out property <length> row-height: 36px;
     out property <length> row-radius: 4px;
+    // Dimming of a row whose remote host is not connected.
+    out property <float> unreachable-opacity: 0.5;
     out property <length> row-padding: 8px;
     out property <length> row-vertical-padding: 3px;
     out property <length> row-spacing: 2px;
@@ -259,6 +263,7 @@ component SessionRow inherits Rectangle {
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: row-drag.dragging ? Theme.row-dragging : Theme.row;
     border-radius: Theme.row-radius;
+    opacity: root.data.host-unreachable ? Theme.unreachable-opacity : 1.0;
 
     row-drag := DragArea {
         data: root.payload(root.data);
@@ -360,7 +365,7 @@ component SessionRow inherits Rectangle {
                 horizontal-stretch: 0;
             }
             state-text := Text {
-                text: root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "") + (root.data.host-label != "" ? " - " + root.data.host-label : "");
+                text: root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "") + (root.data.host-label != "" ? " - " + root.data.host-label : "") + (root.data.host-unreachable ? " - host unreachable" : "");
                 color: Theme.detail;
                 font-size: Theme.detail-font-size;
                 horizontal-alignment: left;

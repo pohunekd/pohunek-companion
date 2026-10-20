@@ -432,6 +432,7 @@ mod tests {
             runtime_detail: String::new(),
             open: crate::open::OpenTargets::default(),
             host_label: None,
+            host_unreachable: false,
         }
     }
 

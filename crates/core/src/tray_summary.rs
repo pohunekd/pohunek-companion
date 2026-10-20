@@ -14,6 +14,8 @@ pub struct TrayEntry {
     pub agent: String,
     /// Why the session cannot be attached; `None` when it can.
     pub attach_refusal: Option<String>,
+    /// Name of the remote host the session lives on; `None` for a local one.
+    pub host_label: Option<String>,
 }
 
 /// What the tray shows. Ended and no-agent-state sessions never drive it.
@@ -28,10 +30,20 @@ pub struct TraySummary {
     /// Sessions needing the owner: longest waiting first, then by display
     /// name, then by key.
     pub entries: Vec<TrayEntry>,
+    /// Remote hosts that are not connected; their rows are not counted.
+    pub unreachable_hosts: usize,
 }
 
 impl TraySummary {
-    pub fn from_rows(rows: &[SessionRow]) -> Self {
+    /// Rows of an unreachable host carry last-known facts and are left out;
+    /// `unreachable_hosts` is the number of hosts that are not connected.
+    pub fn from_rows(rows: &[SessionRow], unreachable_hosts: usize) -> Self {
+        let reachable: Vec<SessionRow> = rows
+            .iter()
+            .filter(|row| !row.host_unreachable)
+            .cloned()
+            .collect();
+        let rows = reachable.as_slice();
         let count = |state| rows.iter().filter(|row| row.owner_state == state).count();
         let (needs_owner, idle, working) = (
             count(OwnerState::NeedsOwner),
@@ -59,6 +71,7 @@ impl TraySummary {
                 display_name: row.display_name.clone(),
                 agent: row.agent.clone(),
                 attach_refusal: row.attach_refusal.as_ref().map(ToString::to_string),
+                host_label: row.host_label.clone(),
             })
             .collect();
         Self {
@@ -67,6 +80,7 @@ impl TraySummary {
             idle,
             working,
             entries,
+            unreachable_hosts,
         }
     }
 }
@@ -125,6 +139,7 @@ mod tests {
             runtime_detail: String::new(),
             open: crate::open::OpenTargets::default(),
             host_label: None,
+            host_unreachable: false,
         }
     }
 
@@ -136,17 +151,35 @@ mod tests {
             row("3", "c", OwnerState::NeedsOwner, None),
             row("4", "d", OwnerState::NeedsOwner, None),
         ];
-        let summary = TraySummary::from_rows(&rows);
+        let summary = TraySummary::from_rows(&rows, 0);
         assert_eq!(summary.urgent, Some(OwnerState::NeedsOwner));
         assert_eq!(summary.needs_owner, 2);
         assert_eq!(summary.entries.len(), 2);
         assert_eq!((summary.idle, summary.working), (1, 1));
-        let rest = TraySummary::from_rows(&rows[..2]);
+        let rest = TraySummary::from_rows(&rows[..2], 0);
         assert_eq!(rest.urgent, Some(OwnerState::Idle));
         assert_eq!(
-            TraySummary::from_rows(&rows[..1]).urgent,
+            TraySummary::from_rows(&rows[..1], 0).urgent,
             Some(OwnerState::Working)
         );
+    }
+
+    #[test]
+    fn unreachable_host_rows_never_count_and_the_hosts_are_reported() {
+        let mut lost = row("9", "remote-job", OwnerState::NeedsOwner, None);
+        lost.key.host = "netbird:box@1".into();
+        lost.host_label = Some("box".into());
+        lost.host_unreachable = true;
+        let rows = [lost.clone(), row("1", "a", OwnerState::Working, None)];
+        let summary = TraySummary::from_rows(&rows, 1);
+        assert_eq!(summary.urgent, Some(OwnerState::Working));
+        assert_eq!(summary.needs_owner, 0);
+        assert!(summary.entries.is_empty());
+        assert_eq!(summary.unreachable_hosts, 1);
+        lost.host_unreachable = false;
+        let back = TraySummary::from_rows(&[lost], 0);
+        assert_eq!(back.needs_owner, 1);
+        assert_eq!(back.entries[0].host_label.as_deref(), Some("box"));
     }
 
     #[test]
@@ -155,14 +188,14 @@ mod tests {
             row("1", "a", OwnerState::Ended, None),
             row("2", "b", OwnerState::NoAgentState, None),
         ];
-        let summary = TraySummary::from_rows(&rows);
+        let summary = TraySummary::from_rows(&rows, 0);
         assert_eq!(summary.urgent, None);
         assert_eq!(
             (summary.needs_owner, summary.idle, summary.working),
             (0, 0, 0)
         );
         assert!(summary.entries.is_empty());
-        assert_eq!(TraySummary::from_rows(&[]).urgent, None);
+        assert_eq!(TraySummary::from_rows(&[], 0).urgent, None);
     }
 
     #[test]
@@ -177,7 +210,7 @@ mod tests {
             row("1", "omega", OwnerState::NeedsOwner, early),
         ];
         let ids = |rows: &[SessionRow]| -> Vec<String> {
-            TraySummary::from_rows(rows)
+            TraySummary::from_rows(rows, 0)
                 .entries
                 .into_iter()
                 .map(|entry| entry.key.session_id)
