@@ -196,15 +196,18 @@ dialog_start() {
         cd "$state"
         exec env "${envs[@]}" "$bin" "$@" >"$dir/log" 2>&1 </dev/null
     ) &
-    echo $! >"$dir/pid"
-    ps -o lstart= -p "$!" >"$dir/lstart" 2>/dev/null || true
+    local pid=$!
+    echo "$pid" >"$dir/pid"
+    ps -o lstart= -p "$pid" >"$dir/lstart" 2>/dev/null || true
     echo "http://127.0.0.1:$port/mcp" >"$dir/endpoint"
     for i in $(seq 1 100); do
         if grep -q "Slint MCP server listening" "$dir/log" 2>/dev/null; then
             echo "$n $(cat "$dir/endpoint")"
             return 0
         fi
-        dialog_running "$n" || break
+        # Until the exec chain reaches the binary, ps shows the subshell or env,
+        # so only plain liveness decides here.
+        kill -0 "$pid" 2>/dev/null || break
         sleep 0.2
     done
     local tail_log
