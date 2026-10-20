@@ -55,6 +55,8 @@ export global Theme {
     out property <length> row-padding: 8px;
     out property <length> row-vertical-padding: 3px;
     out property <length> row-spacing: 2px;
+    // Right gutter of the session list, reserved whether or not the scrollbar is shown.
+    out property <length> scrollbar-gap: 14px;
     out property <length> window-padding: 8px;
     out property <length> detail-font-size: 11px;
     out property <length> error-font-size: 13px;
@@ -921,6 +923,7 @@ export component AppWindow inherits Window {
         }
         session-list := ScrollView {
             VerticalLayout {
+                padding-right: Theme.scrollbar-gap;
                 spacing: Theme.group-spacing;
                 alignment: start;
                 for group in root.groups: VerticalLayout {
