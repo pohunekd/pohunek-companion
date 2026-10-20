@@ -110,7 +110,9 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends libfontconfig1-dev \
             || { sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev; }
+      # A tag build starts clean so the attested binary never comes from cached artifacts.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ github.event_name != 'push' }}
         with:
           save-if: "false"
       - name: Gates
@@ -206,6 +208,12 @@ jobs:
       - name: Create the draft and upload the assets
         run: |
           set -euo pipefail
+          # A rerun must not add a second draft for the same tag.
+          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
+          if [ -n "$existing" ]; then
+            echo "::error::a release or draft for $TAG already exists"
+            exit 1
+          fi
           cd "$RUNNER_TEMP/release"
           notes="Pohunek Companion ${VERSION} for x86_64 Linux (glibc). Verify with \`sha256sum -c\` and \`gh attestation verify <archive> --repo ${GITHUB_REPOSITORY}\`."
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
