@@ -784,6 +784,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => run_sidebar(),
+        Some("--version") => {
+            println!("pohunek-companion {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some(NEW_SESSION_COMMAND) => {
             let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
                 eprintln!(

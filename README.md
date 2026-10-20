@@ -14,6 +14,25 @@ cargo run -p pohunek-companion
 scripts/gates   # fmt, clippy, tests
 ```
 
+## Install (Linux x86_64)
+
+Each `vX.Y.Z` release has `pohunek-companion-<version>-x86_64-unknown-linux-gnu.tar.gz`
+and a `.sha256` file beside it. The binary is dynamically linked against glibc.
+
+```bash
+v=0.1.0
+a=pohunek-companion-$v-x86_64-unknown-linux-gnu.tar.gz
+gh release download v$v -R pohunekd/pohunek-companion -p "$a*"
+sha256sum -c $a.sha256
+gh attestation verify $a --repo pohunekd/pohunek-companion
+tar -xzf $a && ./pohunek-companion-$v-x86_64-unknown-linux-gnu/pohunek-companion --version
+```
+
+Linked at start (`ldd`): fontconfig, freetype (with expat, zlib, bzip2, libpng,
+brotli), libgcc_s, libm and libc. Wayland, X11 and GL libraries are loaded at
+run time by the window system layer, so a working Wayland or X11 desktop with
+its usual Mesa/EGL stack is also required.
+
 Contributors and agents start at [AGENTS.md](AGENTS.md).
 
 Licensed under MIT. Built with Slint under the Slint Royalty-free License.
