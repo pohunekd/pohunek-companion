@@ -56,7 +56,7 @@
 # the same environment, arguments, and MCP port, so the isolated daemon, its
 # session ids, and the layout file are kept; `stop` still removes everything.
 #
-# A dialog (`new-session`, `confirm`) the sidebar spawns inherits the sidebar's
+# A dialog (`new-session`, `assistant`, `confirm`) the sidebar spawns inherits the sidebar's
 # MCP port, cannot bind it, and runs without an MCP endpoint. To drive a dialog,
 # start it with `dialog` instead (e.g. `dialog new-session --project ID`): it
 # runs with the app's recorded environment (same isolated daemon, config,

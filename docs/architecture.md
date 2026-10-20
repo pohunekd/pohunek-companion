@@ -32,8 +32,8 @@ CPU.
   Royalty-free License requires attribution: the app shows an "About Slint"
   entry. Release profile: fat LTO, `opt-level = "s"`, `panic = "abort"`. See
   "Renderer and release profile" for the measurements behind the choice.
-- `pohunek-client`, pinned to a Pohunek git tag, as the only protocol
-  dependency.
+- `pohunek-client`, pinned to a Pohunek git tag, as the protocol dependency,
+  and `pohunek-assistant` at the same tag for starting assistant sessions.
 
 Alternatives considered: Qt via cxx-qt (most mature tray and DnD, heavy
 deployment and build), GPUI with gpui-component (no tray, slow compile,
@@ -386,6 +386,43 @@ AppIndicator extension).
 The new-session dialog is a separate process (`pohunek-companion new-session`)
 with its own `app_id`, started by the sidebar's "+ New session" control, the
 tray's "New session..." entry, or a desktop keybinding; it outlives the sidebar.
+The assistant dialog (`pohunek-companion assistant`) is started the same way.
+
+## Starting an assistant session
+
+`pohunek-companion assistant [--host <target>] [--project <id>] [--intent
+<intent>] [--known-hosts <json>]` is a second dialog, its own process with the
+app id `pohunek-companion-assistant` and no tray icon, started by the
+sidebar's "+ Assistant" control, the tray's "Assistant..." entry, the desktop
+entry's `assistant` action, or a keybinding. It is a separate window rather
+than a mode of New session because its fields differ (intent, a multi-line
+request, no name, template or branch) and a mode switch would hide half of
+New session's form. The Slint controls both dialogs share live in
+`ui/dialog_fields.slint`, and the assistant dialog reuses New session's host
+handling (known hosts, discovery, `--host` resolution, per-host choices).
+
+- The launch is `pohunek-assistant`'s: it picks the agent (the host's
+  `pohunek-assistant` profile, then `codex`, `claude`, `hermes`), materializes
+  the knowledge bundle and a redacted live snapshot (on the host itself for a
+  remote launch), composes the prompt, and calls `session.new`. The companion
+  runs `prepare_with_options` and `start_prepared_with_options` so that a
+  failure before `session.new` (nothing exists) is told apart from one after
+  it (unconfirmed, never resent), as in New session.
+- Fields: Host (as in New session), Project (a remote host needs one, which
+  the library requires), Intent chips (help, setup, project, update, debug),
+  Agent (Automatic, or an assistant-capable runtime of the chosen host:
+  launchable and not shell-backed), and a multi-line Request. Enter starts
+  everywhere except in the request, where Ctrl+Enter does. The request field
+  has the focus on open.
+- A refusal (`no_capable_agent`, `bundle_unavailable`, an unreachable host)
+  shows the daemon's message and recovery hint in the window. A host with no
+  capable agent does not disable Start: the launch reports it with the hint.
+  A remote launch asks for no confirmation; the dialog is the confirmation.
+- After `session.new` the session reaches the sidebar through the event
+  stream, and the dialog attaches to it with `attach_command` when "Attach
+  after starting" is checked (initially `new_session.attach_after_create`), the
+  same way New session does. `new_session.cols`, `rows` and `create_timeout_ms`
+  apply.
 
 ## Attach
 

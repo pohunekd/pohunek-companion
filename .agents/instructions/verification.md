@@ -79,7 +79,7 @@ file: session ids and `scripts/ui-agent layout` content survive it, which is how
 a restart-persistence check runs in isolated mode. `stop` after a `restart`
 still removes the daemon and the isolated directory.
 
-A dialog the sidebar spawns (`new-session`, `confirm`) inherits the sidebar's
+A dialog the sidebar spawns (`new-session`, `assistant`, `confirm`) inherits the sidebar's
 MCP port, cannot bind it, and runs with no MCP endpoint. To screenshot, read, or
 click a dialog, start it through the script instead:
 
