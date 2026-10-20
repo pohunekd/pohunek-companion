@@ -15,14 +15,21 @@ export component ChoiceChips inherits FlexboxLayout {
     in property <color> text-color;
     in property <color> disabled-text-color: text-color;
     in property <color> selected-text-color;
+    // Multi-choice mode: `checked` marks the selected entries and a click only
+    // reports the index, leaving the owner of `checked` to toggle it.
+    in property <bool> multi;
+    in property <[bool]> checked;
     callback selected(int);
 
     in property <length> chip-spacing;
+    pure function is-selected(index: int) -> bool {
+        root.multi ? root.checked[index] : index == root.selected-index
+    }
     spacing: root.chip-spacing;
     for name[index] in root.model: chip := Rectangle {
         height: root.chip-height;
         border-radius: root.chip-radius;
-        background: index == root.selected-index ? root.chip-selected-background
+        background: root.is-selected(index) ? root.chip-selected-background
             : chip-touch.has-hover && !root.disabled[index] ? root.chip-hover-background
             : root.chip-background;
 
@@ -33,7 +40,7 @@ export component ChoiceChips inherits FlexboxLayout {
                 text: name;
                 font-size: root.font-size;
                 color: root.disabled[index] ? root.disabled-text-color
-                    : index == root.selected-index ? root.selected-text-color : root.text-color;
+                    : root.is-selected(index) ? root.selected-text-color : root.text-color;
                 vertical-alignment: center;
                 horizontal-alignment: center;
                 overflow: clip;
@@ -43,7 +50,9 @@ export component ChoiceChips inherits FlexboxLayout {
         chip-touch := TouchArea {
             enabled: !root.disabled[index];
             clicked => {
-                root.selected-index = index;
+                if !root.multi {
+                    root.selected-index = index;
+                }
                 root.selected(index);
             }
         }

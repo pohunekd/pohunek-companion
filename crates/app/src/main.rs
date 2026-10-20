@@ -13,9 +13,9 @@ mod tray;
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
     INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState, Placement,
-    PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow,
+    PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip,
     TraySummary, View, ViewConfig, attach, clip_display, filter_sections, layout_path,
-    name_from_input, project_chips, rename_session, run_live,
+    name_from_input, project_chips, rename_session, run_live, state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -83,13 +83,14 @@ type Placements = HashMap<SessionKey, (String, bool)>;
 /// each session's placement, and the owner groups in display order as
 /// (id, name).
 struct Arranged {
-    /// A filter is active and no session matches it.
+    /// A filter is active and no session matches it (empty sections may remain).
     filter_empty: bool,
     sections: Vec<GroupSection>,
     placed: Placements,
     owner_groups: Vec<(String, String)>,
     project_chips: Vec<ProjectChip>,
     project_index: usize,
+    state_chips: Vec<StateChip>,
 }
 
 /// The identifier the window sends back for a project chip; stable across
@@ -117,7 +118,10 @@ fn arrange(state: &LayoutState) -> Arranged {
     );
     let (project_chips, project_index) = project_chips(&state.rows, state.filter.project());
     Arranged {
-        filter_empty: state.filter.is_active() && sections.is_empty(),
+        filter_empty: state.filter.is_active()
+            && !state.rows.is_empty()
+            && sections.iter().all(|section| section.rows.is_empty()),
+        state_chips: state_chips(&state.rows, state.filter.states()),
         sections,
         project_chips,
         project_index,
@@ -148,7 +152,26 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
         owner_groups,
         project_chips,
         project_index,
+        state_chips,
     } = arranged;
+    window.set_state_keys(ModelRc::new(VecModel::from(
+        state_chips
+            .iter()
+            .map(|chip| slint::SharedString::from(chip.key))
+            .collect::<Vec<_>>(),
+    )));
+    window.set_state_checked(ModelRc::new(VecModel::from(
+        state_chips
+            .iter()
+            .map(|chip| chip.selected)
+            .collect::<Vec<_>>(),
+    )));
+    window.set_state_names(ModelRc::new(VecModel::from(
+        state_chips
+            .iter()
+            .map(|chip| slint::SharedString::from(chip.label))
+            .collect::<Vec<_>>(),
+    )));
     window.set_project_index(i32::try_from(project_index).unwrap_or_default());
     window.set_filter_project_id(
         match project_chips.get(project_index).map(|chip| &chip.selection) {
@@ -210,8 +233,12 @@ struct LayoutState {
     rules: Vec<PlacementRule>,
     /// Longest title of a derived section, from `view.section_title_max_chars`.
     title_max_chars: usize,
-    /// The query typed into the filter field; not persisted.
+    /// The filter of the selected view: its stored states and project, and the
+    /// query typed into the filter field.
     filter: SessionFilter,
+    /// The query text of each view by view id; kept while the app runs, never
+    /// persisted.
+    queries: HashMap<&'static str, String>,
 }
 
 type SharedLayout = Arc<Mutex<LayoutState>>;
@@ -271,6 +298,8 @@ enum LayoutRequest {
     SetFilter(String),
     /// The key (`chip_key`) of the project chip the owner picked.
     SetProject(String),
+    /// The key (`state_key`) of the state chip the owner toggled.
+    ToggleState(String),
 }
 
 /// Selects the view on a background thread (the save waits on disk) and shows
@@ -279,9 +308,13 @@ fn spawn_view_change(window: slint::Weak<AppWindow>, layout: SharedLayout, view:
     std::thread::spawn(move || {
         let mut state = lock(&layout);
         state.store.set_view(view);
+        state.filter = SessionFilter::from_stored(&state.store.layout().filter(view));
+        let query = state.queries.get(view.id()).cloned().unwrap_or_default();
+        state.filter.set_query(&query);
         let layout_error = save_layout(&mut state);
         let arranged = arrange(&state);
         let applied = window.upgrade_in_event_loop(move |window| {
+            window.set_filter_text(query.into());
             window.set_view_index(i32::try_from(view.index()).unwrap_or_default());
             window.set_editable(view.is_editable());
             show_arranged(&window, arranged);
@@ -305,6 +338,12 @@ struct Refusal {
 fn group_refusal(operation: &str, id: &str, err: &GroupError) -> Option<String> {
     warn!(group = %id, operation, reason = err.kind(), "group operation refused");
     Some(format!("Cannot {operation}: {err}"))
+}
+
+/// Stores the project and states of the current filter for the selected view.
+fn store_filter(state: &mut LayoutState) {
+    let view = state.store.layout().view();
+    state.store.set_filter(view, state.filter.to_stored());
 }
 
 fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
@@ -391,6 +430,18 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
         }
         LayoutRequest::SetFilter(query) => {
             state.filter.set_query(&query);
+            let view = state.store.layout().view();
+            state.queries.insert(view.id(), query);
+            Refusal::default()
+        }
+        LayoutRequest::ToggleState(key) => {
+            match state_from_key(&key) {
+                Some(owner_state) => {
+                    state.filter.toggle_state(owner_state);
+                    store_filter(state);
+                }
+                None => warn!(chip = %key, "unknown state chip"),
+            }
             Refusal::default()
         }
         LayoutRequest::SetProject(key) => {
@@ -399,7 +450,10 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
                 .into_iter()
                 .find(|chip| chip_key(&chip.selection) == key)
             {
-                Some(chip) => state.filter.set_project(chip.selection),
+                Some(chip) => {
+                    state.filter.set_project(chip.selection);
+                    store_filter(state);
+                }
                 None => warn!(chip = %key, "project chip is no longer offered"),
             }
             Refusal::default()
@@ -682,7 +736,13 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         rules: Vec::new(),
         title_max_chars: ViewConfig::default().section_title_max_chars,
         filter: SessionFilter::default(),
+        queries: HashMap::new(),
     }));
+    {
+        let mut state = lock(&layout);
+        let view = state.store.layout().view();
+        state.filter = SessionFilter::from_stored(&state.store.layout().filter(view));
+    }
     window.set_layout_error(layout_error.clone().unwrap_or_default().into());
     window.set_view_names(ModelRc::new(VecModel::from(
         View::ALL
@@ -924,6 +984,10 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         window.on_project_selected({
             let send = send.clone();
             move |key| send(LayoutRequest::SetProject(key.into()))
+        });
+        window.on_state_toggled({
+            let send = send.clone();
+            move |key| send(LayoutRequest::ToggleState(key.into()))
         });
         window.on_delete_group(move |id| send(LayoutRequest::DeleteGroup(id.into())));
     }
