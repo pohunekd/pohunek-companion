@@ -3,6 +3,7 @@ use crate::badge::{WorkBadge, WorkFacts, sanitize};
 use crate::detail::{DetailSource, SessionDetails};
 use crate::open::OpenTargets;
 use crate::owner_state::OwnerState;
+use crate::resume::{ResumeOffer, resume_offer};
 use pohunek_client::is_local_host;
 use pohunek_client::protocol::{RuntimeState, SessionInfo};
 use time::OffsetDateTime;
@@ -48,6 +49,8 @@ pub struct SessionRow {
     pub can_stop: bool,
     /// The daemon accepts `session.remove` for this session.
     pub can_remove: bool,
+    /// Whether an ended session can be resumed, and why not when it cannot.
+    pub resume: ResumeOffer,
     /// Runtime state and loss reason of an unhealthy runtime (sanitized);
     /// empty for a healthy one.
     pub runtime_detail: String,
@@ -153,6 +156,7 @@ impl SessionRow {
             attach_refusal: AttachRefusal::for_session(info.external, info.state),
             can_stop,
             can_remove,
+            resume: resume_offer(&info),
             runtime_detail,
             open,
             host_label: host_label.map(str::to_owned),

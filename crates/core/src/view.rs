@@ -262,6 +262,7 @@ mod tests {
             attach_refusal: None,
             can_stop: false,
             can_remove: false,
+            resume: crate::ResumeOffer::NotApplicable,
             runtime_detail: String::new(),
             open: crate::open::OpenTargets::default(),
             host_label: None,

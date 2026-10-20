@@ -1,12 +1,13 @@
 use pohunek_client::ClientError;
-use pohunek_client::protocol::SessionId;
 use pohunek_client::protocol::method::{
     SessionRemove, SessionRemoveAcceptingUnconfirmed, SessionStop,
 };
+use pohunek_client::protocol::{SessionId, SessionResumeParams, SessionState};
 use tracing::error;
 
 use crate::config::DaemonConfig;
 use crate::connect::{connect_for_session_action, socket_for_host};
+use crate::resume::PROFILE_CHANGED_CODE;
 
 /// A daemon mutation that ends or deletes a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,13 @@ pub enum LifecycleAction {
     /// signalled and may keep running. Only sent after the owner consented
     /// to this one removal.
     RemoveAcceptingUnconfirmed,
+    /// `session.resume`: starts a new worker generation of an ended session
+    /// under the same id.
+    Resume,
+    /// `session.resume` with `accept_profile_change`: relaunches under the
+    /// current agent profile. Only sent after the owner approved it, and only
+    /// the local daemon accepts it.
+    ResumeAcceptingProfileChange,
 }
 
 impl LifecycleAction {
@@ -32,6 +40,8 @@ impl LifecycleAction {
             Self::Stop => "stop",
             Self::Remove => "remove",
             Self::RemoveAcceptingUnconfirmed => "remove_accepting_unconfirmed",
+            Self::Resume => "resume",
+            Self::ResumeAcceptingProfileChange => "resume_accepting_profile_change",
         }
     }
 }
@@ -68,6 +78,12 @@ impl LifecycleError {
     pub fn is_unconfirmed(&self) -> bool {
         matches!(self, Self::Refused { code, .. } if code == UNCONFIRMED_CODE)
     }
+
+    /// The daemon refused a resume only because the agent profile changed
+    /// since launch; `ResumeAcceptingProfileChange` can proceed after consent.
+    pub fn is_profile_changed(&self) -> bool {
+        matches!(self, Self::Refused { code, .. } if code == PROFILE_CHANGED_CODE)
+    }
 }
 
 /// What a successful stop or remove reported.
@@ -79,10 +95,21 @@ pub struct LifecycleOutcome {
     /// Processes an accepting removal left unverified and unsignalled, as
     /// `pid (command)`.
     pub unconfirmed_processes: Vec<String>,
+    /// How far a resume got; `None` for other actions.
+    pub resumed: Option<Resumed>,
 }
 
-/// Sends one `session.stop`, `session.remove` or
-/// `session.remove_accepting_unconfirmed` for `session_id` to the daemon of
+/// The state of a session right after `session.resume` answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resumed {
+    /// The new generation runs; the session can be attached.
+    Running,
+    /// The new generation is still starting.
+    Starting,
+}
+
+/// Sends one `session.stop`, `session.remove`,
+/// `session.remove_accepting_unconfirmed` or `session.resume` for `session_id` to the daemon of
 /// `host` (the local host or a remote host route).
 pub async fn run_lifecycle_action(
     daemon: &DaemonConfig,
@@ -106,9 +133,23 @@ pub async fn run_lifecycle_action(
                 .await
                 .map(|result| LifecycleOutcome {
                     worktrees_failed: result.worktrees_failed,
-                    unconfirmed_processes: Vec::new(),
+                    ..Default::default()
                 })
         }
+        LifecycleAction::Resume | LifecycleAction::ResumeAcceptingProfileChange => client
+            .session_resume_with(SessionResumeParams::new(
+                id,
+                action == LifecycleAction::ResumeAcceptingProfileChange,
+            ))
+            .await
+            .map(|result| LifecycleOutcome {
+                resumed: Some(if result.session.state == SessionState::Running {
+                    Resumed::Running
+                } else {
+                    Resumed::Starting
+                }),
+                ..Default::default()
+            }),
         LifecycleAction::RemoveAcceptingUnconfirmed => client
             .call::<SessionRemoveAcceptingUnconfirmed>(id)
             .await
@@ -122,6 +163,7 @@ pub async fn run_lifecycle_action(
                         None => process.pid.to_string(),
                     })
                     .collect(),
+                ..Default::default()
             }),
     };
     match outcome {

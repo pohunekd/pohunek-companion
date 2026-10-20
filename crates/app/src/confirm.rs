@@ -7,6 +7,7 @@ use pohunek_companion_core::{DaemonConfig, LifecycleAction, SessionKey, run_life
 use slint::ComponentHandle;
 use tracing::{error, info, warn};
 
+use crate::resume::{ResumeContext, Step, resume_and_attach};
 use crate::{AppWindow, SharedLayout, lock, remote_host_name};
 
 /// Modal wording for one action.
@@ -32,6 +33,11 @@ fn wording(action: LifecycleAction) -> Wording {
             heading: "Remove anyway",
             confirm_label: "Remove anyway",
             consequence: "The daemon cannot confirm that all of its processes ended. They are not signalled and may keep running unsupervised after the session, its logs and its worktree are deleted.",
+        },
+        LifecycleAction::Resume | LifecycleAction::ResumeAcceptingProfileChange => Wording {
+            heading: "Resume",
+            confirm_label: "Resume",
+            consequence: "The agent profile changed since launch. Resume with the current profile?",
         },
     }
 }
@@ -66,6 +72,9 @@ fn show_wording(window: &AppWindow, action: LifecycleAction, runtime_problem: bo
 struct ActionReport {
     error: String,
     notice: String,
+    /// Status line error and note of a resume; the modal closes either way.
+    status_error: String,
+    status_note: String,
     /// The refusal was only an unconfirmed runtime sweep: offer "Remove anyway".
     offer_unconfirmed: bool,
 }
@@ -141,6 +150,7 @@ fn action_label(action: LifecycleAction, session_id: &str, host_name: Option<&st
     let verb = match action {
         LifecycleAction::Stop => "stop",
         LifecycleAction::Remove | LifecycleAction::RemoveAcceptingUnconfirmed => "remove",
+        LifecycleAction::Resume | LifecycleAction::ResumeAcceptingProfileChange => "resume",
     };
     format!("{verb} {}", subject(session_id, host_name))
 }
@@ -161,6 +171,12 @@ fn show_report(window: &AppWindow, report: ActionReport, remote: bool) {
     } else if !report.notice.is_empty() {
         window.set_confirm_notice(report.notice.into());
     } else {
+        if !report.status_error.is_empty() {
+            window.set_attach_error(report.status_error.into());
+        }
+        if !report.status_note.is_empty() {
+            window.set_attach_note(report.status_note.into());
+        }
         window.set_confirm_open(false);
     }
 }
@@ -171,15 +187,68 @@ struct Pending {
     /// The host's display name for a remote session.
     host_name: Option<String>,
     session_id: String,
+    /// The session's display name (its id when it has none).
+    name: String,
     /// Becomes `RemoveAcceptingUnconfirmed` only after the daemon refused a
     /// safe removal and the owner saw the risk.
     action: LifecycleAction,
 }
 
+/// The modal's pending request, shared with the resume flow so it can ask for
+/// the owner's approval of a changed agent profile.
+#[derive(Clone)]
+pub struct ConfirmHandle {
+    pending: Arc<Mutex<Option<Pending>>>,
+}
+
+impl ConfirmHandle {
+    /// Opens the modal asking to resume `key` under the current agent profile.
+    pub fn offer_resume_with_profile_change(
+        &self,
+        window: &AppWindow,
+        key: &SessionKey,
+        name: &str,
+        host_name: Option<String>,
+    ) {
+        if window.get_confirm_busy() {
+            window.set_attach_error(
+                format!(
+                    "Cannot resume {}: another action is still running, try again when it ends",
+                    subject(name, host_name.as_deref())
+                )
+                .into(),
+            );
+            return;
+        }
+        let action = LifecycleAction::ResumeAcceptingProfileChange;
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(Pending {
+            host: key.host.clone(),
+            host_name: host_name.clone(),
+            session_id: key.session_id.clone(),
+            name: name.to_owned(),
+            action,
+        });
+        window.set_confirm_name(subject(name, host_name.as_deref()).into());
+        window.set_confirm_error("".into());
+        window.set_confirm_notice("".into());
+        show_wording(window, action, false, host_name.is_some());
+        window.set_confirm_open(true);
+    }
+}
+
 /// Wires the sidebar's stop and remove requests to the modal. `daemon` is the
-/// loaded daemon configuration, or why it could not be loaded.
-pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout: SharedLayout) {
+/// loaded daemon configuration, or why it could not be loaded; `resume` runs
+/// an approved resume.
+pub fn install(
+    window: &AppWindow,
+    daemon: Result<DaemonConfig, String>,
+    resume: ResumeContext,
+    layout: SharedLayout,
+) -> ConfirmHandle {
     let pending: Arc<Mutex<Option<Pending>>> = Arc::new(Mutex::new(None));
+    let handle = ConfirmHandle {
+        pending: pending.clone(),
+    };
 
     let weak = window.as_weak();
     let slot = pending.clone();
@@ -211,6 +280,7 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
             host: host.into(),
             host_name: host_name.clone(),
             session_id: id.into(),
+            name: name.to_string(),
             action,
         });
         window.set_confirm_name(subject(name.as_str(), host_name.as_deref()).into());
@@ -227,7 +297,7 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
         if window.get_confirm_busy() {
             return;
         }
-        let Some((host, host_name, session_id, action)) = slot
+        let Some((host, host_name, session_id, name, action)) = slot
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
@@ -235,6 +305,7 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
                 p.host.clone(),
                 p.host_name.clone(),
                 p.session_id.clone(),
+                p.name.clone(),
                 p.action,
             ))
         else {
@@ -243,11 +314,20 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
         info!(host = %host, session = %session_id, action = action.verb(), "session action confirmed in the modal");
         window.set_confirm_busy(true);
         window.set_confirm_error("".into());
+        if action == LifecycleAction::ResumeAcceptingProfileChange {
+            window.set_attach_error("".into());
+            window.set_attach_note("".into());
+        }
         let weak = window.as_weak();
         let slot = slot.clone();
         let daemon = daemon.clone();
+        let resume = resume.clone();
         std::thread::spawn(move || {
-            let report = lifecycle_report(&daemon, &host, host_name.as_deref(), &session_id, action);
+            let report = if action == LifecycleAction::ResumeAcceptingProfileChange {
+                resume_report(&resume, &host, host_name.as_deref(), &session_id, &name)
+            } else {
+                lifecycle_report(&daemon, &host, host_name.as_deref(), &session_id, action)
+            };
             if !report.error.is_empty() {
                 warn!(session = %session_id, action = action.verb(), error = %report.error, "session action failed");
             }
@@ -276,4 +356,39 @@ pub fn install(window: &AppWindow, daemon: Result<DaemonConfig, String>, layout:
             window.set_confirm_open(false);
         }
     });
+    handle
+}
+
+/// Resumes under the current agent profile after the owner approved it. The
+/// attach outcome goes to the status line, not the modal, which closes.
+fn resume_report(
+    resume: &ResumeContext,
+    host: &str,
+    host_name: Option<&str>,
+    session_id: &str,
+    name: &str,
+) -> ActionReport {
+    let key = SessionKey {
+        host: host.to_owned(),
+        session_id: session_id.to_owned(),
+    };
+    match resume_and_attach(resume, &key, name, host_name, true) {
+        Step::Done(status_note) => ActionReport {
+            status_note,
+            ..Default::default()
+        },
+        Step::Ignored => ActionReport::default(),
+        Step::Failed(status_error) => ActionReport {
+            status_error,
+            ..Default::default()
+        },
+        // An approved resume never asks again.
+        Step::NeedsProfileApproval => ActionReport {
+            status_error: format!(
+                "Cannot resume {}: the agent profile changed again",
+                subject(name, host_name)
+            ),
+            ..Default::default()
+        },
+    }
 }

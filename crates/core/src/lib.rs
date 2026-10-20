@@ -22,6 +22,7 @@ mod open;
 mod owner_state;
 mod pending_placement;
 mod rename;
+mod resume;
 mod routes;
 mod session;
 mod socket;
@@ -57,7 +58,9 @@ pub use layout::{
     CreateAndMoveError, GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError,
     LayoutStore, MoveError, Placement, Reconciled, RulePlacement, layout_path, state_dir,
 };
-pub use lifecycle::{LifecycleAction, LifecycleError, LifecycleOutcome, run_lifecycle_action};
+pub use lifecycle::{
+    LifecycleAction, LifecycleError, LifecycleOutcome, Resumed, run_lifecycle_action,
+};
 pub use live::{LiveHost, LiveUpdate, run_live};
 pub use model::{Applied, IgnoreReason, ReconcileReport, SessionStore};
 pub use needs_you::{NEEDS_YOU_ID, with_needs_you};
@@ -75,6 +78,7 @@ pub use pending_placement::{Pending, PendingEntry, PendingError, PendingStore, S
 pub use pohunek_client::LOCAL_HOST;
 pub use pohunek_client::protocol::SessionNewParams;
 pub use rename::{RenameError, name_from_input, rename_session};
+pub use resume::{PROFILE_CHANGED_CODE, ResumeOffer, refusal_sentence};
 pub use routes::set_route;
 pub use session::{ProjectRef, SessionKey, SessionRow};
 pub use socket::{SocketError, local_socket_path};
