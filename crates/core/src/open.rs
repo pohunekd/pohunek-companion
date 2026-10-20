@@ -56,10 +56,10 @@ impl OpenTargets {
     }
 }
 
-/// True for an `http` or `https` URL with a host and no whitespace or control
-/// characters. Session metadata is untrusted, so anything else is not opened.
+/// True for an `http` or `https` URL with a host, made of printable ASCII only
+/// and without backslashes (browsers read `\\` as `/`). Session metadata is untrusted, so anything else is not opened.
 pub fn is_openable_url(url: &str) -> bool {
-    if url.len() > LINK_MAX_BYTES || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+    if url.len() > LINK_MAX_BYTES || url.chars().any(|c| !c.is_ascii_graphic() || c == '\\') {
         return false;
     }
     let Some((scheme, rest)) = url.split_once("://") else {
@@ -235,6 +235,8 @@ mod tests {
             "github.com/o/r",
             "https://host/a b",
             "https://host/\nx",
+            "https://evil.example\\@good.example/",
+            "https://h\u{202e}/x",
             "--help",
             "-https://host",
         ] {

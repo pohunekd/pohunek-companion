@@ -706,7 +706,9 @@ fn start_open(
             warn!(session = %session_id, kind = kind.label(), error = %message, "open failed");
         }
         let applied = window.upgrade_in_event_loop(move |window| {
-            window.set_action_error(outcome.err().unwrap_or_default().into());
+            if let Err(message) = outcome {
+                window.set_action_error(message.into());
+            }
         });
         if let Err(err) = applied {
             error!(error = %err, "deliver open outcome to the UI");
