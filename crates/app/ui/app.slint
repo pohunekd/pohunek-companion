@@ -70,6 +70,8 @@ export global Theme {
     out property <length> window-padding: 8px;
     out property <length> detail-font-size: 11px;
     out property <length> error-font-size: 13px;
+    out property <length> hosts-button-max-width: 140px;
+    out property <length> host-tag-max-width: 110px;
     out property <length> chip-height: 26px;
     out property <length> chip-padding: 8px;
     out property <length> chip-radius: 13px;
@@ -350,10 +352,30 @@ component SessionRow inherits Rectangle {
         padding-top: Theme.row-vertical-padding;
         padding-bottom: Theme.row-vertical-padding;
         alignment: center;
-        name-text := Text {
-            text: root.data.name;
-            color: Theme.text;
-            overflow: elide;
+        HorizontalLayout {
+            spacing: Theme.badge-spacing;
+            name-text := Text {
+                text: root.data.name;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if root.data.host-label != "": Rectangle {
+                background: Theme.badge-background;
+                border-radius: Theme.badge-radius;
+                horizontal-stretch: 0;
+                width: min(host-tag-text.preferred-width + 2 * Theme.badge-padding, Theme.host-tag-max-width);
+                HorizontalLayout {
+                    padding-left: Theme.badge-padding;
+                    padding-right: Theme.badge-padding;
+                    host-tag-text := Text {
+                        text: root.data.host-label;
+                        color: Theme.badge-text;
+                        font-size: Theme.badge-font-size;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
         }
         HorizontalLayout {
             spacing: Theme.owner-spacing;
@@ -371,7 +393,7 @@ component SessionRow inherits Rectangle {
                 horizontal-stretch: 0;
             }
             state-text := Text {
-                text: (root.data.host-unreachable ? "host unreachable - " : "") + root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "") + (root.data.host-label != "" ? " - " + root.data.host-label : "");
+                text: (root.data.host-unreachable ? "host unreachable - " : "") + root.data.agent + " - " + root.data.state + (root.data.runtime-detail != "" ? " - " + root.data.runtime-detail : "");
                 color: Theme.detail;
                 font-size: Theme.detail-font-size;
                 horizontal-alignment: left;
@@ -891,6 +913,8 @@ export component AppWindow inherits Window {
     in property <[string]> host-names;
     in property <[string]> host-keys;
     in property <[bool]> host-checked;
+    // Name of the host the list is narrowed to; empty for all hosts.
+    in property <string> host-active-name;
     callback host-selected(string);
     // The state chips: labels, the keys sent back on a click, and whether each
     // state is shown.
@@ -1003,16 +1027,17 @@ export component AppWindow inherits Window {
                 selected(index) => { root.view-selected(index); }
             }
             if root.host-names.length > 0: hosts-button := Rectangle {
-                width: hosts-label.preferred-width + 2 * Theme.chip-padding;
+                width: min(hosts-label.preferred-width + 2 * Theme.chip-padding, Theme.hosts-button-max-width);
                 height: Theme.chip-height;
                 border-radius: Theme.chip-radius;
-                background: hosts-touch.has-hover ? Theme.chip-hover-background : Theme.chip-background;
+                background: root.host-active-name != "" ? Theme.chip-selected-background : hosts-touch.has-hover ? Theme.chip-hover-background : Theme.chip-background;
                 hosts-label := Text {
-                    text: "Hosts \u{25be}";
+                    text: (root.host-active-name != "" ? root.host-active-name : "Hosts") + " \u{25be}";
                     font-size: Theme.chip-font-size;
-                    color: Theme.detail;
+                    color: root.host-active-name != "" ? Theme.text : Theme.detail;
                     vertical-alignment: center;
                     horizontal-alignment: center;
+                    overflow: elide;
                 }
                 hosts-touch := TouchArea {
                     mouse-cursor: pointer;
