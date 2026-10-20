@@ -167,9 +167,9 @@ component SessionRow inherits Rectangle {
             }
             if root.data.project-id != "": MenuItem {
                 title: "New session in " + root.data.project-label;
-                activated => { root.new-session-in-project(root.data.project-id, root.arrangeable ? root.data.owner-group : ""); }
+                activated => { root.new-session-in-project(root.data.project-id, root.data.owner-group); }
             }
-            if root.data.project-id == "" && root.arrangeable && root.data.owner-group != "": MenuItem {
+            if root.data.project-id == "" && root.data.owner-group != "": MenuItem {
                 title: "New session here";
                 activated => { root.new-session-in-project("", root.data.owner-group); }
             }

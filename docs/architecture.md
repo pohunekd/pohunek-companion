@@ -151,7 +151,7 @@ Storage and reconciliation:
   `new_session.pending_placement_max_age_secs` whose session never appeared is
   deleted and logged. A group deleted meanwhile refuses the move and the
   session keeps its rule or Inbox placement. Without `--group` (tray, sidebar
-  button, standalone command, derived views) nothing is recorded.
+  button, standalone command) nothing is recorded.
 
 ## Tray states
 
