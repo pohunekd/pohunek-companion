@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,7 @@ use crate::session::SessionKey;
 const PENDING_FILE: &str = "pending-placement.toml";
 const LOCK_FILE: &str = "pending-placement.lock";
 const FILE_MODE: u32 = 0o600;
+const DIR_MODE: u32 = 0o700;
 const FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
@@ -153,7 +154,9 @@ impl PendingStore {
     ) -> Result<(), PendingError> {
         self.update(|pending| {
             let now = now_secs();
-            pending.settle(&HashSet::new(), now, max_age);
+            for key in pending.settle(&HashSet::new(), now, max_age).expired {
+                tracing::warn!(session = %key.session_id, "pending placement expired before the session appeared");
+            }
             pending.add(key, group, now);
         })
         .map(|_| ())
@@ -178,12 +181,17 @@ impl PendingStore {
             move |source| PendingError::Io { path, source }
         };
         let dir = self.path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(dir).map_err(io_err(dir))?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(DIR_MODE)
+            .create(dir)
+            .map_err(io_err(dir))?;
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .mode(FILE_MODE)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(&self.lock_path)
             .map_err(io_err(&self.lock_path))?;
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
@@ -258,6 +266,31 @@ mod tests {
         let settled = pending.settle(&present, 5000, MAX);
         assert_eq!(settled.apply.len(), 1);
         assert!(settled.expired.is_empty());
+    }
+
+    #[test]
+    fn the_file_round_trips_between_record_and_take_and_expires_stale_entries() {
+        let dir = std::env::temp_dir().join(format!("pending-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = PendingStore::in_dir(&dir);
+        assert_eq!(
+            store.take(&HashSet::new(), MAX).unwrap(),
+            Settled::default()
+        );
+        store.record(&key("a"), "g1", MAX).unwrap();
+        store.record(&key("b"), "g2", MAX).unwrap();
+        let taken = store.take(&HashSet::from([key("a")]), MAX).unwrap();
+        assert_eq!(taken.apply, vec![(key("a"), "g1".to_owned())]);
+        let again = store.take(&HashSet::from([key("a")]), MAX).unwrap();
+        assert!(again.apply.is_empty());
+        let expired = store.take(&HashSet::new(), Duration::ZERO);
+        // Entries recorded within the same second are not yet older than zero.
+        assert!(expired.unwrap().apply.is_empty());
+        fs::write(dir.join(PENDING_FILE), "not toml {").unwrap();
+        store.record(&key("c"), "g1", MAX).unwrap();
+        let taken = store.take(&HashSet::from([key("c")]), MAX).unwrap();
+        assert_eq!(taken.apply.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
