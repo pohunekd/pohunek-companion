@@ -365,6 +365,15 @@ impl SessionFilter {
         self.project = project;
     }
 
+    /// Selects the project, or clears to `All` when it is already selected.
+    pub fn toggle_project(&mut self, project: ProjectSelection) {
+        self.project = if self.project == project {
+            ProjectSelection::All
+        } else {
+            project
+        };
+    }
+
     pub fn project(&self) -> &ProjectSelection {
         &self.project
     }
@@ -372,6 +381,12 @@ impl SessionFilter {
     /// Narrows to the host with this target; `None` shows every host.
     pub fn set_host(&mut self, host: Option<String>) {
         self.host = host;
+    }
+
+    /// Narrows to the host with this target, or clears to every host when it
+    /// is already selected.
+    pub fn toggle_host(&mut self, host: Option<String>) {
+        self.host = if self.host == host { None } else { host };
     }
 
     pub fn host(&self) -> Option<&str> {
@@ -758,6 +773,28 @@ mod tests {
             label: target.into(),
             connection,
         }
+    }
+
+    #[test]
+    fn a_second_selection_clears_the_project_and_host() {
+        let mut filter = SessionFilter::default();
+        filter.toggle_project(project_sel("beta"));
+        assert_eq!(filter.project(), &project_sel("beta"));
+        filter.toggle_project(project_sel("beta"));
+        assert_eq!(filter.project(), &ProjectSelection::All);
+        filter.toggle_project(ProjectSelection::NoProject);
+        filter.toggle_project(ProjectSelection::NoProject);
+        assert_eq!(filter.project(), &ProjectSelection::All);
+        filter.toggle_project(ProjectSelection::All);
+        assert_eq!(filter.project(), &ProjectSelection::All);
+
+        filter.toggle_host(Some("host-b".into()));
+        assert_eq!(filter.host(), Some("host-b"));
+        filter.toggle_host(Some("host-b".into()));
+        assert_eq!(filter.host(), None);
+        filter.toggle_host(None);
+        assert_eq!(filter.host(), None);
+        assert_eq!(filter.to_stored(), StoredFilter::default());
     }
 
     #[test]
