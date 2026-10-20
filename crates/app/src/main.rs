@@ -13,11 +13,11 @@ mod tray;
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
-    INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID,
-    OpenConfig, OpenKind, OwnerState, PendingStore, Placement, PlacementRule, ProjectChip,
-    ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View,
-    ViewConfig, attach, clip_display, filter_sections, layout_path, name_from_input, open,
-    project_chips, rename_session, run_live, state_chips, state_from_key,
+    INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OpenConfig, OpenKind,
+    OwnerState, PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection,
+    SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, attach,
+    clip_display, filter_sections, layout_path, name_from_input, open, project_chips,
+    rename_session, run_live, state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -708,7 +708,7 @@ fn start_open(
         }
         let applied = window.upgrade_in_event_loop(move |window| {
             if let Err(message) = outcome {
-                window.set_action_error(message.into());
+                window.set_open_error(message.into());
             }
         });
         if let Err(err) = applied {
@@ -922,6 +922,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
             OpenKind::Link => window.on_open_link(handler),
         }
     }
+    {
         let weak = window.as_weak();
         window.on_request_action(move |kind, host, id, name| {
             info!(host = %host, session = %id, action = %kind, "confirmation requested from the sidebar");

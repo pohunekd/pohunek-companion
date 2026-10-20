@@ -662,6 +662,8 @@ export component AppWindow inherits Window {
     in-out property <string> renaming-host;
     in-out property <string> renaming-id;
     in-out property <string> rename-text;
+    // Why the last "Open folder" or "Open link" failed; empty when it succeeded or none ran.
+    in-out property <string> open-error;
     // Opens the confirmation dialog for "stop" or "remove" of the session (host, id, name).
     callback request-action(string, string, string, string);
     // A standalone group name editor ("+ New group") belongs to the editable
@@ -877,6 +879,12 @@ export component AppWindow inherits Window {
                     root.pending-id = "";
                 }
             }
+        }
+        if root.open-error != "": open-error-text := Text {
+            text: root.open-error;
+            color: Theme.error;
+            font-size: Theme.error-font-size;
+            wrap: word-wrap;
         }
         if root.rename-error != "": rename-error-text := Text {
             text: root.rename-error;
