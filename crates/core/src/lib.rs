@@ -36,8 +36,9 @@ pub use config::{
 };
 pub use connect::host_naming_this_machine;
 pub use discovery::{
-    DialogHost, DiscoveredHost, DiscoveryPlan, IncompatibleHost, dialog_hosts,
-    discover_dialog_hosts, discover_records, plan as plan_discovery,
+    DialogHost, DialogHostsError, DiscoveredHost, DiscoveryPlan, IncompatibleHost,
+    decode_dialog_hosts, dialog_hosts, discover_dialog_hosts, discover_records,
+    encode_dialog_hosts, plan as plan_discovery, register_dialog_routes,
 };
 pub use error::CoreError;
 pub use filter::{
@@ -56,7 +57,8 @@ pub use needs_you::{NEEDS_YOU_ID, with_needs_you};
 pub use new_session::{
     Activity, AgentChoice, Choices, CreateError, FormError, Generation, NewSessionForm,
     ProjectChoice, Recipe, TemplateError, UNCONFIRMED_MESSAGE, build_params, create_session,
-    load_choices, load_recipe, load_templates, recipe_from_action, submit_blocker, template_names,
+    load_choices, load_choices_staged, load_recipe, load_templates, recipe_from_action,
+    submit_blocker, template_names,
 };
 pub use open::{
     OpenConfig, OpenKind, OpenTargets, OpenTemplate, default_open_template, is_openable_url, open,

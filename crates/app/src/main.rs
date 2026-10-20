@@ -12,13 +12,14 @@ mod new_session;
 mod tray;
 
 use pohunek_companion_core::{
-    AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
-    HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, LOCAL_HOST, LayoutStore, LiveHost,
-    LiveUpdate, MoveError, NEEDS_YOU_ID, OpenConfig, OpenKind, OwnerState, PendingStore, Placement,
-    PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey, SessionRow, StateChip,
-    TraySummary, View, ViewConfig, attach, clip_display, discover_records, filter_sections,
-    host_naming_this_machine, host_options, layout_path, name_from_input, open, plan_discovery,
-    project_chips, rename_session, run_live, set_route, state_chips, state_from_key,
+    AttachConfig, AttachError, Config, DaemonConfig, DialogHost, GroupError, GroupPlacement,
+    GroupSection, HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, LOCAL_HOST,
+    LayoutStore, LiveHost, LiveUpdate, MoveError, NEEDS_YOU_ID, OpenConfig, OpenKind, OwnerState,
+    PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection, SessionFilter,
+    SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, attach, clip_display,
+    dialog_hosts, discover_records, filter_sections, host_naming_this_machine, host_options,
+    layout_path, name_from_input, open, plan_discovery, project_chips, rename_session, run_live,
+    set_route, state_chips, state_from_key,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -925,8 +926,18 @@ impl Publisher {
     }
 }
 
+/// The remote hosts the sidebar follows, as the New session dialog lists them.
+/// `None` until the first discovery answered; the dialog then discovers on
+/// its own.
+type SharedDialogHosts = Arc<Mutex<Option<Vec<DialogHost>>>>;
+
+fn known_hosts_snapshot(hosts: &SharedDialogHosts) -> Option<Vec<DialogHost>> {
+    hosts.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
 /// What the daemon loops take from `companion.toml` and the pending store.
 struct FollowSettings {
+    dialog_hosts: SharedDialogHosts,
     daemon: DaemonConfig,
     remotes: Vec<HostConfig>,
     idle_threshold: Duration,
@@ -944,6 +955,7 @@ fn follow_daemons(
     layout: SharedLayout,
 ) {
     let FollowSettings {
+        dialog_hosts,
         daemon,
         remotes,
         idle_threshold,
@@ -985,6 +997,7 @@ fn follow_daemons(
                 daemon.clone(),
                 remotes.clone(),
                 idle_threshold,
+                dialog_hosts,
             ));
             let loops: Vec<_> = hosts
                 .into_iter()
@@ -1032,6 +1045,7 @@ async fn follow_discovered(
     daemon: DaemonConfig,
     configured: Vec<HostConfig>,
     idle_threshold: Duration,
+    dialog_hosts_out: SharedDialogHosts,
 ) {
     let mut followed: HashMap<String, (LiveHost, Option<tokio::task::JoinHandle<()>>)> =
         HashMap::new();
@@ -1102,6 +1116,16 @@ async fn follow_discovered(
                     };
                     followed.insert(found.key.clone(), (host, Some(handle)));
                 }
+                let mut followed_plan = plan.clone();
+                followed_plan.connect.retain(|found| {
+                    followed
+                        .get(&found.key)
+                        .is_some_and(|(_, handle)| handle.is_some())
+                });
+                *dialog_hosts_out
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) =
+                    Some(dialog_hosts(&configured, &followed_plan));
                 publisher.set_incompatible(
                     plan.incompatible
                         .iter()
@@ -1301,7 +1325,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Some(NEW_SESSION_COMMAND) => {
             let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
                 eprintln!(
-                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID]]"
+                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]]"
                 );
                 std::process::exit(2);
             });
@@ -1312,7 +1336,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         Some(other) => {
             eprintln!(
-                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID]]"
+                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]]"
             );
             std::process::exit(2);
         }
@@ -1398,6 +1422,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     window.set_view_index(i32::try_from(view.index()).unwrap_or_default());
     window.set_editable(view.is_editable());
 
+    let known_hosts: SharedDialogHosts = Arc::default();
     let config_path = Config::path().map_err(|err| err.to_string());
     let (attach_context, rename_daemon, open_settings) = match Config::load() {
         Ok(config) => {
@@ -1423,6 +1448,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                 window.as_weak(),
                 tray.as_weak(),
                 FollowSettings {
+                    dialog_hosts: known_hosts.clone(),
                     daemon: config.daemon,
                     remotes: config.hosts,
                     idle_threshold: config.tray.idle_threshold(),
@@ -1721,8 +1747,14 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     }
     {
         let weak = window.as_weak();
+        let known_hosts = known_hosts.clone();
         tray.on_new_session(move || {
-            let outcome = launch::spawn_new_session(None, None, None);
+            let outcome = launch::spawn_new_session(
+                None,
+                None,
+                None,
+                known_hosts_snapshot(&known_hosts).as_deref(),
+            );
             if let Err(message) = &outcome {
                 error!(error = %message, "start the new-session dialog from the tray");
             }
@@ -1737,11 +1769,13 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     }
     {
         let weak = window.as_weak();
+        let known_hosts = known_hosts.clone();
         window.on_new_session(move |host, project, group| {
             let outcome = launch::spawn_new_session(
                 Some(host.as_str()).filter(|host| !host.is_empty() && *host != LOCAL_HOST),
                 Some(project.as_str()).filter(|id| !id.is_empty()),
                 Some(group.as_str()).filter(|id| !id.is_empty()),
+                known_hosts_snapshot(&known_hosts).as_deref(),
             );
             if let Err(message) = &outcome {
                 error!(error = %message, "start the new-session dialog from the sidebar");

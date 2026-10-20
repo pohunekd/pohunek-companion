@@ -5,6 +5,7 @@ use std::net::IpAddr;
 use pohunek_client::protocol::method::HostDiscover;
 use pohunek_client::protocol::{HostClass, HostDiscoverParams, HostRecord};
 use pohunek_client::{ExternalIdentity, LOCAL_HOST, remote_host_with_port};
+use serde::{Deserialize, Serialize};
 
 use crate::badge::sanitize;
 use crate::config::{DaemonConfig, HostConfig};
@@ -107,8 +108,9 @@ pub fn plan(records: &[HostRecord], configured: &[HostConfig]) -> DiscoveryPlan 
     plan
 }
 
-/// A remote host the New session dialog lists.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A remote host the New session dialog lists. The sidebar hands its list to
+/// the dialog on the command line (see [`encode_dialog_hosts`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DialogHost {
     /// The session key's host: a configured target or a discovered key.
     pub target: String,
@@ -116,24 +118,62 @@ pub struct DialogHost {
     pub label: String,
     /// Why the host cannot be picked; `None` when it can.
     pub unavailable: Option<String>,
+    /// The connection route registered for `target`; `None` when the target
+    /// itself is the route.
+    pub route: Option<String>,
+}
+
+/// Failure to read the dialog hosts from the command line.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid dialog hosts: {0}")]
+pub struct DialogHostsError(#[from] serde_json::Error);
+
+/// The hosts as one command-line word.
+pub fn encode_dialog_hosts(hosts: &[DialogHost]) -> Result<String, DialogHostsError> {
+    Ok(serde_json::to_string(hosts)?)
+}
+
+/// Reads the word [`encode_dialog_hosts`] produced.
+pub fn decode_dialog_hosts(arg: &str) -> Result<Vec<DialogHost>, DialogHostsError> {
+    Ok(serde_json::from_str(arg)?)
+}
+
+/// Registers the routes of `hosts` so a connect to their targets dials the
+/// right port.
+pub fn register_dialog_routes(hosts: &[DialogHost]) {
+    for host in hosts {
+        if let Some(route) = &host.route {
+            set_route(&host.target, route);
+        }
+    }
 }
 
 /// The hosts after Local in the dialog: configured entries, then the
 /// discovered reachable peers, then the incompatible ones (listed, not
 /// pickable).
 pub fn dialog_hosts(configured: &[HostConfig], plan: &DiscoveryPlan) -> Vec<DialogHost> {
-    let host = |target: &str, label: &str, unavailable: Option<String>| DialogHost {
-        target: target.to_owned(),
-        label: label.to_owned(),
-        unavailable,
+    let host = |target: &str, label: &str, unavailable: Option<String>, route: Option<String>| {
+        DialogHost {
+            target: target.to_owned(),
+            label: label.to_owned(),
+            unavailable,
+            route,
+        }
     };
     configured
         .iter()
-        .map(|entry| host(&entry.target, &entry.display_label(), None))
+        .map(|entry| {
+            let route = plan
+                .configured_routes
+                .iter()
+                .find(|(target, _)| *target == entry.target)
+                .map(|(_, route)| route.clone());
+            host(&entry.target, &entry.display_label(), None, route)
+        })
         .chain(
             plan.connect
                 .iter()
-                .map(|found| host(&found.key, &found.label, None)),
+                .map(|found| host(&found.key, &found.label, None, Some(found.route.clone()))),
         )
         .chain(plan.incompatible.iter().map(|peer| {
             host(
@@ -143,6 +183,7 @@ pub fn dialog_hosts(configured: &[HostConfig], plan: &DiscoveryPlan) -> Vec<Dial
                     "{}: incompatible daemon (protocol {})",
                     peer.label, peer.protocol_version
                 )),
+                None,
             )
         }))
         .collect()
@@ -438,6 +479,18 @@ mod tests {
                 .unwrap()
                 .contains("protocol 2")
         );
+    }
+
+    #[test]
+    fn dialog_hosts_keep_their_routes_across_the_command_line() {
+        let mut peer = record("air", reachable());
+        peer.port = 28722;
+        let configured = [host("box")];
+        let hosts = dialog_hosts(&configured, &plan(&[peer], &configured));
+        assert!(hosts[0].route.is_none());
+        assert!(hosts[1].route.as_deref().unwrap().ends_with("@28722"));
+        let decoded = decode_dialog_hosts(&encode_dialog_hosts(&hosts).unwrap()).unwrap();
+        assert_eq!(decoded, hosts);
     }
 
     #[test]
