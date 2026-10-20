@@ -253,8 +253,9 @@ component SessionRow inherits Rectangle {
     callback new-group();
     callback return-to-rule();
     callback rename();
-    // Project to preselect and group to place the session in; either may be empty.
-    callback new-session-in-project(string, string);
+    // Host, project to preselect and group to place the session in; the
+    // project and group may be empty.
+    callback new-session-in-project(string, string, string);
     callback stop();
     callback remove();
     callback open-folder();
@@ -310,11 +311,11 @@ component SessionRow inherits Rectangle {
             }
             if root.data.project-id != "": MenuItem {
                 title: "New session in " + root.data.project-label;
-                activated => { root.new-session-in-project(root.data.project-id, root.data.owner-group); }
+                activated => { root.new-session-in-project(root.data.host, root.data.project-id, root.data.owner-group); }
             }
             if root.data.project-id == "" && root.data.owner-group != "": MenuItem {
                 title: "New session here";
-                activated => { root.new-session-in-project("", root.data.owner-group); }
+                activated => { root.new-session-in-project(root.data.host, "", root.data.owner-group); }
             }
             Menu {
                 title: "Move to group";
@@ -851,9 +852,9 @@ export component AppWindow inherits Window {
     // "No project".
     in property <string> filter-project-id;
     // Opens the new-session dialog as its own window; the arguments are the
-    // project to preselect and the My groups group to place the session in,
-    // each empty for none.
-    callback new-session(string, string);
+    // host to preselect, the project to preselect and the My groups group to
+    // place the session in, each empty for none.
+    callback new-session(string, string, string);
     // Labels of the selectable views, in order.
     in property <[string]> view-names;
     in-out property <int> view-index;
@@ -1080,7 +1081,7 @@ export component AppWindow inherits Window {
             mouse-cursor: pointer;
             accessible-role: button;
             accessible-label: "New session";
-            clicked => { root.new-session(root.filter-project-id, ""); }
+            clicked => { root.new-session("", root.filter-project-id, ""); }
             Text {
                 x: Theme.row-padding;
                 text: "+ New session";
@@ -1247,7 +1248,7 @@ export component AppWindow inherits Window {
                                 open-folder => { root.open-folder(session.host, session.id); }
                                 open-link => { root.open-link(session.host, session.id); }
                                 return-to-rule => { root.return-to-rule(session.host, session.id); }
-                                new-session-in-project(project, group) => { root.new-session(project, group); }
+                                new-session-in-project(host, project, group) => { root.new-session(host, project, group); }
                             }
                         }
                         // Below the last row (the only target of an empty group):

@@ -1051,7 +1051,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Some(NEW_SESSION_COMMAND) => {
             let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
                 eprintln!(
-                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID] [--group ID]]"
+                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID]]"
                 );
                 std::process::exit(2);
             });
@@ -1062,7 +1062,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         Some(other) => {
             eprintln!(
-                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--project ID] [--group ID]]"
+                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID]]"
             );
             std::process::exit(2);
         }
@@ -1451,7 +1451,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     {
         let weak = window.as_weak();
         tray.on_new_session(move || {
-            let outcome = launch::spawn_new_session(None, None);
+            let outcome = launch::spawn_new_session(None, None, None);
             if let Err(message) = &outcome {
                 error!(error = %message, "start the new-session dialog from the tray");
             }
@@ -1466,8 +1466,9 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
     }
     {
         let weak = window.as_weak();
-        window.on_new_session(move |project, group| {
+        window.on_new_session(move |host, project, group| {
             let outcome = launch::spawn_new_session(
+                Some(host.as_str()).filter(|host| !host.is_empty() && *host != LOCAL_HOST),
                 Some(project.as_str()).filter(|id| !id.is_empty()),
                 Some(group.as_str()).filter(|id| !id.is_empty()),
             );

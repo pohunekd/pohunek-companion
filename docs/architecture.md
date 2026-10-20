@@ -202,13 +202,23 @@ local daemon's outage keeps the offline tray and unmarked rows.
 Creating, renaming, stopping and removing a session are the companion's only
 mutations of daemon state (see "Renaming a session" and "Stopping or removing
 a session"). Creation runs
-from `pohunek-companion new-session [--project <id>]`, a subcommand of the
+from `pohunek-companion new-session [--host <target>] [--project <id>]
+[--group <id>]`, a subcommand of the
 same binary that runs as its own process: `slint::set_xdg_app_id` is per
 process, so the dialog sets the app id `pohunek-companion-new-session` and a
 compositor rule can float it apart from the sidebar. It creates no tray icon
 and does not follow the session stream.
 
-- Choices come from `project.list` (projects) and `host.inspect` (agents). An
+- The Host select at the top offers Local and every `[[hosts]]` entry by label
+  (Local preselected); `--host <target>` preselects one and a target that is
+  neither `local` nor configured fails with a message naming it. Choosing a
+  host reloads the choices from that host's daemon and keeps the project and
+  agent when the host has them; a host that cannot be reached shows its error
+  and leaves Create disabled. `session.new` goes to the chosen host, and
+  "New session in ..." on a remote row passes the row's host with its group,
+  so the pending placement carries that host in the session key.
+- Choices come from `project.list` (projects) and `host.inspect` (agents) of
+  the chosen host. An
   agent is offered when its runtime is `available` and `supported` is not
   `false`.
 - The form becomes one `session.new` (`Client::session_new`): the chosen
