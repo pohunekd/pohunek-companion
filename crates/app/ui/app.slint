@@ -544,7 +544,10 @@ export component AppWindow inherits Window {
             root.stop-session(root.confirm-host, root.confirm-id, root.confirm-name);
         } else if root.confirm-kind == "remove" {
             root.remove-session(root.confirm-host, root.confirm-id, root.confirm-name);
-        } else {
+        } else if root.confirm-kind == "remove-anyway" {
+            // The consent is spent on this call: drop the offer and its refusal.
+            root.force-id = "";
+            root.action-error = "";
             root.remove-session-anyway(root.confirm-host, root.confirm-id, root.confirm-name);
         }
     }
