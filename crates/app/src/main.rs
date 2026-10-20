@@ -551,7 +551,7 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
             let options = host_options(&state.hosts, state.filter.host());
             match options.into_iter().find(|o| host_key(o) == target) {
                 Some(option) => {
-                    state.filter.set_host(option.target);
+                    state.filter.toggle_host(option.target);
                     store_filter(state);
                 }
                 None => warn!(host = %target, "host entry is no longer offered"),
@@ -565,7 +565,7 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
                 .find(|chip| chip_key(&chip.selection) == key)
             {
                 Some(chip) => {
-                    state.filter.set_project(chip.selection);
+                    state.filter.toggle_project(chip.selection);
                     store_filter(state);
                 }
                 None => warn!(chip = %key, "project chip is no longer offered"),
