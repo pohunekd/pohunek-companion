@@ -81,11 +81,11 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
     Ok(parsed)
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, std::io::Error> {
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, std::io::Error> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
@@ -93,7 +93,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, std::io::Err
 }
 
 /// Host targets offered by the dialog: Local, then every remote host.
-fn host_targets(hosts: &[DialogHost]) -> Vec<String> {
+pub(crate) fn host_targets(hosts: &[DialogHost]) -> Vec<String> {
     std::iter::once(LOCAL_HOST.to_owned())
         .chain(hosts.iter().map(|host| host.target.clone()))
         .collect()
@@ -101,7 +101,7 @@ fn host_targets(hosts: &[DialogHost]) -> Vec<String> {
 
 /// What the `--host` argument means for the hosts known so far.
 #[derive(Debug, PartialEq, Eq)]
-enum Requested {
+pub(crate) enum Requested {
     Local,
     /// Index in [`host_targets`].
     Host(usize),
@@ -111,7 +111,11 @@ enum Requested {
     Refused(String),
 }
 
-fn resolve_host(requested: Option<&str>, hosts: &[DialogHost], discovered: bool) -> Requested {
+pub(crate) fn resolve_host(
+    requested: Option<&str>,
+    hosts: &[DialogHost],
+    discovered: bool,
+) -> Requested {
     let Some(target) = requested.filter(|target| *target != LOCAL_HOST) else {
         return Requested::Local;
     };
@@ -133,25 +137,25 @@ fn resolve_host(requested: Option<&str>, hosts: &[DialogHost], discovered: bool)
 /// Releases remote loads once discovery has registered its routes; Local
 /// never waits for it.
 #[derive(Default)]
-struct DiscoveryGate {
+pub(crate) struct DiscoveryGate {
     done: Mutex<bool>,
     ready: Condvar,
 }
 
 impl DiscoveryGate {
-    fn open() -> Self {
+    pub(crate) fn open() -> Self {
         Self {
             done: Mutex::new(true),
             ready: Condvar::new(),
         }
     }
 
-    fn finish(&self) {
+    pub(crate) fn finish(&self) {
         *lock(&self.done) = true;
         self.ready.notify_all();
     }
 
-    fn wait(&self) {
+    pub(crate) fn wait(&self) {
         let mut done = lock(&self.done);
         while !*done {
             done = self
@@ -164,7 +168,7 @@ impl DiscoveryGate {
 
 /// Opens the gate when dropped, so a discovery thread that ends early cannot
 /// leave a remote load waiting.
-struct FinishOnDrop(Arc<DiscoveryGate>);
+pub(crate) struct FinishOnDrop(pub(crate) Arc<DiscoveryGate>);
 
 impl Drop for FinishOnDrop {
     fn drop(&mut self) {
@@ -630,18 +634,18 @@ fn load_in_background(
     });
 }
 
-fn elapsed_ms(started: Instant) -> u64 {
+pub(crate) fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// How to attach the created session, when the owner asked for it.
-struct AttachAfter {
-    settings: AttachConfig,
-    config_path: Result<PathBuf, String>,
+pub(crate) struct AttachAfter {
+    pub(crate) settings: AttachConfig,
+    pub(crate) config_path: Result<PathBuf, String>,
 }
 
 /// Attaches `session`; the error text reports that the session already exists.
-fn attach_created(after: &AttachAfter, host: &str, session: &str) -> Result<(), String> {
+pub(crate) fn attach_created(after: &AttachAfter, host: &str, session: &str) -> Result<(), String> {
     let config_path = after.config_path.as_ref().map_err(|err| {
         format!("Session {session} was created, but it could not be attached: {err}")
     })?;
@@ -742,30 +746,45 @@ fn submit_in_background(
     });
 }
 
-/// Fills the host select with Local followed by `hosts`.
-fn show_hosts(window: &NewSessionWindow, hosts: &[DialogHost]) {
-    window.set_host_names(ModelRc::new(VecModel::from(
-        std::iter::once(SharedString::from("Local"))
-            .chain(
-                hosts
-                    .iter()
-                    .map(|host| SharedString::from(host.label.as_str())),
-            )
-            .collect::<Vec<_>>(),
-    )));
-    window.set_host_disabled(ModelRc::new(VecModel::from(
-        std::iter::once(false)
-            .chain(hosts.iter().map(|host| host.unavailable.is_some()))
-            .collect::<Vec<_>>(),
-    )));
-    window.set_host_notes(
-        hosts
+/// What the host select shows for Local followed by `hosts`: the labels, which
+/// entries cannot be picked, and the notes saying why.
+pub(crate) struct HostRows {
+    pub(crate) names: ModelRc<SharedString>,
+    pub(crate) disabled: ModelRc<bool>,
+    pub(crate) notes: SharedString,
+}
+
+pub(crate) fn host_rows(hosts: &[DialogHost]) -> HostRows {
+    HostRows {
+        names: ModelRc::new(VecModel::from(
+            std::iter::once(SharedString::from("Local"))
+                .chain(
+                    hosts
+                        .iter()
+                        .map(|host| SharedString::from(host.label.as_str())),
+                )
+                .collect::<Vec<_>>(),
+        )),
+        disabled: ModelRc::new(VecModel::from(
+            std::iter::once(false)
+                .chain(hosts.iter().map(|host| host.unavailable.is_some()))
+                .collect::<Vec<_>>(),
+        )),
+        notes: hosts
             .iter()
             .filter_map(|host| host.unavailable.as_deref())
             .collect::<Vec<_>>()
             .join("\n")
             .into(),
-    );
+    }
+}
+
+/// Fills the host select with Local followed by `hosts`.
+fn show_hosts(window: &NewSessionWindow, hosts: &[DialogHost]) {
+    let rows = host_rows(hosts);
+    window.set_host_names(rows.names);
+    window.set_host_disabled(rows.disabled);
+    window.set_host_notes(rows.notes);
 }
 
 /// Discovers the remote hosts without holding the window back: the host select

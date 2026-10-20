@@ -1176,6 +1176,9 @@ export component AppWindow inherits Window {
     // host to preselect, the project to preselect and the My groups group to
     // place the session in, each empty for none.
     callback new-session(string, string, string);
+    // Opens the assistant dialog as its own window; the argument is the project
+    // id to preselect, empty for none.
+    callback assistant(string);
     // Labels of the selectable views, in order.
     in property <[string]> view-names;
     in-out property <int> view-index;
@@ -1459,18 +1462,33 @@ export component AppWindow inherits Window {
             font-size: Theme.error-font-size;
             wrap: word-wrap;
         }
-        new-session-touch := TouchArea {
+        HorizontalLayout {
             height: Theme.new-group-height;
-            mouse-cursor: pointer;
-            accessible-role: button;
-            accessible-label: "New session";
-            clicked => { root.new-session("", root.filter-project-id, ""); }
-            Text {
-                x: Theme.row-padding;
-                text: "+ New session";
-                color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
-                font-size: Theme.group-font-size;
-                vertical-alignment: center;
+            new-session-touch := TouchArea {
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: "New session";
+                clicked => { root.new-session("", root.filter-project-id, ""); }
+                Text {
+                    x: Theme.row-padding;
+                    text: "+ New session";
+                    color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
+                    font-size: Theme.group-font-size;
+                    vertical-alignment: center;
+                }
+            }
+            assistant-touch := TouchArea {
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: "Assistant";
+                clicked => { root.assistant(root.filter-project-id); }
+                Text {
+                    x: Theme.row-padding;
+                    text: "+ Assistant";
+                    color: parent.has-hover ? Theme.group-button-hover : Theme.new-group-text;
+                    font-size: Theme.group-font-size;
+                    vertical-alignment: center;
+                }
             }
         }
         if root.group-error != "": group-error-text := Text {
@@ -1752,6 +1770,7 @@ export component Tray inherits SystemTrayIcon {
     callback show-about();
     callback show-about-companion();
     callback new-session();
+    callback assistant();
     callback quit();
 
     icon: root.tray-icon;
@@ -1770,6 +1789,10 @@ export component Tray inherits SystemTrayIcon {
         MenuItem {
             title: "New session...";
             activated => { root.new-session(); }
+        }
+        MenuItem {
+            title: "Assistant...";
+            activated => { root.assistant(); }
         }
         MenuItem {
             title: "Show window";

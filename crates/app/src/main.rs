@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
+mod assistant;
 mod confirm;
 #[cfg(target_os = "linux")]
 mod desktop;
@@ -13,6 +14,8 @@ mod launch;
 mod logging;
 mod new_session;
 mod tray;
+
+use launch::{ASSISTANT_COMMAND, NEW_SESSION_COMMAND};
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, DialogHost, GroupError, GroupPlacement,
@@ -1367,8 +1370,13 @@ fn run_desktop_command(_action: Option<&str>) -> Result<(), slint::PlatformError
     std::process::exit(2);
 }
 
+fn usage() -> String {
+    format!(
+        "usage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]] | pohunek-companion {ASSISTANT_COMMAND} [--host TARGET] [--project ID] [--intent INTENT] [--known-hosts JSON] | pohunek-companion {DESKTOP_COMMAND} <install|uninstall>"
+    )
+}
+
 fn main() -> Result<(), slint::PlatformError> {
-    use launch::NEW_SESSION_COMMAND;
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => run_sidebar(),
@@ -1378,9 +1386,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         Some(NEW_SESSION_COMMAND) => {
             let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
-                eprintln!(
-                    "{message}\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]] | pohunek-companion {DESKTOP_COMMAND} <install|uninstall>"
-                );
+                eprintln!("{message}\n{}", usage());
                 std::process::exit(2);
             });
             if let Err(err) = logging::init() {
@@ -1388,11 +1394,19 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             new_session::run(parsed)
         }
+        Some(ASSISTANT_COMMAND) => {
+            let parsed = assistant::parse_args(args).unwrap_or_else(|message| {
+                eprintln!("{message}\n{}", usage());
+                std::process::exit(2);
+            });
+            if let Err(err) = logging::init() {
+                eprintln!("logging disabled: {err}");
+            }
+            assistant::run(parsed)
+        }
         Some(DESKTOP_COMMAND) => run_desktop_command(args.next().as_deref()),
         Some(other) => {
-            eprintln!(
-                "unknown command `{other}`\nusage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]] | pohunek-companion {DESKTOP_COMMAND} <install|uninstall>"
-            );
+            eprintln!("unknown command `{other}`\n{}", usage());
             std::process::exit(2);
         }
     }
@@ -1835,6 +1849,41 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
             );
             if let Err(message) = &outcome {
                 error!(error = %message, "start the new-session dialog from the sidebar");
+            }
+            if let Some(window) = weak.upgrade() {
+                window.set_launch_error(outcome.err().unwrap_or_default().into());
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let known_hosts = known_hosts.clone();
+        tray.on_assistant(move || {
+            let outcome =
+                launch::spawn_assistant(None, None, known_hosts_snapshot(&known_hosts).as_deref());
+            if let Err(message) = &outcome {
+                error!(error = %message, "start the assistant dialog from the tray");
+            }
+            let Some(window) = weak.upgrade() else { return };
+            let failed = outcome.is_err();
+            window.set_launch_error(outcome.err().unwrap_or_default().into());
+            // The sidebar may be hidden; reveal it so the failure is seen.
+            if failed && let Err(err) = window.show() {
+                error!(error = %err, "show window after a failed dialog start");
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let known_hosts = known_hosts.clone();
+        window.on_assistant(move |project| {
+            let outcome = launch::spawn_assistant(
+                None,
+                Some(project.as_str()).filter(|id| !id.is_empty()),
+                known_hosts_snapshot(&known_hosts).as_deref(),
+            );
+            if let Err(message) = &outcome {
+                error!(error = %message, "start the assistant dialog from the sidebar");
             }
             if let Some(window) = weak.upgrade() {
                 window.set_launch_error(outcome.err().unwrap_or_default().into());

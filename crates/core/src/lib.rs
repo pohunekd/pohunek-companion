@@ -1,6 +1,7 @@
 //! Daemon connection and session model for Pohunek Companion. No UI
 //! dependency: the app crate maps these values to its views.
 
+mod assistant;
 mod attach;
 mod attach_macos;
 mod attach_path;
@@ -28,6 +29,10 @@ mod sort_key;
 mod tray_summary;
 mod view;
 
+pub use assistant::{
+    AssistantForm, AssistantFormError, INTENTS, Intent, assistant_blocker, is_remote_host,
+    launch_assistant,
+};
 pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attach};
 pub use attach_macos::AttachTerminal;
 pub use badge::{WorkBadge, WorkFacts, clip_display, clip_middle};
