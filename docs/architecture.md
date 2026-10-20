@@ -236,14 +236,22 @@ process, so the dialog sets the app id `pohunek-companion-new-session` and a
 compositor rule can float it apart from the sidebar. It creates no tray icon
 and does not follow the session stream.
 
-- The Host select at the top offers Local and every `[[hosts]]` entry by label
-  (Local preselected); `--host <target>` preselects one and a target that is
-  neither `local` nor configured fails with a message naming it. Choosing a
-  host reloads the choices from that host's daemon and keeps the project and
-  agent when the host has them; a host that cannot be reached shows its error
-  and leaves Create disabled. `session.new` goes to the chosen host, and
-  "New session in ..." on a remote row passes the row's host with its group,
-  so the pending placement carries that host in the session key.
+- The Host select at the top offers Local, then every `[[hosts]]` entry, then
+  every peer the local daemon discovers (the sidebar's labels). The dialog is
+  its own process, so it asks `host.discover` itself at startup with the same
+  derivation as the sidebar (`discovery::plan`, shared core code) and
+  registers the discovered peers' routes before it connects; a peer that is
+  this machine is left out. A `version_mismatch` peer is listed but cannot be
+  picked, with a note naming the protocol version, like an unlaunchable agent.
+  A failed discovery is logged and leaves Local and the configured hosts.
+  `--host <target>` preselects `local`, a configured target or a discovered
+  key; any other target, or an incompatible peer, fails with a message naming
+  it. Choosing a host reloads the choices from that host's daemon and keeps
+  the project and agent when the host has them; a host that cannot be reached
+  shows its error and leaves Create disabled. `session.new` goes to the chosen
+  host, and "New session in ..." on a remote row passes the row's host key
+  with its group, so the pending placement carries that host in the session
+  key.
 - Choices come from `project.list` (projects) and `host.inspect` (agents) of
   the chosen host. An
   agent is offered when its runtime is `available` and `supported` is not

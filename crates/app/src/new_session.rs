@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use pohunek_companion_core::{
-    Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, FormError,
-    Generation, HostConfig, LOCAL_HOST, NewSessionConfig, NewSessionForm, PendingStore, Recipe,
-    SessionKey, SessionNewParams, attach, build_params, create_session, fuzzy_matches,
-    load_choices, load_recipe, load_templates, submit_blocker,
+    Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, DialogHost,
+    DiscoveryPlan, FormError, Generation, LOCAL_HOST, NewSessionConfig, NewSessionForm,
+    PendingStore, Recipe, SessionKey, SessionNewParams, attach, build_params, create_session,
+    dialog_hosts, discover_dialog_hosts, fuzzy_matches, load_choices, load_recipe, load_templates,
+    submit_blocker,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -28,7 +29,8 @@ const GROUP_FLAG: &str = "--group";
 /// Parsed `new-session` arguments.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Args {
-    /// Host target to preselect; `local` or a configured `[[hosts]]` target.
+    /// Host target to preselect; `local`, a configured `[[hosts]]` target or a
+    /// discovered host's key.
     pub host: Option<String>,
     /// Project id to preselect.
     pub project: Option<String>,
@@ -79,26 +81,29 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, std::io::Err
         .block_on(future))
 }
 
-/// Host targets offered by the dialog: Local, then every configured host.
-fn host_targets(hosts: &[HostConfig]) -> Vec<String> {
+/// Host targets offered by the dialog: Local, then every remote host.
+fn host_targets(hosts: &[DialogHost]) -> Vec<String> {
     std::iter::once(LOCAL_HOST.to_owned())
         .chain(hosts.iter().map(|host| host.target.clone()))
         .collect()
 }
 
 /// Index in [`host_targets`] of the requested host (`local` when none), or the
-/// message that names an unknown target.
-fn resolve_host(requested: Option<&str>, hosts: &[HostConfig]) -> Result<usize, String> {
+/// message that names an unknown or unpickable target.
+fn resolve_host(requested: Option<&str>, hosts: &[DialogHost]) -> Result<usize, String> {
     let Some(target) = requested.filter(|target| *target != LOCAL_HOST) else {
         return Ok(0);
     };
-    hosts
+    let host = hosts
         .iter()
         .position(|host| host.target == target)
-        .map(|index| index + 1)
         .ok_or_else(|| {
-            format!("unknown host `{target}`: it is not `local` and not a `[[hosts]]` target in companion.toml")
-        })
+            format!("unknown host `{target}`: it is not `local`, not a `[[hosts]]` target in companion.toml and not a reachable host the local daemon discovers")
+        })?;
+    match &hosts[host].unavailable {
+        Some(reason) => Err(format!("host `{target}` cannot be used: {reason}")),
+        None => Ok(host + 1),
+    }
 }
 
 fn show_choices(
@@ -613,23 +618,47 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
     window.set_blocker(FormError::Loading.to_string().into());
     match Config::load() {
         Ok(config) => {
+            let (remote_hosts, failure) =
+                block_on(discover_dialog_hosts(&config.daemon, &config.hosts)).unwrap_or_else(
+                    |err| {
+                        (
+                            dialog_hosts(&config.hosts, &DiscoveryPlan::default()),
+                            Some(format!("cannot start the background runtime: {err}")),
+                        )
+                    },
+                );
+            if let Some(message) = failure {
+                warn!(error = %message, "host discovery failed; the dialog lists configured hosts only");
+            }
             let host_index =
-                resolve_host(args.host.as_deref(), &config.hosts).unwrap_or_else(|message| {
+                resolve_host(args.host.as_deref(), &remote_hosts).unwrap_or_else(|message| {
                     error!(error = %message, "resolve the requested host");
                     eprintln!("{message}");
                     std::process::exit(2);
                 });
-            let targets = host_targets(&config.hosts);
+            let targets = host_targets(&remote_hosts);
             window.set_host_names(ModelRc::new(VecModel::from(
                 std::iter::once(SharedString::from("Local"))
                     .chain(
-                        config
-                            .hosts
+                        remote_hosts
                             .iter()
-                            .map(|host| SharedString::from(host.display_label())),
+                            .map(|host| SharedString::from(host.label.as_str())),
                     )
                     .collect::<Vec<_>>(),
             )));
+            window.set_host_disabled(ModelRc::new(VecModel::from(
+                std::iter::once(false)
+                    .chain(remote_hosts.iter().map(|host| host.unavailable.is_some()))
+                    .collect::<Vec<_>>(),
+            )));
+            window.set_host_notes(
+                remote_hosts
+                    .iter()
+                    .filter_map(|host| host.unavailable.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .into(),
+            );
             window.set_host_index(i32::try_from(host_index).unwrap_or(0));
             let templates = Templates::new(
                 targets.clone(),
