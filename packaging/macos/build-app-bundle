@@ -3,10 +3,11 @@
 #
 # usage: build-app-bundle <pohunek-companion-binary> <version> <output-dir>
 #
-# Creates <output-dir>/Pohunek Companion.app and prints its path. The bundle
-# is not signed here (`sign` does that). The sidebar becomes an accessory app
-# at run time; Info.plist deliberately has no LSUIElement, because the
-# new-session dialog is the same executable and must stay a regular app.
+# Creates <output-dir> when missing, builds <output-dir>/Pohunek Companion.app
+# in it and prints the bundle path. The bundle is not signed here (`sign` does
+# that). The sidebar becomes an accessory app at run time; Info.plist
+# deliberately has no LSUIElement, because the new-session dialog is the same
+# executable and must stay a regular app.
 #
 # The Info.plist is written with plutil, which serializes every value; nothing
 # is interpolated into XML.
@@ -31,8 +32,8 @@ esac
 case $version in
     *[!0-9.]*) fail "version must be X.Y.Z: $version" ;;
 esac
-[ -d "$output" ] || fail "not a directory: $output"
 command -v plutil >/dev/null 2>&1 || fail "plutil is required (macOS only)"
+mkdir -p -- "$output" || fail "cannot create the output directory: $output"
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 minimum_macos=$(tr -d ' \n' < "$script_dir/DEPLOYMENT_TARGET")

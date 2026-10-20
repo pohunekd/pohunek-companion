@@ -1,16 +1,29 @@
 name: Release
 
-# A `vX.Y.Z` tag builds the x86_64 Linux archive, attests it and publishes it as
-# a GitHub Release. `workflow_dispatch` (version input) and `pull_request`
-# (release files only) run the same build and upload workflow artifacts; they
-# never attest, tag or release.
+# A `vX.Y.Z` tag builds the x86_64 Linux archive and the ad-hoc signed
+# aarch64 macOS archive, attests both and publishes them as a GitHub Release.
+# `workflow_dispatch` (version input) and `pull_request` (release files only)
+# run the same builds and upload workflow artifacts; they never attest, tag or
+# release.
 #
 # Jobs:
-#   prepare   resolves the version and requires it to equal the workspace one.
-#   build     runs the gate set (a tag push runs no CI), builds, packages,
-#             smoke-tests and uploads the archive and its checksum.
-#   attest    only job with `id-token`/`attestations: write`; tag pushes only.
-#   publish   only job with `contents: write`; tag pushes only.
+#   prepare        resolves the version and requires it to equal the workspace one.
+#   build          runs the gate set (a tag push runs no CI), builds, packages,
+#                  smoke-tests and uploads the Linux archive and its checksum.
+#   stage-macos    builds the release binary and assembles the unsigned app
+#                  bundle tree; runs on macos-15 (arm64).
+#   package-macos  a fresh runner checks the staged tree, ad-hoc signs and
+#                  verifies the bundle and archives it. It runs nothing from
+#                  the tree.
+#   verify-macos   extracts the archive outside the checkout, verifies the
+#                  signature and Info.plist and runs the packaged binary.
+#   inventory      checks that both archives and both checksums are present
+#                  and match; uploads the inventory (every event).
+#   attest         only job with `id-token`/`attestations: write`; tag pushes only.
+#   publish        only job with `contents: write`; tag pushes only.
+#
+# The macOS archive is ad-hoc signed and not notarized; no job uses a signing
+# credential. Provenance of both archives comes from `attest`.
 #
 # Provenance is checked with
 # `gh attestation verify <archive> --repo pohunekd/pohunek-companion`.
@@ -31,6 +44,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "scripts/release-*"
+      - "packaging/macos/**"
 
 concurrency:
   group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
@@ -44,6 +58,7 @@ env:
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: short
   TARGET: x86_64-unknown-linux-gnu
+  MACOS_TARGET: aarch64-apple-darwin
 
 jobs:
   prepare:
@@ -153,10 +168,183 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  stage-macos:
+    name: Stage the aarch64 macOS app bundle
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Verify the native runner architecture
+        run: test "$(uname -m)" = "arm64"
+      - name: Toolchain
+        run: rustup show active-toolchain
+      # A tag build starts clean so the attested binary never comes from cached artifacts.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ github.event_name != 'push' }}
+        with:
+          save-if: "false"
+      - name: Build
+        run: |
+          set -euo pipefail
+          MACOSX_DEPLOYMENT_TARGET="$(tr -d ' \n' < packaging/macos/DEPLOYMENT_TARGET)"
+          export MACOSX_DEPLOYMENT_TARGET
+          echo "Deployment target: $MACOSX_DEPLOYMENT_TARGET"
+          cargo build --release --locked -p pohunek-companion --target "$MACOS_TARGET"
+      - name: Assemble the archive tree
+        run: |
+          set -euo pipefail
+          name="pohunek-companion-${VERSION}-${MACOS_TARGET}"
+          stage="$RUNNER_TEMP/stage/$name"
+          mkdir -p "$stage" "$RUNNER_TEMP/stage-upload"
+          packaging/macos/build-app-bundle "target/${MACOS_TARGET}/release/pohunek-companion" "$VERSION" "$stage"
+          install -m 0644 LICENSE README.md "$stage/"
+          # A tar keeps the modes that an artifact upload would drop.
+          COPYFILE_DISABLE=1 tar -cf "$RUNNER_TEMP/stage-upload/stage.tar" -C "$RUNNER_TEMP/stage" "$name"
+          ( cd "$RUNNER_TEMP/stage-upload" && shasum -a 256 stage.tar > stage.tar.sha256 )
+      - name: Upload the staged tree
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-stage
+          path: ${{ runner.temp }}/stage-upload
+          if-no-files-found: error
+          retention-days: 1
+
+  package-macos:
+    name: Sign and package the macOS archive
+    needs: [prepare, stage-macos]
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Verify the native runner architecture
+        run: test "$(uname -m)" = "arm64"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-stage
+          path: ${{ runner.temp }}/stage-download
+      # The artifact is untrusted data: the directory it must hold is named from
+      # the version, never from the artifact. No program from it runs here.
+      - name: Check and extract the staged tree
+        run: |
+          set -euo pipefail
+          name="pohunek-companion-${VERSION}-${MACOS_TARGET}"
+          stage_tar="$RUNNER_TEMP/stage-download/stage.tar"
+          ( cd "$RUNNER_TEMP/stage-download" && shasum -a 256 -c stage.tar.sha256 )
+          if tar -tf "$stage_tar" | grep -v -e "^${name}/" -e "^${name}\$"; then
+            echo "::error::the staged tar holds entries outside ${name}"
+            exit 1
+          fi
+          if tar -tf "$stage_tar" | grep -e '\.\.'; then
+            echo "::error::the staged tar holds a parent-directory component"
+            exit 1
+          fi
+          if tar -tvf "$stage_tar" | grep -e '^[lh]'; then
+            echo "::error::the staged tar holds a link"
+            exit 1
+          fi
+          mkdir -p dist
+          tar -xf "$stage_tar" -C dist
+          test -d "dist/$name/Pohunek Companion.app/Contents"
+      - name: Ad-hoc sign, verify and archive
+        run: |
+          set -euo pipefail
+          name="pohunek-companion-${VERSION}-${MACOS_TARGET}"
+          packaging/macos/sign "dist/$name/Pohunek Companion.app"
+          test "$(find "dist/$name" -type f -name LICENSE -o -type f -name README.md | wc -l | tr -d ' ')" = 2
+          # Archives carry the tagged commit's time and list in a fixed order.
+          stamp="$(date -u -r "$(git log -1 --format=%ct)" +%Y%m%d%H%M.%S)"
+          find "dist/$name" -exec touch -h -t "$stamp" {} +
+          ( cd dist && find "$name" -print | LC_ALL=C sort > "$RUNNER_TEMP/members.txt" )
+          mkdir -p "$RUNNER_TEMP/signed-upload"
+          archive="$RUNNER_TEMP/signed-upload/$name.tar.gz"
+          ( cd dist && COPYFILE_DISABLE=1 tar --no-recursion --uid 0 --gid 0 --numeric-owner \
+              -czf "$archive" -T "$RUNNER_TEMP/members.txt" )
+          ( cd "$RUNNER_TEMP/signed-upload" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" )
+          ls -l "$RUNNER_TEMP/signed-upload"
+      - name: Upload the archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-macos-aarch64
+          path: ${{ runner.temp }}/signed-upload/*
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-macos:
+    name: Verify the macOS archive
+    needs: [prepare, package-macos]
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Verify the native runner architecture
+        run: test "$(uname -m)" = "arm64"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-macos-aarch64
+          path: ${{ runner.temp }}/archive
+      - name: Extract outside the checkout and verify
+        run: |
+          set -euo pipefail
+          name="pohunek-companion-${VERSION}-${MACOS_TARGET}"
+          ( cd "$RUNNER_TEMP/archive" && shasum -a 256 -c "$name.tar.gz.sha256" )
+          check="$(mktemp -d)"
+          tar -xzf "$RUNNER_TEMP/archive/$name.tar.gz" -C "$check"
+          root="$check/$name"
+          app="$root/Pohunek Companion.app"
+          test -f "$root/LICENSE"
+          test -f "$root/README.md"
+          test "$(find "$root" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 3
+          codesign --verify --deep --strict --verbose=2 "$app"
+          plist="$app/Contents/Info.plist"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$plist")" = "io.github.pohunekd.companion"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$plist")" = "$VERSION"
+          "$app/Contents/MacOS/pohunek-companion" --version | tee "$check/version.txt"
+          test "$(cat "$check/version.txt")" = "pohunek-companion ${VERSION}"
+          echo "Linked libraries:"
+          otool -L "$app/Contents/MacOS/pohunek-companion"
+
+  inventory:
+    name: Check the release inventory
+    needs: [prepare, build, verify-macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+      - name: Check the asset set and the checksums
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/inventory"
+          scripts/release-inventory "$RUNNER_TEMP/release" "$VERSION" | tee "$RUNNER_TEMP/inventory/inventory.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: inventory
+          path: ${{ runner.temp }}/inventory/inventory.txt
+          if-no-files-found: error
+          retention-days: 14
+
   # Checks out nothing: no repository code runs while the OIDC token exists.
   attest:
     name: Attest the release assets
-    needs: build
+    needs: [build, inventory]
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -167,10 +355,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-linux-x86_64
+          pattern: release-*
+          merge-multiple: true
           path: ${{ runner.temp }}/assets
       - name: Check the checksum
-        run: cd "$RUNNER_TEMP/assets" && sha256sum -c ./*.sha256
+        run: cd "$RUNNER_TEMP/assets" && for f in ./*.sha256; do sha256sum -c "$f"; done
       - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: |
@@ -181,7 +370,7 @@ jobs:
   # digests against the local files, then publishes.
   publish:
     name: Publish the release
-    needs: [prepare, build, attest]
+    needs: [prepare, build, inventory, attest]
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -192,19 +381,16 @@ jobs:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-linux-x86_64
+          pattern: release-*
+          merge-multiple: true
           path: ${{ runner.temp }}/release
-      - name: Check the asset set and the checksum
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/release"
-          name="pohunek-companion-${VERSION}-${TARGET}.tar.gz"
-          want="$(printf '%s\n' "$name" "$name.sha256")"
-          have="$(find . -type f -printf '%P\n' | LC_ALL=C sort)"
-          [ "$want" = "$have" ] || { echo "::error::unexpected asset set"; echo "$have"; exit 1; }
-          sha256sum -c "$name.sha256"
+      - name: Check the asset set and the checksums
+        run: scripts/release-inventory "$RUNNER_TEMP/release" "$VERSION"
       - name: Create the draft and upload the assets
         run: |
           set -euo pipefail
@@ -215,7 +401,7 @@ jobs:
             exit 1
           fi
           cd "$RUNNER_TEMP/release"
-          notes="Pohunek Companion ${VERSION} for x86_64 Linux (glibc). Verify with \`sha256sum -c\` and \`gh attestation verify <archive> --repo ${GITHUB_REPOSITORY}\`."
+          notes="Pohunek Companion ${VERSION} for x86_64 Linux (glibc) and Apple Silicon macOS (ad-hoc signed, not notarized). Verify with \`sha256sum -c\` and \`gh attestation verify <archive> --repo ${GITHUB_REPOSITORY}\`."
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
             --title "$TAG" --notes "$notes" ./*
       - name: Verify the draft's assets
