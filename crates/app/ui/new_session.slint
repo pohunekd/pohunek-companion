@@ -43,6 +43,8 @@ component SearchSelect inherits Rectangle {
     // Unlaunchable entries are listed but cannot be picked.
     in property <[bool]> disabled;
     in property <string> placeholder: "Select...";
+    // The choices are still being read; the list says so instead of "No match".
+    in property <bool> loading;
     in-out property <int> selected-index: -1;
     out property <bool> list-open: false;
     callback selected(int);
@@ -90,11 +92,23 @@ component SearchSelect inherits Rectangle {
     public function close() {
         root.list-open = false;
         root.query = "";
+        root.reset-highlight();
     }
 
+    // The highlight starts on the current choice when the list shows every
+    // entry, and on the first match while a query narrows it.
     function reset-highlight() {
-        root.highlight = 0;
+        root.highlight = root.query == "" && root.selected-index >= 0 ? root.selected-index : 0;
         list-flick.content-y = 0px;
+        root.scroll-to-highlight();
+    }
+
+    function scroll-to-highlight() {
+        if root.highlight * DialogTheme.list-row-height < -list-flick.content-y {
+            list-flick.content-y = -root.highlight * DialogTheme.list-row-height;
+        } else if (root.highlight + 1) * DialogTheme.list-row-height > -list-flick.content-y + list-flick.height {
+            list-flick.content-y = list-flick.height - (root.highlight + 1) * DialogTheme.list-row-height;
+        }
     }
 
     function pick(row: int) {
@@ -106,14 +120,19 @@ component SearchSelect inherits Rectangle {
         root.close();
     }
 
+    // Opens a closed list; on an open one moves the highlight, never onto a
+    // disabled entry.
     function move(delta: int) {
-        root.list-open = true;
-        root.highlight = clamp(root.highlight + delta, 0, max(root.filtered.length - 1, 0));
-        if root.highlight * DialogTheme.list-row-height < -list-flick.content-y {
-            list-flick.content-y = -root.highlight * DialogTheme.list-row-height;
-        } else if (root.highlight + 1) * DialogTheme.list-row-height > -list-flick.content-y + list-flick.height {
-            list-flick.content-y = list-flick.height - (root.highlight + 1) * DialogTheme.list-row-height;
+        if !root.list-open {
+            root.list-open = true;
+            return;
         }
+        let next = clamp(root.highlight + delta, 0, max(root.filtered.length - 1, 0));
+        if root.disabled[root.filtered[next]] {
+            return;
+        }
+        root.highlight = next;
+        root.scroll-to-highlight();
     }
 
     changed filtered => {
@@ -179,7 +198,7 @@ component SearchSelect inherits Rectangle {
 
         if root.filtered.length == 0: Text {
             x: DialogTheme.field-padding;
-            text: "No match";
+            text: root.loading ? "Loading..." : "No match";
             color: Theme.detail;
             font-size: DialogTheme.field-font-size;
             vertical-alignment: center;
@@ -356,6 +375,7 @@ export component NewSessionWindow inherits Window {
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Project"; }
                 project-field := SearchSelect {
+                    loading: root.loading;
                     model: root.project-names;
                     selected-index <=> root.project-index;
                     selected(index) => { root.project-changed(index); }
@@ -366,6 +386,7 @@ export component NewSessionWindow inherits Window {
                 spacing: DialogTheme.field-spacing;
                 FieldLabel { text: "Agent"; }
                 agent-field := SearchSelect {
+                    loading: root.loading;
                     model: root.agent-names;
                     disabled: root.agent-disabled;
                     selected-index <=> root.agent-index;
