@@ -14,14 +14,7 @@ use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, GroupError, GroupPlacement, GroupSection,
     INBOX_ID, LOCAL_HOST, LayoutStore, LiveUpdate, MoveError, NEEDS_YOU_ID, OwnerState,
     PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection, SessionFilter,
-<<<<<<< HEAD
     SessionKey, SessionRow, StateChip,
-    TraySummary, View, ViewConfig, attach, clip_display, filter_sections, layout_path,
-    name_from_input, project_chips, rename_session, run_live, state_chips, state_from_key,
-=======
-    SessionKey, SessionRow, TraySummary, View, ViewConfig, attach, clip_display, filter_sections,
-    layout_path, name_from_input, project_chips, rename_session, run_live,
->>>>>>> 3181ef0 (Format after rebase)
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
