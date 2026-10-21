@@ -10,9 +10,8 @@ use std::time::Instant;
 use pohunek_companion_core::{
     Activity, AssistantForm, AssistantFormError, Choices, Config, CreateError, DaemonConfig,
     DialogHost, DiscoveryPlan, Generation, HostConfig, INTENTS, Intent, LOCAL_HOST,
-    NewSessionConfig, ProjectChoice, assistant_blocker, decode_dialog_hosts, dialog_hosts,
-    discover_dialog_hosts, fuzzy_matches, is_remote_host, launch_assistant, load_choices_staged,
-    register_dialog_routes,
+    NewSessionConfig, ProjectChoice, assistant_blocker, dialog_hosts, discover_dialog_hosts,
+    fuzzy_matches, is_remote_host, launch_assistant, load_choices_staged, register_dialog_routes,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -26,10 +25,6 @@ use crate::{AssistantWindow, Fuzzy};
 /// Wayland app id of the dialog; distinct from the sidebar's and the
 /// new-session dialog's so compositor rules can float it separately.
 const APP_ID: &str = "pohunek-companion-assistant";
-const HOST_FLAG: &str = "--host";
-const PROJECT_FLAG: &str = "--project";
-const INTENT_FLAG: &str = "--intent";
-const KNOWN_HOSTS_FLAG: &str = "--known-hosts";
 
 /// Why Start is disabled when the host's projects and agents could not be read.
 const HOST_UNREADABLE: &str = "This host's projects and agents could not be read.";
@@ -41,65 +36,28 @@ const NO_PROJECT_LABEL: &str = "No project";
 const AUTOMATIC_LABEL: &str = "Automatic";
 
 /// Parsed `assistant` arguments.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, clap::Args)]
 pub struct Args {
     /// Host target to preselect; `local`, a configured `[[hosts]]` target or a
     /// discovered host's key.
+    #[arg(long, value_name = "TARGET", value_parser = crate::cli::non_empty)]
     pub host: Option<String>,
     /// Project id to preselect.
+    #[arg(long, value_name = "ID", value_parser = crate::cli::non_empty)]
     pub project: Option<String>,
     /// Intent to preselect; `help` when absent.
+    #[arg(long, value_name = "INTENT", value_parser = crate::cli::IntentParser)]
     pub intent: Option<Intent>,
     /// The remote hosts the sidebar already resolved, with their routes. The
     /// dialog lists them at once and skips its own discovery.
+    #[arg(
+        long,
+        hide = true,
+        value_name = "JSON",
+        action = clap::ArgAction::Set,
+        value_parser = crate::cli::dialog_hosts_json
+    )]
     pub known_hosts: Option<Vec<DialogHost>>,
-}
-
-fn flag_value(
-    args: &mut impl Iterator<Item = String>,
-    flag: &str,
-    what: &str,
-) -> Result<String, String> {
-    args.next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{flag} needs {what}"))
-}
-
-pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
-    let mut parsed = Args::default();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            HOST_FLAG => parsed.host = Some(flag_value(&mut args, HOST_FLAG, "a host target")?),
-            PROJECT_FLAG => {
-                parsed.project = Some(flag_value(&mut args, PROJECT_FLAG, "a project id")?);
-            }
-            INTENT_FLAG => {
-                let name = flag_value(&mut args, INTENT_FLAG, "an intent")?;
-                parsed.intent = Some(
-                    INTENTS
-                        .into_iter()
-                        .find(|intent| intent.as_str() == name)
-                        .ok_or_else(|| {
-                            let known: Vec<_> = INTENTS.into_iter().map(Intent::as_str).collect();
-                            format!(
-                                "unknown intent `{name}`; expected one of {}",
-                                known.join(", ")
-                            )
-                        })?,
-                );
-            }
-            KNOWN_HOSTS_FLAG => {
-                let json = args
-                    .next()
-                    .ok_or_else(|| format!("{KNOWN_HOSTS_FLAG} needs the hosts"))?;
-                parsed.known_hosts =
-                    Some(decode_dialog_hosts(&json).map_err(|err| err.to_string())?);
-            }
-            other => return Err(format!("unknown argument `{other}`")),
-        }
-    }
-    Ok(parsed)
 }
 
 /// Shows `text` with its first line as the message and the rest as the hint.

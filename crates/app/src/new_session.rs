@@ -11,8 +11,8 @@ use pohunek_companion_core::{
     Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, DialogHost,
     DiscoveryPlan, FormError, Generation, HostConfig, LOCAL_HOST, NewSessionConfig, NewSessionForm,
     PendingStore, ProjectChoice, Recipe, SessionKey, SessionNewParams, attach, build_params,
-    create_session, decode_dialog_hosts, dialog_hosts, discover_dialog_hosts, fuzzy_matches,
-    load_choices_staged, load_recipe, load_templates, register_dialog_routes, submit_blocker,
+    create_session, dialog_hosts, discover_dialog_hosts, fuzzy_matches, load_choices_staged,
+    load_recipe, load_templates, register_dialog_routes, submit_blocker,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -22,63 +22,30 @@ use crate::{Fuzzy, NewSessionWindow};
 /// Wayland app id of the dialog; distinct from the sidebar's so compositor
 /// rules can float it separately.
 const APP_ID: &str = "pohunek-companion-new-session";
-const HOST_FLAG: &str = "--host";
-const PROJECT_FLAG: &str = "--project";
-const GROUP_FLAG: &str = "--group";
-const KNOWN_HOSTS_FLAG: &str = "--known-hosts";
 
 /// Parsed `new-session` arguments.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, clap::Args)]
 pub struct Args {
     /// Host target to preselect; `local`, a configured `[[hosts]]` target or a
     /// discovered host's key.
+    #[arg(long, value_name = "TARGET", value_parser = crate::cli::non_empty)]
     pub host: Option<String>,
     /// Project id to preselect.
+    #[arg(long, value_name = "ID", value_parser = crate::cli::non_empty)]
     pub project: Option<String>,
     /// Id of the My groups group the created session is placed in.
+    #[arg(long, value_name = "ID", value_parser = crate::cli::non_empty)]
     pub group: Option<String>,
     /// The remote hosts the sidebar already resolved, with their routes. The
     /// dialog lists them at once and skips its own discovery.
+    #[arg(
+        long,
+        hide = true,
+        value_name = "JSON",
+        action = clap::ArgAction::Set,
+        value_parser = crate::cli::dialog_hosts_json
+    )]
     pub known_hosts: Option<Vec<DialogHost>>,
-}
-
-pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
-    let mut parsed = Args::default();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            HOST_FLAG => {
-                let target = args
-                    .next()
-                    .filter(|target| !target.is_empty())
-                    .ok_or_else(|| format!("{HOST_FLAG} needs a host target"))?;
-                parsed.host = Some(target);
-            }
-            PROJECT_FLAG => {
-                let id = args
-                    .next()
-                    .filter(|id| !id.is_empty())
-                    .ok_or_else(|| format!("{PROJECT_FLAG} needs a project id"))?;
-                parsed.project = Some(id);
-            }
-            GROUP_FLAG => {
-                let id = args
-                    .next()
-                    .filter(|id| !id.is_empty())
-                    .ok_or_else(|| format!("{GROUP_FLAG} needs a group id"))?;
-                parsed.group = Some(id);
-            }
-            KNOWN_HOSTS_FLAG => {
-                let json = args
-                    .next()
-                    .ok_or_else(|| format!("{KNOWN_HOSTS_FLAG} needs the hosts"))?;
-                parsed.known_hosts =
-                    Some(decode_dialog_hosts(&json).map_err(|err| err.to_string())?);
-            }
-            other => return Err(format!("unknown argument `{other}`")),
-        }
-    }
-    Ok(parsed)
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

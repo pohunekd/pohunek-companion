@@ -24,6 +24,10 @@ slint = { version = "1.18.1", default-features = false, features = [
 ] }
 slint-build = "1.18.1"
 
+# `unstable-dynamic` is the CompleteEnv engine behind `completions --dynamic`.
+clap = { version = "4", features = ["derive", "string"] }
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
+
 pohunek-companion-core = { path = "crates/core" }
 # Pinned to one Pohunek release tag: the protocol client, and the assistant
 # launch orchestration that `pohunek assistant` is a thin wrapper over.

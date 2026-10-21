@@ -8,6 +8,8 @@ repository.workspace = true
 description = "Native desktop companion for Pohunek sessions."
 
 [dependencies]
+clap = { workspace = true }
+clap_complete = { workspace = true }
 slint = { workspace = true }
 pohunek-companion-core = { workspace = true }
 thiserror = { workspace = true }

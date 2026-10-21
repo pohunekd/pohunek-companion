@@ -209,12 +209,41 @@ pohunek-companion                                  # the sidebar
 pohunek-companion new-session [--host TARGET] [--project ID] [--group ID]
 pohunek-companion assistant   [--host TARGET] [--project ID] [--intent INTENT]
 pohunek-companion desktop install | uninstall      # Linux only
+pohunek-companion completions bash | zsh | fish    # completion script on stdout
 ```
 
 `new-session` and `assistant` open their dialog directly, which makes them
-convenient targets for a compositor or desktop keybinding. Behaviour such as
+convenient targets for a compositor or desktop keybinding. `--help` lists every
+flag. Behaviour such as
 the attach command, the idle threshold and placement rules is set in
 `companion.toml`; see [docs/architecture.md](docs/architecture.md).
+
+### Shell completion
+
+`completions <shell>` prints a script that completes subcommands, flags and the
+`--intent` values. The Linux release archive already carries the scripts under
+`share/`, so the `cp -r share/.` step above installs them. Otherwise:
+
+```bash
+# bash: loaded on demand by bash-completion
+mkdir -p ~/.local/share/bash-completion/completions
+pohunek-companion completions bash > ~/.local/share/bash-completion/completions/pohunek-companion
+
+# zsh: put the directory on fpath before compinit in ~/.zshrc
+mkdir -p ~/.local/share/zsh/site-functions
+pohunek-companion completions zsh > ~/.local/share/zsh/site-functions/_pohunek-companion
+# fpath=(~/.local/share/zsh/site-functions $fpath)
+
+# fish
+pohunek-companion completions fish > ~/.config/fish/completions/pohunek-companion.fish
+```
+
+`completions <shell> --dynamic` prints a one-line bootstrap instead (for
+example `source <(pohunek-companion completions bash --dynamic)` in
+`~/.bashrc`) that also completes `--host`, `--project` and `--group` from the
+local daemon, `companion.toml` and the layout file. Every lookup stops after
+750 ms and prints nothing on failure, so Tab without a daemon offers only the
+values that need none.
 
 ## Development
 
