@@ -7,7 +7,7 @@
 # is never part of Cargo.toml features, so normal and release builds do not
 # contain the server.
 #
-#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N]
+#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [--showcase]
 #                          [--remote-host DEST [--remote-port N]] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
 #   scripts/ui-agent remote-route                    print the synthetic remote host's route
@@ -42,6 +42,10 @@
 # In every case `stop` then reads `$iso/run/op-daemon.pid` and terminates that
 # `op daemon` if it still runs, and finally removes the directory.
 # `--sessions N` adds N generated sessions to the four fixed ones.
+# `--showcase` replaces the four fixed sessions and the three projects with a
+# realistic synthetic dataset (see `showcase_sessions`) for README screenshots:
+# agent profiles `claude` and `codex` that run a harmless shell program, with
+# working, waiting and idle activities, ended sessions, groups, and Work links.
 # The isolated run cannot see the owner's overlay hosts: a stub `netbird` first on
 # the daemon's and the app's PATH hides every peer except the synthetic remote.
 # `--owner-daemon` connects to the owner's real daemon instead; its output must never be published (see
@@ -284,6 +288,141 @@ generated_session() {
     echo "${name_first[n % ${#name_first[@]}]}-${name_second[(n / ${#name_first[@]} + n) % ${#name_second[@]}]}-$n|$project|$meta"
 }
 
+# Showcase dataset (`start --showcase`): synthetic projects named after Pohunek
+# and well-known open source projects, and sessions of two synthetic agent
+# profiles. Each line is `name|project|agent|state|group|meta` with state one of
+# working, blocked, idle, stopped (ended) or shell (a plain shell, no activity).
+showcase_projects=(pohunek pohunek-companion ripgrep neovim tokio zed)
+# Each group line is `id|name|order key|collapsed (1 or 0)`.
+showcase_groups=("inbox|Inbox|d|0" "now|Now|g|0" "reviews|Reviews|n|0" "later|Later|t|1")
+showcase_sessions=(
+    "review-pr-1412|ripgrep|claude|blocked|reviews|work.link.provider=github work.link.kind=pr work.link.id=1412 work.link.url=https://github.com/BurntSushi/ripgrep/pull/1412 work.role=reviewer"
+    "fix-flaky-pty-test|pohunek|codex|blocked|now|work.link.provider=github work.link.kind=issue work.link.id=388 work.link.url=https://github.com/zajca/pohunek/issues/388 work.role=implementer"
+    "bump-tokio-1.48|tokio|claude|working|now|work.link.provider=github work.link.kind=pr work.link.id=7210 work.link.url=https://github.com/tokio-rs/tokio/pull/7210 work.role=implementer"
+    "docs-install-guide|pohunek-companion|claude|working|now|work.link.provider=github work.link.kind=issue work.link.id=200 work.link.url=https://github.com/pohunekd/pohunek-companion/issues/200 work.role=implementer"
+    "lsp-semantic-tokens|neovim|codex|working|now|work.link.provider=github work.link.kind=pr work.link.id=31877 work.link.url=https://github.com/neovim/neovim/pull/31877 work.role=implementer"
+    "review-pr-1655|zed|codex|idle|reviews|work.link.provider=github work.link.kind=pr work.link.id=1655 work.link.url=https://github.com/zed-industries/zed/pull/1655 work.role=reviewer"
+    "triage-open-issues|pohunek|claude|idle|later|"
+    "tray-badge-polish|pohunek-companion|codex|idle|inbox|work.link.provider=github work.link.kind=issue work.link.id=164 work.link.url=https://github.com/pohunekd/pohunek-companion/issues/164 work.role=implementer"
+    "rustfmt-edition-2024|ripgrep|codex|idle|later|work.link.provider=github work.link.kind=pr work.link.id=2951 work.link.url=https://github.com/BurntSushi/ripgrep/pull/2951 work.role=implementer"
+    "multibuffer-scroll-fix|zed|claude|idle|later|work.link.provider=github work.link.kind=issue work.link.id=19402 work.link.url=https://github.com/zed-industries/zed/issues/19402 work.role=implementer"
+    "release-notes-0.1.2|pohunek-companion|claude|stopped|later|work.link.provider=github work.link.kind=issue work.link.id=181 work.link.url=https://github.com/pohunekd/pohunek-companion/issues/181 work.role=implementer"
+    "ci-cache-warmup|tokio|codex|stopped|later|"
+    "scratch-shell|pohunek-companion|shell|shell|inbox|"
+)
+
+# Writes the program and the detection manifest of the synthetic `claude` and
+# `codex` profiles under $1 (the isolated directory). The profiles run a shell
+# program that draws the screen of the requested state and then sleeps, and a
+# manifest that maps those screens to the daemon's working, blocked and idle
+# activity: no real agent starts and no token is spent.
+write_showcase_agents() {
+    local iso=$1 agents="$1/config/pohunek/agents" agent
+    mkdir -p "$agents/manifests" && chmod 700 "$iso/config/pohunek" "$agents" "$agents/manifests" || return 1
+    cat >"$iso/bin/showcase-agent" <<'EOF'
+#!/bin/sh
+# The first input line names the screen to draw: working, blocked or idle.
+stty -echo 2>/dev/null
+IFS= read -r screen
+case $screen in
+    working) printf '* Working on the task... (42s \302\267 esc to interrupt)\n' ;;
+    blocked) printf 'Do you want to proceed?\n  1. Yes\n  2. No\nEnter to select \302\267 Esc to cancel\n' ;;
+    *) printf '* Done for 3s\n\n\342\235\257 \n' ;;
+esac
+exec sleep 2147483
+EOF
+    chmod 700 "$iso/bin/showcase-agent" || return 1
+    cat >"$agents/manifests/showcase.toml" <<'EOF'
+[[rules]]
+id = "blocked"
+state = "blocked"
+priority = 980
+region = "whole_recent"
+visible_blocker = true
+contains = ["esc to cancel"]
+
+[[rules]]
+id = "working"
+state = "working"
+priority = 960
+region = "whole_recent"
+line_regex = ['^[*] .*\(.*esc to interrupt\)']
+
+[[rules]]
+id = "idle"
+state = "idle"
+priority = 950
+region = "whole_recent"
+line_regex = ['^\s*\x{276F}']
+EOF
+    for agent in claude codex; do
+        cat >"$agents/$agent.toml" <<EOF
+base = "shell"
+manifest = "showcase"
+program = "$iso/bin/showcase-agent"
+args = []
+EOF
+    done
+}
+
+# Creates one showcase session from a `name|project|agent|state|group|meta` line.
+create_showcase_session() {
+    local iso=$1 line=$2 name project agent state meta kv
+    local -a envs
+    mapfile -t envs < <(isolated_env "$iso")
+    IFS='|' read -r name project agent state _ meta <<<"$line"
+    local -a args=(session new --agent "$agent" --name "$name" --project "$project" --json)
+    case $state in working | blocked | idle | stopped) args+=(--input "${state/stopped/idle}") ;; esac
+    for kv in $meta; do args+=(--meta "$kv"); done
+    local out
+    out=$(env "${envs[@]}" "PATH=$iso/bin:$PATH" "$cli" "${args[@]}") ||
+        { echo "$name: $(jq -r '.err.msg // empty' <<<"$out")" >&2; return 1; }
+}
+
+# Waits until every showcase session reports its expected activity, stops the
+# ended ones, and writes the groups of the layout so the app starts with them.
+finish_showcase() {
+    local iso=$1 line name state group list i
+    local -a envs
+    mapfile -t envs < <(isolated_env "$iso")
+    for i in $(seq 1 100); do
+        list=$(env "${envs[@]}" "$cli" session list --json) || die "cannot list the showcase sessions"
+        local ready=1
+        for line in "${showcase_sessions[@]}"; do
+            IFS='|' read -r name _ _ state _ _ <<<"$line"
+            case $state in working | blocked | idle | stopped) ;; *) continue ;; esac
+            local want=${state/stopped/idle}
+            [ "$(jq -r --arg n "$name" '.ok[] | select(.name == $n) | .activity // "none"' <<<"$list")" = "$want" ] || ready=0
+        done
+        [ "$ready" -eq 1 ] && break
+        sleep 0.3
+    done
+    [ "$ready" -eq 1 ] || die "the showcase sessions did not reach their activities"
+    for line in "${showcase_sessions[@]}"; do
+        IFS='|' read -r name _ _ state _ _ <<<"$line"
+        [ "$state" = stopped ] || continue
+        env "${envs[@]}" "$cli" session stop "$(jq -r --arg n "$name" '.ok[] | select(.name == $n) | .id' <<<"$list")" >/dev/null ||
+            die "cannot stop showcase session $name"
+    done
+    local layout_dir=$iso/state/pohunek-companion order collapsed
+    mkdir -p "$layout_dir"
+    {
+        echo "version = 1"
+        for line in "${showcase_groups[@]}"; do
+            IFS='|' read -r group name order collapsed <<<"$line"
+            printf '\n[[groups]]\nid = "%s"\nname = "%s"\norder = "%s"\n' "$group" "$name" "$order"
+            [ "$collapsed" -eq 0 ] || echo "collapsed = true"
+        done
+        local n=0 keys=bcdefghijklmnopqrstuvwxyz
+        for line in "${showcase_sessions[@]}"; do
+            IFS='|' read -r name _ _ _ group _ <<<"$line"
+            printf '\n[[items]]\nhost = "local"\nsession_id = "%s"\ngroup = "%s"\norder = "%s"\nmanual = true\n' \
+                "$(jq -r --arg n "$name" '.ok[] | select(.name == $n) | .id' <<<"$list")" "$group" "${keys:n:1}"
+            n=$((n + 1))
+        done
+    } >"$layout_dir/layout.toml"
+}
+
 find_daemon_bin() {
     if [ -n "${POHUNEKD:-}" ]; then
         echo "$POHUNEKD"
@@ -427,8 +566,10 @@ EOF
 start_isolated_daemon() {
     need "$cli"
     need git
-    local extra=$1
+    local extra=$1 showcase=${2:-0}
     local iso bin_dir daemon_bin i line project
+    local -a project_names=("${synthetic_projects[@]}")
+    [ "$showcase" -eq 0 ] || project_names=("${showcase_projects[@]}")
     daemon_bin=$(find_daemon_bin) || exit 1
     iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
     echo "$iso" >"$iso_file"
@@ -460,7 +601,7 @@ start_isolated_daemon() {
     done
     env "${envs[@]}" "$cli" health >/dev/null 2>&1 ||
         { stop >/dev/null 2>&1 || true; die "the isolated daemon did not start; see $iso/daemon.log"; }
-    for project in "${synthetic_projects[@]}"; do
+    for project in "${project_names[@]}"; do
         mkdir -p "$iso/work/$project" &&
             GIT_CONFIG_GLOBAL=/dev/null git -C "$iso/work/$project" init --quiet &&
             GIT_CONFIG_GLOBAL=/dev/null git -C "$iso/work/$project" -c user.name=ui-agent -c user.email=ui-agent@example.invalid \
@@ -470,11 +611,17 @@ start_isolated_daemon() {
             { local err; err=$(cat "$iso/project-add.log"); stop >/dev/null 2>&1 || true; die "cannot register project $project: $err"; }
     done
     local -a lines=("${synthetic_sessions[@]}")
+    local create=create_synthetic_session
+    if [ "$showcase" -eq 1 ]; then
+        lines=("${showcase_sessions[@]}")
+        create=create_showcase_session
+        write_showcase_agents "$iso" || { stop >/dev/null 2>&1 || true; die "cannot write the showcase agent profiles"; }
+    fi
     for ((i = 0; i < extra; i++)); do lines+=("$(generated_session "$i")"); done
     # Sessions are created in parallel batches; a failed creation is fatal.
     local running=0 failed=0
     for line in "${lines[@]}"; do
-        create_synthetic_session "$iso" "$line" 2>>"$iso/session-new.log" &
+        "$create" "$iso" "$line" 2>>"$iso/session-new.log" &
         running=$((running + 1))
         if [ "$running" -ge "$session_parallelism" ]; then
             wait -n || failed=1
@@ -486,6 +633,9 @@ start_isolated_daemon() {
         running=$((running - 1))
     done
     [ "$failed" -eq 0 ] || { local err; err=$(head -c 400 "$iso/session-new.log"); stop >/dev/null 2>&1 || true; die "cannot create a synthetic session: $err"; }
+    if [ "$showcase" -eq 1 ]; then
+        (finish_showcase "$iso") >&2 || { stop >/dev/null 2>&1 || true; exit 1; }
+    fi
     echo "$iso"
 }
 
@@ -796,7 +946,7 @@ EOF
 }
 
 start() {
-    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port=""
+    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port="" showcase=0
     local -a app_args=()
     while [ $# -gt 0 ]; do
         case $1 in
@@ -810,6 +960,7 @@ start() {
                 ;;
             --windowed) windowed=1; shift ;;
             --owner-daemon) isolated=0; shift ;;
+            --showcase) showcase=1; shift ;;
             --sessions)
                 sessions=${2:?--sessions needs a value}
                 case $sessions in
@@ -831,6 +982,8 @@ start() {
     done
     [ "$isolated" -eq 1 ] || [ "$sessions" -eq 0 ] || die "--sessions needs the isolated daemon"
     [ "$isolated" -eq 1 ] || [ -z "$remote_host" ] || die "--remote-host needs the isolated daemon"
+    [ "$isolated" -eq 1 ] || [ "$showcase" -eq 0 ] || die "--showcase needs the isolated daemon"
+    [ "$sessions" -eq 0 ] || [ "$showcase" -eq 0 ] || die "--showcase and --sessions cannot be combined"
     [ -n "$remote_host" ] || [ -z "$remote_port" ] || die "--remote-port needs --remote-host"
     need python3
     need curl
@@ -853,7 +1006,7 @@ start() {
     fi
     local iso=""
     if [ "$isolated" -eq 1 ]; then
-        iso=$(start_isolated_daemon "$sessions")
+        iso=$(start_isolated_daemon "$sessions" "$showcase")
     fi
 
     # A temporary config whose attach command is harmless (a click on a
@@ -868,6 +1021,10 @@ start() {
     # UI_AGENT_CONFIG_EXTRA: extra companion.toml text, e.g. placement rules.
     if [[ -n ${UI_AGENT_CONFIG_EXTRA:-} ]]; then
         printf '%s\n' "$UI_AGENT_CONFIG_EXTRA" >>"$config_dir/companion.toml"
+    fi
+    # A showcase idle session counts as Idle after a second, not five minutes.
+    if [ "$showcase" -eq 1 ]; then
+        printf '\n[tray]\nidle_threshold_secs = 1\n' >>"$config_dir/companion.toml"
     fi
     # The synthetic remote host is listed in the sidebar like a configured one.
     if [ -n "$remote_host" ]; then
