@@ -1272,7 +1272,7 @@ start() {
 # Debug info is what gives elements their ids; the separate target dir keeps
 # the MCP build from invalidating the normal one.
 build_app() {
-    # A prebuilt binary under $UI_AGENT_DIR/cargo-target (a container without a
+    # A prebuilt binary under $UI_AGENT_DIR/cargo-target (a VM without a
     # toolchain) is used as is.
     [ "${UI_AGENT_NO_BUILD:-}" != 1 ] || [ -x "$bin" ] || die "UI_AGENT_NO_BUILD=1 needs $bin"
     [ "${UI_AGENT_NO_BUILD:-}" != 1 ] || return 0

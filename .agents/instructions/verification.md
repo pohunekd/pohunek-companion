@@ -198,10 +198,11 @@ show the owner's real sessions (names, ids, working directories, Work links).
   `HOME` the unpacked CLI's pre-install check refuses (no service manager), which
   the screen shows. `--setup install-tampered` serves a loopback mirror whose
   `.sha256` file is altered, to show the checksum refusal. The full install
-  (Run) is exercised only in a throwaway container with its own systemd user
-  manager: `UI_AGENT_SANDBOX=1` (accepted only when `/.dockerenv` or
-  `/run/.containerenv` exists) keeps the container's `HOME`, runtime directory
-  and bus, and `UI_AGENT_NO_BUILD=1` runs a prebuilt binary under
+  (Run) needs a real systemd user manager and is exercised only in a
+  throwaway qemu/KVM VM, never on the host and never in a container:
+  `UI_AGENT_SANDBOX=1` (accepted only when `/etc/ui-agent-sandbox` exists, a
+  file that belongs in the VM image only) keeps the VM's `HOME`, runtime
+  directory and bus, and `UI_AGENT_NO_BUILD=1` runs a prebuilt binary under
   `$UI_AGENT_DIR/cargo-target`. Never set either on the owner's machine.
 - Raw MCP output (`tree`, `find`, `call`) can contain session names: treat it
   like a screenshot.
