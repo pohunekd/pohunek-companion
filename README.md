@@ -113,11 +113,23 @@ The companion needs a running [Pohunek](https://github.com/zajca/pohunek)
 daemon on the same machine. Without one, the window shows a setup screen
 instead of the list: it says whether the `pohunek` command is missing (with the
 install commands), the login service is not installed, or the daemon is not
-running, and offers to install or start the service after showing the exact
-command and what it touches. Nothing runs without your click and a second
-confirmation, and the screen gives way to the list as soon as the daemon
+running, and offers to install Pohunek or its service, or to start the service,
+after showing the exact command and what it touches. On Linux x86_64 the
+Install button downloads the Pohunek release this companion is built against
+(never "latest") from GitHub over HTTPS, checks its sha256 (and its attestation
+when `gh` is signed in), unpacks it, shows what `packaging/install-daemon.sh`
+will write, and runs it only after you press Run; a checksum mismatch refuses
+the install. On macOS with Homebrew it runs `brew install zajca/pohunek/pohunek`
+(not verified on a Mac yet). It never runs `pohunek assistant setup` or
+`pohunek integration install`: they are named as next steps. The download
+location is `setup.release_base_url` in `companion.toml`. Nothing is installed
+without your click and a second confirmation, and the screen gives way to the list as soon as the daemon
 answers. A daemon whose protocol does not match the companion's is named there
 with both versions.
+
+<p align="center">
+  <img src="docs/screenshots/install-plan.png" alt="The setup screen after the release was downloaded and verified, showing the checksum evidence and what the installer will write" width="320">
+</p>
 
 ### macOS (Apple Silicon, macOS 14 or later)
 

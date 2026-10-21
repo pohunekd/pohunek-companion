@@ -8,7 +8,7 @@
 # contain the server.
 #
 #   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [--showcase]
-#                          [--setup cli-missing|not-installed|not-running|version-mismatch]
+#                          [--setup cli-missing|not-installed|not-running|version-mismatch|install|install-tampered]
 #                          [--remote-host DEST [--remote-port N]] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
 #   scripts/ui-agent remote-route                    print the synthetic remote host's route
@@ -56,7 +56,17 @@
 # isolated config, `not-running` uses a synthetic CLI script that reports an
 # installed, stopped service (its calls are logged to `$iso/setup-cli.log`), and
 # `version-mismatch` serves a socket that answers every request with
-# `version_mismatch`.
+# `version_mismatch`. `install` is the missing-CLI screen with the Install
+# button wired to the real release download (GitHub over HTTPS); in the
+# isolated HOME the pre-install check of the unpacked CLI refuses, because no
+# service manager is reachable. `install-tampered` points the download at a
+# loopback mirror whose `.sha256` file is altered, to show the refusal.
+# UI_AGENT_NO_BUILD=1 skips the cargo build and runs the binary already
+# present under $UI_AGENT_DIR/cargo-target.
+# With UI_AGENT_SANDBOX=1 inside a throwaway virtual machine (the marker file
+# /etc/ui-agent-sandbox is required, and systemd-detect-virt must report a VM) `install` keeps the VM's own HOME,
+# runtime directory and user service manager, so Run installs for real into
+# that VM; never create the marker on a machine whose service is not disposable.
 # `--owner-daemon` connects to the owner's real daemon instead; its output must never be published (see
 # .agents/instructions/verification.md).
 #
@@ -469,7 +479,7 @@ isolated_env() {
 # daemon is started, except the socket that refuses every request for
 # `version-mismatch`.
 start_setup_dir() {
-    local mode=$1 iso cli_path
+    local mode=$1 iso cli_path=""
     iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
     echo "$iso" >"$iso_file"
     mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/home" "$iso/work" &&
@@ -479,6 +489,9 @@ start_setup_dir() {
         { stop >/dev/null 2>&1 || true; die "cannot write the netbird stub"; }
     case $mode in
         cli-missing) cli_path=$iso/bin/pohunek-missing ;;
+        install) ;;
+        install-tampered) start_tampered_mirror "$iso" ||
+            { stop >/dev/null 2>&1 || true; die "cannot start the tampered mirror"; } ;;
         not-running)
             cli_path=$iso/bin/pohunek
             write_setup_cli_stub "$cli_path" "$iso/setup-cli.log"
@@ -498,12 +511,46 @@ start_setup_dir() {
             ln -s "$(find_daemon_bin)" "$iso/bin/pohunekd"
             ;;
     esac
-    echo "$cli_path" >"$iso/setup-cli"
+    [ -z "$cli_path" ] || echo "$cli_path" >"$iso/setup-cli"
     if [ "$mode" = version-mismatch ]; then
         start_refusing_socket "$iso" ||
             { stop >/dev/null 2>&1 || true; die "cannot start the refusing socket"; }
     fi
     echo "$iso"
+}
+
+# The release tag the companion is pinned to (from Cargo.lock).
+pinned_tag() {
+    sed -n 's/^source = "git+https:\/\/github.com\/zajca\/pohunek?tag=\(v[^#"]*\)#.*/\1/p' "$root/Cargo.lock" | head -n 1
+}
+
+# Serves a loopback mirror of the pinned release's Linux daemon archive whose
+# `.sha256` file has its first hex digit changed, and records its base URL.
+start_tampered_mirror() {
+    local iso=$1 tag version name dir hash flipped port i
+    tag=$(pinned_tag)
+    [ -n "$tag" ] || return 1
+    version=${tag#v}
+    name=pohunek-daemon-$version-x86_64-unknown-linux-gnu.tar.gz
+    dir=$iso/mirror/$tag
+    mkdir -p "$dir" || return 1
+    curl -fsSL --proto '=https' -o "$dir/$name" \
+        "https://github.com/zajca/pohunek/releases/download/$tag/$name" || return 1
+    hash=$(sha256sum "$dir/$name" | cut -d' ' -f1)
+    case ${hash:0:1} in 0) flipped=1 ;; *) flipped=0 ;; esac
+    printf '%s  %s\n' "$flipped${hash:1}" "$name" >"$dir/$name.sha256"
+    port=$(free_port)
+    (
+        cd "$iso/mirror"
+        exec env "XDG_RUNTIME_DIR=$iso/run" setsid python3 -I -m http.server "$port" \
+            --bind 127.0.0.1 --directory "$iso/mirror" >"$iso/mirror.log" 2>&1 </dev/null
+    ) &
+    for i in $(seq 1 50); do
+        curl -fs "http://127.0.0.1:$port/$tag/$name.sha256" -o /dev/null && break
+        sleep 0.1
+    done
+    [ "$i" -lt 50 ] || return 1
+    echo "http://127.0.0.1:$port" >"$iso/mirror-url"
 }
 
 # A shell script standing in for `pohunek` in the `not-running` state: an
@@ -1084,8 +1131,8 @@ start() {
             --setup)
                 setup_state=${2:?--setup needs a state}
                 case $setup_state in
-                    cli-missing | not-installed | not-running | version-mismatch) ;;
-                    *) die "--setup must be cli-missing, not-installed, not-running or version-mismatch" ;;
+                    cli-missing | not-installed | not-running | version-mismatch | install | install-tampered) ;;
+                    *) die "--setup must be cli-missing, not-installed, not-running, version-mismatch, install or install-tampered" ;;
                 esac
                 shift 2
                 ;;
@@ -1150,8 +1197,11 @@ start() {
     [ -z "$iso" ] || config_dir="$iso/config/pohunek"
     mkdir -p "$config_dir"
     echo 'attach_command = ["true"]' >"$config_dir/companion.toml"
-    if [ -n "$setup_state" ]; then
+    if [ -n "$setup_state" ] && [ -f "$iso/setup-cli" ]; then
         printf 'pohunek_bin = "%s"\n' "$(cat "$iso/setup-cli")" >>"$config_dir/companion.toml"
+    fi
+    if [ "$setup_state" = install-tampered ]; then
+        printf '\n[setup]\nrelease_base_url = "%s"\n' "$(cat "$iso/mirror-url")" >>"$config_dir/companion.toml"
     fi
     # UI_AGENT_CONFIG_EXTRA: extra companion.toml text, e.g. placement rules.
     if [[ -n ${UI_AGENT_CONFIG_EXTRA:-} ]]; then
@@ -1178,11 +1228,32 @@ start() {
         mapfile -t envs < <(isolated_env "$iso")
         envs+=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port" "PATH=$iso/bin:$PATH")
     fi
-    if [ -n "$setup_state" ]; then
-        # An own HOME and a session bus address that leads nowhere keep every
-        # `pohunek service` command away from the owner's service manager.
-        envs+=("HOME=$iso/home" "DBUS_SESSION_BUS_ADDRESS=unix:path=$iso/run/no-bus")
-    fi
+    case $setup_state in
+        install | install-tampered)
+            # No `pohunek` may be found: only the system directories.
+            envs=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port" "PATH=$iso/bin:/usr/bin:/bin"
+                "XDG_STATE_HOME=$state/state" "XDG_CONFIG_HOME=$iso/config")
+            if [ "${UI_AGENT_SANDBOX:-}" = 1 ] && [ "$setup_state" = install ]; then
+                { [ -e /etc/ui-agent-sandbox ] && systemd-detect-virt --vm --quiet; } ||
+                    { stop >/dev/null 2>&1 || true; die "UI_AGENT_SANDBOX=1 needs the marker file /etc/ui-agent-sandbox and a virtual machine (systemd-detect-virt --vm)"; }
+                # The VM's own HOME, runtime directory and service manager.
+                envs=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port" "PATH=/usr/bin:/bin")
+                [ -z "${XDG_RUNTIME_DIR:-}" ] || envs+=("XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+                [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] || envs+=("DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS")
+                [ -z "${HOME:-}" ] || envs+=("HOME=$HOME")
+            else
+                envs+=("HOME=$iso/home" "XDG_RUNTIME_DIR=$iso/run" "XDG_DATA_HOME=$iso/data"
+                    "XDG_CACHE_HOME=$iso/cache"
+                    "DBUS_SESSION_BUS_ADDRESS=unix:path=$iso/run/no-bus")
+            fi
+            ;;
+        '') ;;
+        *)
+            # An own HOME and a session bus address that leads nowhere keep every
+            # `pohunek service` command away from the owner's service manager.
+            envs+=("HOME=$iso/home" "DBUS_SESSION_BUS_ADDRESS=unix:path=$iso/run/no-bus")
+            ;;
+    esac
     if [ "$windowed" -eq 0 ]; then
         # No display variables: the headless backend renders in process.
         envs+=(SLINT_BACKEND=headless-software)
@@ -1201,6 +1272,10 @@ start() {
 # Debug info is what gives elements their ids; the separate target dir keeps
 # the MCP build from invalidating the normal one.
 build_app() {
+    # A prebuilt binary under $UI_AGENT_DIR/cargo-target (a VM without a
+    # toolchain) is used as is.
+    [ "${UI_AGENT_NO_BUILD:-}" != 1 ] || [ -x "$bin" ] || die "UI_AGENT_NO_BUILD=1 needs $bin"
+    [ "${UI_AGENT_NO_BUILD:-}" != 1 ] || return 0
     (
         cd "$root"
         SLINT_EMIT_DEBUG_INFO=1 CARGO_TARGET_DIR="$state/cargo-target" \

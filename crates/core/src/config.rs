@@ -40,6 +40,8 @@ pub enum ConfigError {
         "invalid {path}: `attach_command` and `attach_terminal` are mutually exclusive; set only one"
     )]
     AttachConflict { path: PathBuf },
+    #[error("invalid {path}: `setup.release_base_url`: {problem}")]
+    ReleaseUrl { path: PathBuf, problem: String },
     #[error("invalid {path}: `pohunek_bin` must not be empty")]
     EmptyPohunekBin { path: PathBuf },
     #[error("invalid {path}: `layout.rules[{index}]` {problem}")]
@@ -375,7 +377,36 @@ pub struct SetupConfig {
     /// the setup screen, in characters, greater than zero; longer text is cut
     /// with an ellipsis. Optional; default 400.
     pub message_max_chars: usize,
+    /// `setup.download_timeout_secs`: time allowed for downloading one release
+    /// file, in seconds, greater than zero. Optional; default 600.
+    pub download_timeout_secs: u64,
+    /// `setup.install_timeout_secs`: time allowed for the install script of a
+    /// downloaded release (or `brew install`), in seconds, greater than zero.
+    /// Optional; default 900.
+    pub install_timeout_secs: u64,
+    /// `setup.download_max_mib`: largest release archive accepted, in MiB,
+    /// greater than zero. Optional; default 128.
+    pub download_max_mib: u64,
+    /// `setup.extract_max_mib`: largest total size of the unpacked archive, in
+    /// MiB, greater than zero. Optional; default 512.
+    pub extract_max_mib: u64,
+    /// `setup.extract_max_entries`: most entries an archive may hold, greater
+    /// than zero. Optional; default 4096.
+    pub extract_max_entries: u64,
+    /// `setup.stale_install_max_age_secs`: age after which an unfinished
+    /// install directory left in the state directory (a crashed or killed
+    /// install) is removed when the next install starts, in seconds, greater
+    /// than zero. Optional; default 3600.
+    pub stale_install_max_age_secs: u64,
+    /// `setup.release_base_url`: where release files are downloaded from, as
+    /// `<base>/<tag>/<file>`. Must be an `https` URL, or `http` to a loopback
+    /// host (for a local mirror). Optional; default the GitHub releases of
+    /// `zajca/pohunek`.
+    pub release_base_url: String,
 }
+
+/// The GitHub download location of Pohunek releases.
+pub const DEFAULT_RELEASE_BASE_URL: &str = "https://github.com/zajca/pohunek/releases/download";
 
 impl Default for SetupConfig {
     fn default() -> Self {
@@ -383,6 +414,13 @@ impl Default for SetupConfig {
             probe_timeout_secs: 15,
             action_timeout_secs: 180,
             message_max_chars: 400,
+            download_timeout_secs: 600,
+            install_timeout_secs: 900,
+            download_max_mib: 128,
+            extract_max_mib: 512,
+            extract_max_entries: 4096,
+            stale_install_max_age_secs: 3600,
+            release_base_url: DEFAULT_RELEASE_BASE_URL.to_owned(),
         }
     }
 }
@@ -394,6 +432,14 @@ impl SetupConfig {
 
     pub fn action_timeout(&self) -> Duration {
         Duration::from_secs(self.action_timeout_secs)
+    }
+
+    pub fn download_timeout(&self) -> Duration {
+        Duration::from_secs(self.download_timeout_secs)
+    }
+
+    pub fn install_timeout(&self) -> Duration {
+        Duration::from_secs(self.install_timeout_secs)
     }
 }
 
@@ -573,6 +619,21 @@ impl Config {
                 "setup.message_max_chars",
                 u64::try_from(self.setup.message_max_chars).unwrap_or(u64::MAX),
             ),
+            (
+                "setup.download_timeout_secs",
+                self.setup.download_timeout_secs,
+            ),
+            (
+                "setup.install_timeout_secs",
+                self.setup.install_timeout_secs,
+            ),
+            ("setup.download_max_mib", self.setup.download_max_mib),
+            ("setup.extract_max_mib", self.setup.extract_max_mib),
+            ("setup.extract_max_entries", self.setup.extract_max_entries),
+            (
+                "setup.stale_install_max_age_secs",
+                self.setup.stale_install_max_age_secs,
+            ),
             ("attach_observe_ms", self.attach_observe_ms),
             ("new_session.cols", u64::from(self.new_session.cols)),
             ("new_session.rows", u64::from(self.new_session.rows)),
@@ -619,6 +680,12 @@ impl Config {
             return Err(ConfigError::ZeroValue {
                 path: path.to_owned(),
                 key,
+            });
+        }
+        if let Err(problem) = crate::install::check_base_url(&self.setup.release_base_url) {
+            return Err(ConfigError::ReleaseUrl {
+                path: path.to_owned(),
+                problem,
             });
         }
         if self.attach_command.is_some() && self.attach_terminal.is_some() {

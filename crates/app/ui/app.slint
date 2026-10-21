@@ -1208,6 +1208,8 @@ component SetupPanel inherits Rectangle {
     // False when the check refused the command: Run stays disabled.
     in property <bool> can-run;
     in property <bool> busy;
+    // The step a running install is on.
+    in property <string> progress;
     in property <string> result;
     in property <string> error;
     callback action();
@@ -1301,6 +1303,12 @@ component SetupPanel inherits Rectangle {
                     }
                 }
             }
+            if root.progress != "": progress-text := Text {
+                text: root.progress;
+                color: Theme.detail;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
             if root.result != "": result-text := Text {
                 text: root.result;
                 color: Theme.detail-copied;
@@ -1351,6 +1359,7 @@ export component AppWindow inherits Window {
     in property <string> setup-preview;
     in property <bool> setup-can-run;
     in property <bool> setup-busy;
+    in property <string> setup-progress;
     in property <string> setup-result;
     in property <string> setup-error;
     callback setup-action();
@@ -1913,6 +1922,7 @@ export component AppWindow inherits Window {
         preview: root.setup-preview;
         can-run: root.setup-can-run;
         busy: root.setup-busy;
+        progress: root.setup-progress;
         result: root.setup-result;
         error: root.setup-error;
         action => { root.setup-action(); }
