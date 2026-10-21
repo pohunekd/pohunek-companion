@@ -322,7 +322,7 @@ impl TempDir {
     /// A fresh directory (mode 0700) below the app's state directory, which
     /// is on disk and, unlike `/tmp` on hardened systems, not mounted `noexec`:
     /// the unpacked `pohunek` is executed from it.
-    pub fn create() -> io::Result<Self> {
+    pub fn create(stale_after: Duration) -> io::Result<Self> {
         let base = crate::layout::state_dir()
             .map_err(|err| io::Error::other(err.to_string()))?
             .join(TEMP_DIR);
@@ -330,6 +330,7 @@ impl TempDir {
             .recursive(true)
             .mode(0o700)
             .create(&base)?;
+        sweep_stale(&base, stale_after);
         for _ in 0..32 {
             let mut hasher = RandomState::new().build_hasher();
             hasher.write_u32(std::process::id());
@@ -353,6 +354,31 @@ impl TempDir {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+/// Removes install directories older than `stale_after` that an install which
+/// was killed left behind. Only plain directories named like the ones
+/// [`TempDir::create`] makes are touched.
+fn sweep_stale(base: &Path, stale_after: Duration) {
+    let Ok(entries) = fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > stale_after);
+        let ours = entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
+        if ours
+            && meta.is_dir()
+            && old
+            && let Err(err) = fs::remove_dir_all(entry.path())
+        {
+            warn!(path = %entry.path().display(), error = %err, "remove a stale install directory");
+        }
     }
 }
 
@@ -636,9 +662,10 @@ pub fn prepare_release(
     gh: Option<&Path>,
     progress: &dyn Fn(String),
 ) -> Result<Prepared, StepError> {
-    let temp = TempDir::create().map_err(|err| {
-        StepError::io(Step::Download, "cannot create a temporary directory", &err)
-    })?;
+    let temp =
+        TempDir::create(Duration::from_secs(config.stale_install_max_age_secs)).map_err(|err| {
+            StepError::io(Step::Download, "cannot create a temporary directory", &err)
+        })?;
     let base = &config.release_base_url;
     let strict = https_only(base);
     let timeout = config.download_timeout();
@@ -667,7 +694,7 @@ pub fn prepare_release(
     download(
         &archive_url,
         &archive_path,
-        config.download_max_mib << 20,
+        config.download_max_mib.saturating_mul(1 << 20),
         timeout,
         strict,
         &|bytes| progress(format!("Downloading {archive_name}: {} MiB", bytes >> 20)),
@@ -687,7 +714,7 @@ pub fn prepare_release(
         &archive_path,
         &unpack_dir,
         &release.root_dir_name(),
-        config.extract_max_mib << 20,
+        config.extract_max_mib.saturating_mul(1 << 20),
         config.extract_max_entries,
     )?;
     let cli = root.join("pohunek");
@@ -818,7 +845,7 @@ mod tests {
 
     #[test]
     fn hash_mismatch_is_refused() {
-        let dir = TempDir::create().unwrap();
+        let dir = TempDir::create(Duration::from_secs(3600)).unwrap();
         let file = dir.path().join("f");
         fs::write(&file, b"abc").unwrap();
         let good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -894,7 +921,7 @@ mod tests {
             gz.write_all(&tar).unwrap();
             gz.finish().unwrap()
         };
-        let dir = TempDir::create().unwrap();
+        let dir = TempDir::create(Duration::from_secs(3600)).unwrap();
         let run_case = |name: &str, bytes: Vec<u8>| {
             let archive = dir.path().join(format!("{name}.tar.gz"));
             fs::write(&archive, bytes).unwrap();

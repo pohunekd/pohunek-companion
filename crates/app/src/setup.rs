@@ -203,6 +203,10 @@ impl Setup {
             setup.update(|inner| {
                 inner.probing = false;
                 if inner.down.is_some() {
+                    // A confirmation belongs to the state it was made in.
+                    if inner.state.as_ref().map(SetupState::key) != Some(key) {
+                        inner.confirming = None;
+                    }
                     inner.state = Some(state);
                 }
             });

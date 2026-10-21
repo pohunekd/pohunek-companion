@@ -393,6 +393,11 @@ pub struct SetupConfig {
     /// `setup.extract_max_entries`: most entries an archive may hold, greater
     /// than zero. Optional; default 4096.
     pub extract_max_entries: u64,
+    /// `setup.stale_install_max_age_secs`: age after which an unfinished
+    /// install directory left in the state directory (a crashed or killed
+    /// install) is removed when the next install starts, in seconds, greater
+    /// than zero. Optional; default 3600.
+    pub stale_install_max_age_secs: u64,
     /// `setup.release_base_url`: where release files are downloaded from, as
     /// `<base>/<tag>/<file>`. Must be an `https` URL, or `http` to a loopback
     /// host (for a local mirror). Optional; default the GitHub releases of
@@ -414,6 +419,7 @@ impl Default for SetupConfig {
             download_max_mib: 128,
             extract_max_mib: 512,
             extract_max_entries: 4096,
+            stale_install_max_age_secs: 3600,
             release_base_url: DEFAULT_RELEASE_BASE_URL.to_owned(),
         }
     }
@@ -624,6 +630,10 @@ impl Config {
             ("setup.download_max_mib", self.setup.download_max_mib),
             ("setup.extract_max_mib", self.setup.extract_max_mib),
             ("setup.extract_max_entries", self.setup.extract_max_entries),
+            (
+                "setup.stale_install_max_age_secs",
+                self.setup.stale_install_max_age_secs,
+            ),
             ("attach_observe_ms", self.attach_observe_ms),
             ("new_session.cols", u64::from(self.new_session.cols)),
             ("new_session.rows", u64::from(self.new_session.rows)),
