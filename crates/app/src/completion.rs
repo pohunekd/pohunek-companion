@@ -90,6 +90,9 @@ fn without_hidden_args(command: &clap::Command) -> clap::Command {
                 .cloned(),
         )
         .subcommands(command.get_subcommands().map(without_hidden_args));
+    if let Some(version) = command.get_version() {
+        rebuilt = rebuilt.version(version.to_owned());
+    }
     if let Some(about) = command.get_about() {
         rebuilt = rebuilt.about(about.clone());
     }
@@ -136,26 +139,32 @@ impl ValueCompleter for HostCompleter {
         let Some(current) = current.to_str() else {
             return Vec::new();
         };
-        let targets = run_bounded(host_targets()).unwrap_or_default();
+        let targets = host_targets();
         with_prefix(current, targets.into_iter().map(|target| (target, None)))
     }
 }
 
-async fn host_targets() -> Option<Vec<String>> {
-    let config = Config::load().ok()?;
-    // Discovery fails without a daemon; the configured hosts still complete.
-    let discovered = match discover_records(&config.daemon).await {
-        Ok(records) => plan_discovery(&records, &config.hosts),
-        Err(_) => Default::default(),
-    };
+/// `local` and the configured hosts come from the file alone; only the peer
+/// discovery asks the daemon, so a slow daemon still leaves them.
+fn host_targets() -> Vec<String> {
     let mut targets = vec![LOCAL_HOST.to_owned()];
+    let Ok(config) = Config::load() else {
+        return targets;
+    };
+    let configured = config.hosts.clone();
+    let daemon = config.daemon.clone();
+    let discovered = run_bounded(async move {
+        let records = discover_records(&daemon).await.ok()?;
+        Some(plan_discovery(&records, &configured))
+    })
+    .unwrap_or_default();
     targets.extend(
         dialog_hosts(&config.hosts, &discovered)
             .into_iter()
             .filter(|host| host.unavailable.is_none())
             .map(|host| host.target),
     );
-    Some(targets)
+    targets
 }
 
 /// Project ids of the local daemon, with the project label as help.
@@ -248,6 +257,17 @@ mod tests {
 
     fn script(shell: CompletionShell) -> String {
         String::from_utf8(render_script(shell, false)).expect("utf-8 script")
+    }
+
+    #[test]
+    fn static_scripts_complete_version() {
+        for shell in [
+            CompletionShell::Bash,
+            CompletionShell::Zsh,
+            CompletionShell::Fish,
+        ] {
+            assert!(script(shell).contains("version"), "{shell:?}");
+        }
     }
 
     #[test]

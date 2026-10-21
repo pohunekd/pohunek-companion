@@ -48,6 +48,9 @@ on:
       - "packaging/linux/**"
       - "crates/app/src/cli.rs"
       - "crates/app/src/completion.rs"
+      - "crates/app/src/new_session.rs"
+      - "crates/app/src/assistant.rs"
+      - "crates/app/src/launch.rs"
       - "assets/icons/hicolor/**"
 
 concurrency:

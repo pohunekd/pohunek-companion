@@ -40,10 +40,10 @@ const AUTOMATIC_LABEL: &str = "Automatic";
 pub struct Args {
     /// Host target to preselect; `local`, a configured `[[hosts]]` target or a
     /// discovered host's key.
-    #[arg(long, value_name = "TARGET", value_parser = crate::cli::non_empty)]
+    #[arg(long, value_name = "TARGET", allow_hyphen_values = true, value_parser = crate::cli::non_empty)]
     pub host: Option<String>,
     /// Project id to preselect.
-    #[arg(long, value_name = "ID", value_parser = crate::cli::non_empty)]
+    #[arg(long, value_name = "ID", allow_hyphen_values = true, value_parser = crate::cli::non_empty)]
     pub project: Option<String>,
     /// Intent to preselect; `help` when absent.
     #[arg(long, value_name = "INTENT", value_parser = crate::cli::IntentParser)]

@@ -222,7 +222,8 @@ the attach command, the idle threshold and placement rules is set in
 
 `completions <shell>` prints a script that completes subcommands, flags and the
 `--intent` values. The Linux release archive already carries the scripts under
-`share/`, so the `cp -r share/.` step above installs them. Otherwise:
+`share/`, so the `cp -r share/.` step above installs them (zsh also needs
+`~/.local/share/zsh/site-functions` on `fpath`, as below). Otherwise:
 
 ```bash
 # bash: loaded on demand by bash-completion
@@ -241,7 +242,8 @@ pohunek-companion completions fish > ~/.config/fish/completions/pohunek-companio
 `completions <shell> --dynamic` prints a one-line bootstrap instead (for
 example `source <(pohunek-companion completions bash --dynamic)` in
 `~/.bashrc`) that also completes `--host`, `--project` and `--group` from the
-local daemon, `companion.toml` and the layout file. Every lookup stops after
+local daemon, `companion.toml` and the layout file (`--project` always asks
+the local daemon). Every lookup stops after
 750 ms and prints nothing on failure, so Tab without a daemon offers only the
 values that need none.
 

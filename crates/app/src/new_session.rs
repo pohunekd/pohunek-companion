@@ -28,13 +28,13 @@ const APP_ID: &str = "pohunek-companion-new-session";
 pub struct Args {
     /// Host target to preselect; `local`, a configured `[[hosts]]` target or a
     /// discovered host's key.
-    #[arg(long, value_name = "TARGET", value_parser = crate::cli::non_empty)]
+    #[arg(long, value_name = "TARGET", allow_hyphen_values = true, value_parser = crate::cli::non_empty)]
     pub host: Option<String>,
     /// Project id to preselect.
-    #[arg(long, value_name = "ID", value_parser = crate::cli::non_empty)]
+    #[arg(long, value_name = "ID", allow_hyphen_values = true, value_parser = crate::cli::non_empty)]
     pub project: Option<String>,
     /// Id of the My groups group the created session is placed in.
-    #[arg(long, value_name = "ID", value_parser = crate::cli::non_empty)]
+    #[arg(long, value_name = "ID", allow_hyphen_values = true, value_parser = crate::cli::non_empty)]
     pub group: Option<String>,
     /// The remote hosts the sidebar already resolved, with their routes. The
     /// dialog lists them at once and skips its own discovery.
