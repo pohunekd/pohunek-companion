@@ -63,6 +63,7 @@ while it runs.
 ```bash
 scripts/ui-agent start                  # isolated daemon; prints http://127.0.0.1:<port>/mcp
 scripts/ui-agent start --sessions 120   # plus 120 generated sessions (124 in total)
+scripts/ui-agent start --showcase       # realistic synthetic dataset for README screenshots
 scripts/ui-agent screenshot shot.png    # PNG of the window
 scripts/ui-agent tree                   # element tree with ids
 scripts/ui-agent find SessionRow::row-touch
@@ -112,6 +113,28 @@ show the owner's real sessions (names, ids, working directories, Work links).
   daemon. `scripts/ui-agent stop` stops the app, the daemon, and its
   sessions and deletes the directory. Everything published comes from this
   mode.
+- `scripts/ui-agent start --showcase` replaces the four fixed sessions and three
+  projects with the showcase dataset (`showcase_projects`, `showcase_groups`,
+  `showcase_sessions` in the script): six projects named after Pohunek and
+  well-known open source projects, thirteen sessions with task names, Work links
+  to plausible public issue and PR numbers, groups (Inbox, Now, Reviews, Later),
+  and a mix of Needs owner, Working, Idle, Ended and no-agent-state rows. The
+  `claude` and `codex` labels come from two synthetic host agent profiles in the
+  isolated `config/pohunek/agents/`: `base = "shell"`, a `program` that draws a
+  working, blocked or idle screen (chosen by the first input line) and sleeps,
+  and a detection manifest (`manifests/showcase.toml`) that maps those screens
+  to the daemon's activities. No real agent runs and no token is spent; the
+  profiles never point at the claude or codex packages. The layout is written
+  before the app starts (sessions marked `manual` so placement rules leave them
+  in their groups), and `tray.idle_threshold_secs` is set to 1 so idle sessions
+  show as Idle at once. Resume cannot be shown: a shell-based profile cannot
+  declare a resume spec and a real runtime needs the agent's own hook to report
+  a conversation id, so the details view of an ended session shows the refusal
+  sentence instead. It cannot be combined with `--sessions`; with `--remote-host` it adds the synthetic
+  remote host (not exercised together so far). `stop` removes everything it created (it all lives in the isolated directory).
+  Screenshots are taken with `scripts/ui-agent screenshot docs/screenshots/NAME.png`
+  and optimised with `optipng -o4`; the dialogs go through `scripts/ui-agent dialog`
+  (type into a multi-line request with the `dispatch_key_event` MCP tool).
 - The isolated run never discovers the owner's overlay hosts: the daemon and
   the app get a `netbird` stub first on `PATH` (`<isolated dir>/bin/netbird`).
   The daemon's machine-wide `host.discover` reads `netbird status --json`, so
