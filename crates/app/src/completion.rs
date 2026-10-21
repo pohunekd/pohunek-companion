@@ -79,8 +79,9 @@ fn fix_bash_names(script: &[u8]) -> Vec<u8> {
         .into_bytes()
 }
 
-/// The static generators list hidden arguments, so the internal flags the
-/// sidebar passes to its dialogs are dropped from the tree they see.
+/// The static generators list hidden arguments and subcommands, so the
+/// internal flags the sidebar passes to its dialogs and the platform-only
+/// subcommands are dropped from the tree they see.
 fn without_hidden_args(command: &clap::Command) -> clap::Command {
     let mut rebuilt = clap::Command::new(command.get_name().to_owned())
         .args(
@@ -89,7 +90,12 @@ fn without_hidden_args(command: &clap::Command) -> clap::Command {
                 .filter(|arg| !arg.is_hide_set())
                 .cloned(),
         )
-        .subcommands(command.get_subcommands().map(without_hidden_args));
+        .subcommands(
+            command
+                .get_subcommands()
+                .filter(|sub| !sub.is_hide_set())
+                .map(without_hidden_args),
+        );
     if let Some(version) = command.get_version() {
         rebuilt = rebuilt.version(version.to_owned());
     }
@@ -286,5 +292,17 @@ mod tests {
             assert!(!text.contains("known-hosts"), "{shell:?}");
             assert!(text.contains("new-session"), "{shell:?}");
         }
+    }
+
+    #[test]
+    fn hidden_subcommands_are_dropped_from_the_static_tree() {
+        let command = clap::Command::new("root")
+            .subcommand(clap::Command::new("shown"))
+            .subcommand(clap::Command::new("secret").hide(true));
+        let names: Vec<_> = without_hidden_args(&command)
+            .get_subcommands()
+            .map(|sub| sub.get_name().to_owned())
+            .collect();
+        assert_eq!(names, ["shown"]);
     }
 }
