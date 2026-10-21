@@ -128,6 +128,8 @@ remote_route_file=$state/remote-route
 daemon_pidfile=$state/daemon-pid
 daemon_scopefile=$state/daemon-scope
 iso_prefix=ph-ui-agent
+# The daemon refuses a path through a symlink, and /tmp is one on macOS.
+tmp_root=$(cd /tmp && pwd -P)
 session_parallelism=${UI_AGENT_PARALLELISM:-8}
 cli=${POHUNEK_CLI:-pohunek}
 app_log=$state/stdout.log
@@ -480,7 +482,7 @@ isolated_env() {
 # `version-mismatch`.
 start_setup_dir() {
     local mode=$1 iso cli_path=""
-    iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
+    iso=$(mktemp -d "$tmp_root/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
     echo "$iso" >"$iso_file"
     mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/home" "$iso/work" &&
         chmod 700 "$iso" "$iso/run" ||
@@ -674,7 +676,7 @@ remove_iso_dir() {
     [ -f "$iso_file" ] || return 0
     iso=$(cat "$iso_file")
     case $iso in
-        /tmp/"$iso_prefix".*) rm -rf "$iso" ;;
+        /tmp/"$iso_prefix".* | /private/tmp/"$iso_prefix".*) rm -rf "$iso" ;;
         *) echo "ui-agent: refusing to remove unexpected directory: $iso" >&2 ;;
     esac
     rm -f "$iso_file"
@@ -738,7 +740,7 @@ start_isolated_daemon() {
     local -a project_names=("${synthetic_projects[@]}")
     [ "$showcase" -eq 0 ] || project_names=("${showcase_projects[@]}")
     daemon_bin=$(find_daemon_bin) || exit 1
-    iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
+    iso=$(mktemp -d "$tmp_root/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
     echo "$iso" >"$iso_file"
     mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/work" &&
         chmod 700 "$iso" "$iso/run" &&
@@ -835,7 +837,7 @@ stop_isolated_daemon() {
     iso=$(cat "$iso_file")
     case $iso in
         */../* | */..) iso="" ;;
-        /tmp/"$iso_prefix".*) ;;
+        /tmp/"$iso_prefix".* | /private/tmp/"$iso_prefix".*) ;;
         *) iso="" ;;
     esac
     if [ -z "$iso" ] || [ ! -d "$iso" ]; then
