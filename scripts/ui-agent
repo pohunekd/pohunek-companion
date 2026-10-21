@@ -484,6 +484,12 @@ start_setup_dir() {
             write_setup_cli_stub "$cli_path" "$iso/setup-cli.log"
             ;;
         not-installed | version-mismatch)
+            # HOME and the bus address isolate systemd only; launchd would
+            # still be the owner's, so the real CLI is not run on macOS.
+            if [ "$mode" = not-installed ] && [ "$(uname -s)" = Darwin ]; then
+                stop >/dev/null 2>&1 || true
+                die "--setup not-installed runs the real pohunek CLI and is Linux only"
+            fi
             need "$cli"
             cli_path=$iso/bin/pohunek
             ln -s "$(command -v "$cli")" "$cli_path"

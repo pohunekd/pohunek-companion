@@ -179,7 +179,7 @@ show the owner's real sessions (names, ids, working directories, Work links).
   and starts no daemon, in an isolated directory with its own `HOME` and a
   session bus address that leads nowhere, so no `pohunek service` command can
   reach the owner's service manager. `cli-missing` points `pohunek_bin` at a
-  path that does not exist. `not-installed` runs the real CLI against the empty
+  path that does not exist. `not-installed` (Linux only: launchd is not isolated by `HOME`) runs the real CLI against the empty
   isolated config (its pre-install check refuses without a service manager,
   which the screen shows). `not-running` runs a synthetic CLI script that
   reports an installed, stopped service, passes the check and only logs its
