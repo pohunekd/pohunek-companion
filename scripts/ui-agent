@@ -63,10 +63,10 @@
 # loopback mirror whose `.sha256` file is altered, to show the refusal.
 # UI_AGENT_NO_BUILD=1 skips the cargo build and runs the binary already
 # present under $UI_AGENT_DIR/cargo-target.
-# With UI_AGENT_SANDBOX=1 inside a throwaway container (a /.dockerenv or
-# /run/.containerenv marker is required) `install` keeps the container's own
-# HOME, runtime directory and user service manager, so Run installs for real
-# into that container; never set it on a machine whose service is not disposable.
+# With UI_AGENT_SANDBOX=1 inside a throwaway virtual machine (the marker file
+# /etc/ui-agent-sandbox is required) `install` keeps the VM's own HOME,
+# runtime directory and user service manager, so Run installs for real into
+# that VM; never create the marker on a machine whose service is not disposable.
 # `--owner-daemon` connects to the owner's real daemon instead; its output must never be published (see
 # .agents/instructions/verification.md).
 #
@@ -1234,9 +1234,9 @@ start() {
             envs=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port" "PATH=$iso/bin:/usr/bin:/bin"
                 "XDG_STATE_HOME=$state/state" "XDG_CONFIG_HOME=$iso/config")
             if [ "${UI_AGENT_SANDBOX:-}" = 1 ] && [ "$setup_state" = install ]; then
-                [ -e /.dockerenv ] || [ -e /run/.containerenv ] ||
-                    { stop >/dev/null 2>&1 || true; die "UI_AGENT_SANDBOX=1 is accepted only inside a container"; }
-                # The container's own HOME, runtime directory and service manager.
+                [ -e /etc/ui-agent-sandbox ] ||
+                    { stop >/dev/null 2>&1 || true; die "UI_AGENT_SANDBOX=1 needs the marker file /etc/ui-agent-sandbox (a disposable VM)"; }
+                # The VM's own HOME, runtime directory and service manager.
                 envs=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port" "PATH=/usr/bin:/bin")
                 [ -z "${XDG_RUNTIME_DIR:-}" ] || envs+=("XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
                 [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] || envs+=("DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS")
