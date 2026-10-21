@@ -588,8 +588,10 @@ start_refusing_socket() {
     mkdir -p "$iso/run/pohunek" && chmod 700 "$iso/run/pohunek" || return 1
     (
         cd "$iso/work"
-        exec env "XDG_RUNTIME_DIR=$iso/run" setsid python3 -I -c '
+        exec env "XDG_RUNTIME_DIR=$iso/run" python3 -I -c '
 import json, os, socket, sys, threading
+# macOS has no setsid(1); a session of its own keeps terminal signals away.
+os.setsid()
 path = os.path.join(os.environ["XDG_RUNTIME_DIR"], "pohunek", "daemon.sock")
 server = socket.socket(socket.AF_UNIX)
 server.bind(path)
