@@ -42,6 +42,13 @@ toml = { version = "1", default-features = false, features = ["std", "parse", "d
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "json"] }
 tokio = { version = "1", default-features = false, features = ["rt", "sync", "time"] }
+# Release download for the installer: rustls with the bundled webpki roots (no
+# system trust store, no OpenSSL), gzip decoding by flate2, tar entries read
+# one by one so the extractor can refuse every non-regular entry.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { version = "0.4", default-features = false }
+sha2 = "0.10"
 
 [workspace.lints.rust]
 # `deny`, not `forbid`: Slint-generated code carries its own allow attributes.

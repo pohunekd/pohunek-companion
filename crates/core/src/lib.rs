@@ -12,6 +12,7 @@ mod detail;
 mod discovery;
 mod error;
 mod filter;
+mod install;
 mod layout;
 mod lifecycle;
 mod live;
@@ -54,6 +55,10 @@ pub use filter::{
     HostConnection, HostEntry, HostOption, ProjectChip, ProjectSelection, SessionFilter, StateChip,
     StateSelection, StoredFilter, filter_sections, fuzzy_matches, host_options, project_chips,
     state_chips, state_from_key, state_key,
+};
+pub use install::{
+    Attestation, CLIENT_TAG, InstallPlan, Prepared, Release, Step, StepError, plan_for_host,
+    prepare_release, run_brew_install, run_release_install,
 };
 pub use layout::{
     CreateAndMoveError, GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError,

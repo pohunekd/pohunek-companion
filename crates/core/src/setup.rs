@@ -16,6 +16,7 @@ use serde::Deserialize;
 use crate::attach::resolve_program;
 use crate::attach::resolve_program_in;
 use crate::badge::{clip_display, sanitize};
+use crate::install::{InstallPlan, brew_command_line};
 
 /// Daemon error codes that mean the daemon is up but speaks another protocol.
 const VERSION_CODES: [&str; 2] = ["version_mismatch", "daemon_protocol_too_old"];
@@ -36,6 +37,11 @@ pub const CLIENT_VERSION: &str = env!("POHUNEK_CLIENT_VERSION");
 /// `--stop-sessions` or `--purge` from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupAction {
+    /// Downloads, verifies and unpacks the pinned release, then runs its
+    /// `packaging/install-daemon.sh` (Linux).
+    InstallRelease,
+    /// `brew install zajca/pohunek/pohunek` (macOS).
+    BrewInstall,
     /// `pohunek service install`: registers the login service.
     InstallService,
     /// `pohunek service start`: starts an installed, stopped service. Offered
@@ -44,17 +50,20 @@ pub enum SetupAction {
 }
 
 impl SetupAction {
-    /// The arguments after the CLI path.
-    pub fn args(self) -> &'static [&'static str] {
+    /// The arguments after the `pohunek` CLI path; `None` for the actions
+    /// that install the CLI itself.
+    pub fn args(self) -> Option<&'static [&'static str]> {
         match self {
-            Self::InstallService => &["service", "install"],
-            Self::StartService => &["service", "start"],
+            Self::InstallService => Some(&["service", "install"]),
+            Self::StartService => Some(&["service", "start"]),
+            Self::InstallRelease | Self::BrewInstall => None,
         }
     }
 
     /// The button label.
     pub fn label(self) -> &'static str {
         match self {
+            Self::InstallRelease | Self::BrewInstall => "Install Pohunek",
             Self::InstallService => "Install service",
             Self::StartService => "Start service",
         }
@@ -62,15 +71,23 @@ impl SetupAction {
 
     /// The command as the owner would type it.
     pub fn command_line(self) -> String {
-        format!("pohunek {}", self.args().join(" "))
+        match self.args() {
+            Some(args) => format!("pohunek {}", args.join(" ")),
+            None if self == Self::BrewInstall => brew_command_line(),
+            None => "./packaging/install-daemon.sh".to_owned(),
+        }
     }
 }
 
 /// What the screen shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupState {
-    /// No `pohunek` executable was found.
-    CliMissing { program: String },
+    /// No `pohunek` executable was found; `install` is how this machine can
+    /// get one.
+    CliMissing {
+        program: String,
+        install: InstallPlan,
+    },
     /// The CLI is there; the login service is not installed.
     NotInstalled { cli: PathBuf },
     /// The service is installed and its daemon is not running.
@@ -95,6 +112,14 @@ impl SetupState {
     /// The action the screen offers, if any.
     pub fn action(&self) -> Option<SetupAction> {
         match self {
+            Self::CliMissing {
+                install: InstallPlan::Release,
+                ..
+            } => Some(SetupAction::InstallRelease),
+            Self::CliMissing {
+                install: InstallPlan::Brew { .. },
+                ..
+            } => Some(SetupAction::BrewInstall),
             Self::NotInstalled { .. } => Some(SetupAction::InstallService),
             Self::NotRunning {
                 start_supported: true,
@@ -170,7 +195,7 @@ impl ServiceCheck {
             self.operation, self.version, self.namespace
         )];
         match action {
-            SetupAction::InstallService => {
+            SetupAction::InstallService | SetupAction::InstallRelease => {
                 if let Some(prefix) = &self.prefix {
                     lines.push(format!("Copies the binaries under {}.", prefix.display()));
                 }
@@ -178,6 +203,9 @@ impl ServiceCheck {
                     lines.push(format!("Writes {}.", config.display()));
                 }
                 lines.push("Registers the daemon as a login service and starts it.".to_owned());
+            }
+            SetupAction::BrewInstall => {
+                lines.push("Homebrew installs the formula's current release.".to_owned());
             }
             SetupAction::StartService => {
                 lines.push(
@@ -250,16 +278,16 @@ pub fn locate_cli(program: &str, login_shell_timeout: Duration) -> Result<PathBu
 
 /// Captured result of one CLI call.
 #[derive(Debug)]
-struct Captured {
-    success: bool,
-    stdout: String,
-    stderr: String,
+pub(crate) struct Captured {
+    pub(crate) success: bool,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
 
 /// Runs `cli args...` with no stdin, bounded by `timeout`; the whole process
 /// group is killed on expiry. The environment is inherited because the
 /// service manager needs the session bus.
-fn run(cli: &Path, args: &[&str], timeout: Duration) -> Result<Captured, String> {
+pub(crate) fn run(cli: &Path, args: &[&str], timeout: Duration) -> Result<Captured, String> {
     let mut child = Command::new(cli)
         .args(args)
         .stdin(Stdio::null())
@@ -376,7 +404,13 @@ pub fn run_action(
     timeout: Duration,
     max_chars: usize,
 ) -> Result<String, String> {
-    let mut args: Vec<&str> = action.args().to_vec();
+    let Some(base) = action.args() else {
+        return Err(format!(
+            "`{}` is not a pohunek command",
+            action.command_line()
+        ));
+    };
+    let mut args: Vec<&str> = base.to_vec();
     args.push("--json");
     let captured = run(cli, &args, timeout)?;
     match serde_json::from_str::<Envelope<serde_json::Value>>(&captured.stdout) {
@@ -411,6 +445,8 @@ pub struct Probe {
     pub status: Option<Result<ServiceStatus, CallError>>,
     /// Whether the CLI offers `service start`.
     pub start_supported: bool,
+    /// How this machine can install the CLI.
+    pub install: InstallPlan,
 }
 
 /// Decides what to show from plain facts.
@@ -428,6 +464,7 @@ pub fn derive(probe: &Probe) -> SetupState {
         Err(program) => {
             return SetupState::CliMissing {
                 program: program.clone(),
+                install: probe.install.clone(),
             };
         }
     };
@@ -490,6 +527,7 @@ mod tests {
             cli: cli.map(PathBuf::from).map_err(str::to_owned),
             status: status.map(Ok),
             start_supported: false,
+            install: InstallPlan::Release,
         }
     }
 
@@ -511,6 +549,9 @@ mod tests {
         assert_eq!(derive(&p).key(), "version-mismatch");
         p.refusal = Some(("socket_refused".to_owned(), "x".to_owned()));
         assert_eq!(derive(&p).key(), "cli-missing");
+        assert_eq!(derive(&p).action(), Some(SetupAction::InstallRelease));
+        p.install = InstallPlan::Manual;
+        assert_eq!(derive(&p).action(), None);
     }
 
     #[test]
