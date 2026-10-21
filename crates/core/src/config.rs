@@ -79,6 +79,8 @@ pub struct Config {
     pub layout: LayoutConfig,
     /// `[view]` table: how the sidebar sections are titled.
     pub view: ViewConfig,
+    /// `[setup]` table: how the setup screen runs the `pohunek` CLI.
+    pub setup: SetupConfig,
     /// `[new_session]` table: how the new-session dialog creates sessions.
     pub new_session: NewSessionConfig,
     /// `[[hosts]]`: remote Pohunek hosts whose sessions are listed next to the
@@ -102,10 +104,11 @@ pub struct Config {
     /// runs `pohunek attach`. Optional; mutually exclusive with
     /// `attach_command`. Example: `attach_terminal = "terminal"`.
     pub attach_terminal: Option<AttachTerminal>,
-    /// `pohunek_bin`: the `pohunek` executable that `{bin}` expands to, an
-    /// absolute path or a bare name resolved on `PATH` (on macOS also in
-    /// the login shell's `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin`,
-    /// `~/.local/bin`). Optional; default `pohunek`. Example: `pohunek_bin = "/opt/pohunek/bin/pohunek"`.
+    /// `pohunek_bin`: the `pohunek` executable that `{bin}` expands to and
+    /// that the setup screen runs, an absolute path or a bare name resolved
+    /// on `PATH` (on macOS also in the login shell's `PATH`, then
+    /// `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`; the setup
+    /// screen checks those directories on every platform). Optional; default `pohunek`. Example: `pohunek_bin = "/opt/pohunek/bin/pohunek"`.
     pub pohunek_bin: String,
     /// `open_command`: argv template that opens a session's folder or Work
     /// link, as an array of words (no shell is involved). The only
@@ -137,6 +140,7 @@ impl Default for Config {
             tray: TrayConfig::default(),
             layout: LayoutConfig::default(),
             view: ViewConfig::default(),
+            setup: SetupConfig::default(),
             new_session: NewSessionConfig::default(),
             hosts: Vec::new(),
             attach_command: None,
@@ -355,6 +359,44 @@ impl TrayConfig {
     }
 }
 
+/// `[setup]` table.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SetupConfig {
+    /// `setup.probe_timeout_secs`: time allowed for one read-only `pohunek`
+    /// call (`service status`, `service check`), in seconds, greater than
+    /// zero. Optional; default 15.
+    pub probe_timeout_secs: u64,
+    /// `setup.action_timeout_secs`: time allowed for a command the owner
+    /// confirmed (`service install`, which waits until the daemon answers),
+    /// in seconds, greater than zero. Optional; default 180.
+    pub action_timeout_secs: u64,
+    /// `setup.message_max_chars`: longest command output or error shown on
+    /// the setup screen, in characters, greater than zero; longer text is cut
+    /// with an ellipsis. Optional; default 400.
+    pub message_max_chars: usize,
+}
+
+impl Default for SetupConfig {
+    fn default() -> Self {
+        Self {
+            probe_timeout_secs: 15,
+            action_timeout_secs: 180,
+            message_max_chars: 400,
+        }
+    }
+}
+
+impl SetupConfig {
+    pub fn probe_timeout(&self) -> Duration {
+        Duration::from_secs(self.probe_timeout_secs)
+    }
+
+    pub fn action_timeout(&self) -> Duration {
+        Duration::from_secs(self.action_timeout_secs)
+    }
+}
+
 /// `[daemon]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -524,6 +566,12 @@ impl Config {
             (
                 "daemon.session_action_timeout_ms",
                 self.daemon.session_action_timeout_ms,
+            ),
+            ("setup.probe_timeout_secs", self.setup.probe_timeout_secs),
+            ("setup.action_timeout_secs", self.setup.action_timeout_secs),
+            (
+                "setup.message_max_chars",
+                u64::try_from(self.setup.message_max_chars).unwrap_or(u64::MAX),
             ),
             ("attach_observe_ms", self.attach_observe_ms),
             ("new_session.cols", u64::from(self.new_session.cols)),

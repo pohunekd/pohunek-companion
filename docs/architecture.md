@@ -187,6 +187,42 @@ Storage and reconciliation:
   session keeps its rule or Inbox placement. Without `--group` (tray, sidebar
   button, standalone command) nothing is recorded.
 
+## Setup screen
+
+While the local daemon has never answered in this process and no host lists
+sessions, the window shows a setup screen over the list (`SetupPanel`,
+`crates/app/src/setup.rs`, derivation in `crates/core/src/setup.rs`). It is
+driven by the local connection loop: every `Reconnecting` update triggers one
+probe on a worker thread, so probes follow the reconnect backoff and there is
+no timer of their own. The probe finds the `pohunek` CLI (`pohunek_bin`, then
+`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) and reads
+`pohunek service status --json`. `derive` maps the facts to one state:
+
+| State | Screen |
+| --- | --- |
+| CLI not found | install commands from the Pohunek README, release link |
+| service not installed | "Install service" |
+| installed, daemon not running | "Start service" when `pohunek service --help` lists `start`, else the job name to start by hand |
+| job running, daemon silent | the connection error |
+| interrupted install or upgrade | pointer to `pohunek service status` |
+| `version_mismatch`, `daemon_protocol_too_old` | the daemon's message and the companion's `pohunek-client` version and protocol range |
+
+An action is two clicks. The first runs the read-only `pohunek service check
+--json` and shows the exact command and what it touches; a refused check shows
+its error and leaves Run disabled. Run executes one fixed argv
+(`service install` or `service start`, with `--json`), bounded by
+`setup.action_timeout_secs`, and shows the CLI's error code and message, cleaned
+and clipped to `setup.message_max_chars`, or "finished". `integration install`,
+`--accept-runtime-loss`, `--stop-sessions` and `--purge` have no representation
+in `SetupAction`. When the daemon answers, `LiveUpdate::Connected` closes the
+screen. After the first connection a later outage keeps the list and the
+status line, as before. A remote host that lists sessions keeps the list
+visible. Remote hosts never use this screen.
+
+The CLI-missing state has no action yet; an Install button belongs in
+`SetupState::action`/`describe` (`SetupAction` gets a variant, and
+`run_action` its argv).
+
 ## Tray states
 
 | State | Rule |
