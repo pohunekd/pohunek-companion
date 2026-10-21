@@ -175,6 +175,24 @@ show the owner's real sessions (names, ids, working directories, Work links).
   for diagnosing a problem that only the real data shows. Describe what was
   checked in words only; never attach or paste its screenshots, element trees,
   logs, or session lists. Do not click rows or edit anything through it.
+- `scripts/ui-agent start --setup STATE` shows one state of the setup screen
+  and starts no daemon, in an isolated directory with its own `HOME` and a
+  session bus address that leads nowhere, so no `pohunek service` command can
+  reach the owner's service manager. `cli-missing` points `pohunek_bin` at a
+  path that does not exist. `not-installed` runs the real CLI against the empty
+  isolated config (its pre-install check refuses without a service manager,
+  which the screen shows). `not-running` runs a synthetic CLI script that
+  reports an installed, stopped service, passes the check and only logs its
+  calls to `<iso>/setup-cli.log`, which proves that nothing ran before the
+  confirmation. `version-mismatch` serves a socket that answers every request
+  with `version_mismatch` (a real older daemon is not at hand). The setup
+  buttons are the `DialogButton::touch` elements of `SetupPanel`: index 0 is the
+  action, then Check again; while a confirmation shows, 0 is Cancel and 1 is
+  Run. For "the screen gives way to the list", start the isolated daemon by
+  hand in the run's environment (`<iso>/bin/pohunek daemon start
+  --dev-subprocess`, with the `XDG_*`, `HOME` and `PATH` of the run). Never
+  press the real Install or Start against the owner's service: the owner's
+  daemon is checked manually, in words only.
 - Raw MCP output (`tree`, `find`, `call`) can contain session names: treat it
   like a screenshot.
 

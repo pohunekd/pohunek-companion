@@ -14,6 +14,7 @@ mod launch;
 mod logging;
 mod new_session;
 mod resume;
+mod setup;
 mod tray;
 
 use launch::{ASSISTANT_COMMAND, NEW_SESSION_COMMAND};
@@ -654,6 +655,8 @@ struct Publisher {
     pending: Option<(PendingStore, Duration)>,
     layout: SharedLayout,
     hosts: Rc<RefCell<HostsView>>,
+    /// The setup screen; absent when `companion.toml` is unusable.
+    setup: Option<Arc<setup::Setup>>,
 }
 
 /// The latest session list of every followed host and the hosts that are
@@ -831,6 +834,18 @@ impl Publisher {
                 .borrow_mut()
                 .set_rows(&host.target, sessions.clone());
         }
+        if let Some(setup) = &self.setup {
+            match &update {
+                LiveUpdate::Connected if local => setup.connected(),
+                LiveUpdate::Reconnecting { reason, code, .. } if local => {
+                    setup.down(reason.clone(), code.clone());
+                }
+                LiveUpdate::Sessions(_) => {
+                    setup.rows_elsewhere(!self.hosts.borrow().union().is_empty());
+                }
+                _ => {}
+            }
+        }
         let status = match &update {
             LiveUpdate::Connected => {
                 let mut hosts = self.hosts.borrow_mut();
@@ -970,6 +985,7 @@ struct FollowSettings {
     idle_threshold: Duration,
     rules: Vec<PlacementRule>,
     pending: Option<(PendingStore, Duration)>,
+    setup: Option<Arc<setup::Setup>>,
 }
 
 /// Follows the local daemon and every configured remote host on a background
@@ -988,6 +1004,7 @@ fn follow_daemons(
         idle_threshold,
         rules,
         pending,
+        setup,
     } = settings;
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -1016,6 +1033,7 @@ fn follow_daemons(
             pending,
             layout,
             hosts: Rc::new(RefCell::new(HostsView::new(&hosts))),
+            setup,
         });
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, async {
@@ -1521,6 +1539,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                     None
                 }
             };
+            let setup = setup::Setup::new(&window, &config);
             follow_daemons(
                 window.as_weak(),
                 tray.as_weak(),
@@ -1531,6 +1550,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                     idle_threshold: config.tray.idle_threshold(),
                     rules: config.layout.rules,
                     pending,
+                    setup: Some(setup),
                 },
                 layout.clone(),
             );

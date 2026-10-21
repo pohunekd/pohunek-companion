@@ -25,6 +25,7 @@ mod rename;
 mod resume;
 mod routes;
 mod session;
+mod setup;
 mod socket;
 mod sort_key;
 mod tray_summary;
@@ -39,7 +40,7 @@ pub use attach_macos::AttachTerminal;
 pub use badge::{WorkBadge, WorkFacts, clip_display, clip_middle};
 pub use config::{
     Config, ConfigError, DaemonConfig, HostConfig, LayoutConfig, NewSessionConfig, PlacementRule,
-    TrayConfig, ViewConfig,
+    SetupConfig, TrayConfig, ViewConfig,
 };
 pub use connect::host_naming_this_machine;
 pub use detail::{DetailField, DetailSection, SessionDetails};
@@ -81,6 +82,11 @@ pub use rename::{RenameError, name_from_input, rename_session};
 pub use resume::{PROFILE_CHANGED_CODE, ResumeOffer, refusal_sentence};
 pub use routes::set_route;
 pub use session::{ProjectRef, SessionKey, SessionRow};
+pub use setup::{
+    CLIENT_VERSION, CallError, Probe, ServiceCheck, ServiceStatus, SetupAction, SetupState,
+    companion_protocols, derive as derive_setup, locate_cli, run_action, service_check,
+    service_status, supports_service_start,
+};
 pub use socket::{SocketError, local_socket_path};
 pub use tray_summary::{TrayEntry, TraySummary};
 pub use view::{NO_PROJECT_ID, NO_WORK_ID, View, by_project, by_state, by_work_item};

@@ -8,6 +8,7 @@
 # contain the server.
 #
 #   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [--showcase]
+#                          [--setup cli-missing|not-installed|not-running|version-mismatch]
 #                          [--remote-host DEST [--remote-port N]] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
 #   scripts/ui-agent remote-route                    print the synthetic remote host's route
@@ -48,6 +49,14 @@
 # working, waiting and idle activities, ended sessions, groups, and Work links.
 # The isolated run cannot see the owner's overlay hosts: a stub `netbird` first on
 # the daemon's and the app's PATH hides every peer except the synthetic remote.
+# `--setup STATE` starts no daemon and shows one state of the setup screen in
+# an isolated directory (own HOME, no session bus, so no `pohunek service`
+# command can reach a real service): `cli-missing` points `pohunek_bin` at a
+# path that does not exist, `not-installed` uses the real CLI against the empty
+# isolated config, `not-running` uses a synthetic CLI script that reports an
+# installed, stopped service (its calls are logged to `$iso/setup-cli.log`), and
+# `version-mismatch` serves a socket that answers every request with
+# `version_mismatch`.
 # `--owner-daemon` connects to the owner's real daemon instead; its output must never be published (see
 # .agents/instructions/verification.md).
 #
@@ -454,6 +463,108 @@ isolated_env() {
     echo "XDG_CACHE_HOME=$iso/cache"
     echo "SHELL=/bin/sh"
     if [ -f "$remote_port_file" ]; then echo "POHUNEK_REMOTE_PORT=$(cat "$remote_port_file")"; fi
+}
+
+# Prepares the isolated directory of a setup screen state and prints it. No
+# daemon is started, except the socket that refuses every request for
+# `version-mismatch`.
+start_setup_dir() {
+    local mode=$1 iso cli_path
+    iso=$(mktemp -d "/tmp/$iso_prefix.XXXXXX") || die "cannot create the isolated directory"
+    echo "$iso" >"$iso_file"
+    mkdir -p "$iso/run" "$iso/state" "$iso/config" "$iso/data" "$iso/cache" "$iso/bin" "$iso/home" "$iso/work" &&
+        chmod 700 "$iso" "$iso/run" ||
+        { stop >/dev/null 2>&1 || true; die "cannot prepare the isolated directory"; }
+    write_netbird_stub "$iso/bin/netbird" ||
+        { stop >/dev/null 2>&1 || true; die "cannot write the netbird stub"; }
+    case $mode in
+        cli-missing) cli_path=$iso/bin/pohunek-missing ;;
+        not-running)
+            cli_path=$iso/bin/pohunek
+            write_setup_cli_stub "$cli_path" "$iso/setup-cli.log"
+            ;;
+        not-installed | version-mismatch)
+            need "$cli"
+            cli_path=$iso/bin/pohunek
+            ln -s "$(command -v "$cli")" "$cli_path"
+            # Lets a hand-started `pohunek daemon start --dev-subprocess` in this
+            # run (the "daemon appears" check) find its daemon binary.
+            ln -s "$(find_daemon_bin)" "$iso/bin/pohunekd"
+            ;;
+    esac
+    echo "$cli_path" >"$iso/setup-cli"
+    if [ "$mode" = version-mismatch ]; then
+        start_refusing_socket "$iso" ||
+            { stop >/dev/null 2>&1 || true; die "cannot start the refusing socket"; }
+    fi
+    echo "$iso"
+}
+
+# A shell script standing in for `pohunek` in the `not-running` state: an
+# installed service whose daemon is stopped, a passing check, and a start that
+# only logs. It touches nothing.
+write_setup_cli_stub() {
+    local path=$1 log=$2
+    cat >"$path" <<STUB
+#!/bin/sh
+echo "\$*" >>"$log"
+envelope() {
+    printf '{"cli_version":"0.35.2","protocol":{"minimum":3,"maximum":4},"ok":%s}\n' "\$1"
+}
+case "\$*" in
+    "service status --json")
+        envelope '{"installed":true,"daemon":{"service_id":"pohunek-demo-daemon.service","state":"stopped"},"pending_transaction":null,"transaction_in_progress":false}'
+        ;;
+    "service --help")
+        printf 'Commands:\n  install  Install the daemon\n  start    Start the installed daemon\n  status   Show the daemon job\n\nOptions:\n  -h, --help\n'
+        ;;
+    "service check --json")
+        envelope '{"operation":"start","version":"0.35.2","prefix":"/home/demo/.local","namespace":"demo","config_path":"/home/demo/.config/pohunek/service.toml","warnings":[]}'
+        ;;
+    "service start --json") envelope '{}' ;;
+    *) echo "unexpected call: \$*" >&2; exit 2 ;;
+esac
+STUB
+    chmod 700 "$path"
+}
+
+# Listens on the daemon socket path of the isolated run and answers every
+# request with `version_mismatch`, as a daemon of an incompatible release does.
+start_refusing_socket() {
+    local iso=$1
+    mkdir -p "$iso/run/pohunek" && chmod 700 "$iso/run/pohunek" || return 1
+    (
+        cd "$iso/work"
+        exec env "XDG_RUNTIME_DIR=$iso/run" setsid python3 -I -c '
+import json, os, socket, sys, threading
+path = os.path.join(os.environ["XDG_RUNTIME_DIR"], "pohunek", "daemon.sock")
+server = socket.socket(socket.AF_UNIX)
+server.bind(path)
+os.chmod(path, 0o600)
+server.listen(8)
+def serve(conn):
+    with conn, conn.makefile("rwb") as stream:
+        for line in stream:
+            try:
+                rid = json.loads(line)["id"]
+            except (ValueError, KeyError, TypeError):
+                return
+            reply = {"v": 4, "id": rid, "err": {"class": "daemon", "code": "version_mismatch",
+                "msg": "client protocol range 3..=4 does not overlap daemon protocol range 7..=8",
+                "recover": "upgrade the older side so the client and daemon support an overlapping protocol version"}}
+            stream.write((json.dumps(reply) + "\n").encode())
+            stream.flush()
+while True:
+    conn, _ = server.accept()
+    threading.Thread(target=serve, args=(conn,), daemon=True).start()
+' >"$iso/refusing-socket.log" 2>&1 </dev/null
+    ) &
+    local i
+    for i in $(seq 1 50); do
+        [ -S "$iso/run/pohunek/daemon.sock" ] && return 0
+        sleep 0.1
+    done
+    return 1
 }
 
 # True when transient user scopes are usable (Linux with a systemd user manager).
@@ -949,7 +1060,7 @@ EOF
 }
 
 start() {
-    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port="" showcase=0
+    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port="" showcase=0 setup_state=""
     local -a app_args=()
     while [ $# -gt 0 ]; do
         case $1 in
@@ -964,6 +1075,14 @@ start() {
             --windowed) windowed=1; shift ;;
             --owner-daemon) isolated=0; shift ;;
             --showcase) showcase=1; shift ;;
+            --setup)
+                setup_state=${2:?--setup needs a state}
+                case $setup_state in
+                    cli-missing | not-installed | not-running | version-mismatch) ;;
+                    *) die "--setup must be cli-missing, not-installed, not-running or version-mismatch" ;;
+                esac
+                shift 2
+                ;;
             --sessions)
                 sessions=${2:?--sessions needs a value}
                 case $sessions in
@@ -988,6 +1107,8 @@ start() {
     [ "$isolated" -eq 1 ] || [ "$showcase" -eq 0 ] || die "--showcase needs the isolated daemon"
     [ "$sessions" -eq 0 ] || [ "$showcase" -eq 0 ] || die "--showcase and --sessions cannot be combined"
     [ -n "$remote_host" ] || [ -z "$remote_port" ] || die "--remote-port needs --remote-host"
+    [ -z "$setup_state" ] || { [ "$isolated" -eq 1 ] && [ "$sessions" -eq 0 ] && [ "$showcase" -eq 0 ] && [ -z "$remote_host" ]; } ||
+        die "--setup cannot be combined with --owner-daemon, --sessions, --showcase or --remote-host"
     need python3
     need curl
     need jq
@@ -1008,7 +1129,9 @@ start() {
         start_remote_host "$remote_host" "$remote_port"
     fi
     local iso=""
-    if [ "$isolated" -eq 1 ]; then
+    if [ -n "$setup_state" ]; then
+        iso=$(start_setup_dir "$setup_state")
+    elif [ "$isolated" -eq 1 ]; then
         iso=$(start_isolated_daemon "$sessions" "$showcase")
     fi
 
@@ -1021,6 +1144,9 @@ start() {
     [ -z "$iso" ] || config_dir="$iso/config/pohunek"
     mkdir -p "$config_dir"
     echo 'attach_command = ["true"]' >"$config_dir/companion.toml"
+    if [ -n "$setup_state" ]; then
+        printf 'pohunek_bin = "%s"\n' "$(cat "$iso/setup-cli")" >>"$config_dir/companion.toml"
+    fi
     # UI_AGENT_CONFIG_EXTRA: extra companion.toml text, e.g. placement rules.
     if [[ -n ${UI_AGENT_CONFIG_EXTRA:-} ]]; then
         printf '%s\n' "$UI_AGENT_CONFIG_EXTRA" >>"$config_dir/companion.toml"
@@ -1045,6 +1171,11 @@ start() {
         # The companion's config and layout live in the isolated directory too.
         mapfile -t envs < <(isolated_env "$iso")
         envs+=(SLINT_EMIT_DEBUG_INFO=1 "SLINT_MCP_PORT=$port" "PATH=$iso/bin:$PATH")
+    fi
+    if [ -n "$setup_state" ]; then
+        # An own HOME and a session bus address that leads nowhere keep every
+        # `pohunek service` command away from the owner's service manager.
+        envs+=("HOME=$iso/home" "DBUS_SESSION_BUS_ADDRESS=unix:path=$iso/run/no-bus")
     fi
     if [ "$windowed" -eq 0 ]; then
         # No display variables: the headless backend renders in process.

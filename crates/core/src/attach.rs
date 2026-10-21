@@ -215,7 +215,10 @@ pub(crate) fn resolve_program(
     resolve_program_in(program, &search_path(login_shell_timeout))
 }
 
-fn resolve_program_in(program: &str, search: &[PathBuf]) -> Result<PathBuf, AttachError> {
+pub(crate) fn resolve_program_in(
+    program: &str,
+    search: &[PathBuf],
+) -> Result<PathBuf, AttachError> {
     let candidate = Path::new(program);
     if candidate.is_absolute() {
         return check_executable(candidate.to_owned());

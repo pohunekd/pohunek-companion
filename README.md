@@ -110,7 +110,14 @@ current user, so wofi, rofi, GNOME and KDE list the app. The entry has a
 ## Install
 
 The companion needs a running [Pohunek](https://github.com/zajca/pohunek)
-daemon on the same machine.
+daemon on the same machine. Without one, the window shows a setup screen
+instead of the list: it says whether the `pohunek` command is missing (with the
+install commands), the login service is not installed, or the daemon is not
+running, and offers to install or start the service after showing the exact
+command and what it touches. Nothing runs without your click and a second
+confirmation, and the screen gives way to the list as soon as the daemon
+answers. A daemon whose protocol does not match the companion's is named there
+with both versions.
 
 ### macOS (Apple Silicon, macOS 14 or later)
 

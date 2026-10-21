@@ -1190,12 +1190,173 @@ component DetailModal inherits Rectangle {
     }
 }
 
+// The screen that replaces the list while the local Pohunek daemon cannot be
+// reached: what is wrong, the commands to run by hand, and the one action the
+// owner may confirm. The host fills every property; nothing runs without a
+// click on the action and then on Run.
+component SetupPanel inherits Rectangle {
+    in property <string> heading;
+    in property <string> body;
+    // Commands to run by hand, one per line; selectable.
+    in property <string> commands;
+    in property <string> detail;
+    // Label of the offered action; empty when none is offered.
+    in property <string> action-label;
+    // The owner is looking at the exact command and what it touches.
+    in property <bool> confirming;
+    in property <string> preview;
+    // False when the check refused the command: Run stays disabled.
+    in property <bool> can-run;
+    in property <bool> busy;
+    in property <string> result;
+    in property <string> error;
+    callback action();
+    callback run();
+    callback cancel();
+    callback recheck();
+
+    background: Theme.background;
+    ScrollView {
+        VerticalLayout {
+            padding: Theme.window-padding;
+            padding-right: Theme.window-padding + Theme.scrollbar-gap;
+            spacing: ConfirmTheme.spacing;
+            alignment: start;
+            heading-text := Text {
+                text: root.heading;
+                color: Theme.text;
+                font-size: ConfirmTheme.title-font-size;
+                font-weight: 700;
+                wrap: word-wrap;
+            }
+            body-text := Text {
+                text: root.body;
+                color: Theme.text;
+                font-size: ConfirmTheme.body-font-size;
+                wrap: word-wrap;
+            }
+            if root.commands != "": commands-box := Rectangle {
+                background: Theme.chip-background;
+                border-radius: ConfirmTheme.button-radius;
+                height: commands-input.preferred-height + 2 * Theme.row-padding;
+                commands-input := TextInput {
+                    x: Theme.row-padding;
+                    y: Theme.row-padding;
+                    width: parent.width - 2 * Theme.row-padding;
+                    text: root.commands;
+                    read-only: true;
+                    wrap: word-wrap;
+                    color: Theme.text;
+                    font-size: Theme.error-font-size;
+                    font-family: "monospace";
+                    selection-background-color: Theme.field-selection;
+                    accessible-label: "Commands to run";
+                }
+            }
+            if root.detail != "": detail-text := Text {
+                text: root.detail;
+                color: Theme.detail;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
+            if root.confirming: confirm-box := Rectangle {
+                background: ConfirmTheme.card-background;
+                border-radius: ConfirmTheme.card-radius;
+                border-width: Theme.confirm-border;
+                border-color: ConfirmTheme.card-border;
+                height: confirm-column.preferred-height;
+                confirm-column := VerticalLayout {
+                    padding: Theme.detail-card-padding;
+                    spacing: ConfirmTheme.spacing;
+                    Text {
+                        text: "This runs only after you press Run:";
+                        color: Theme.text;
+                        font-size: ConfirmTheme.body-font-size;
+                        wrap: word-wrap;
+                    }
+                    preview-input := TextInput {
+                        text: root.preview;
+                        read-only: true;
+                        wrap: word-wrap;
+                        color: Theme.text;
+                        font-size: Theme.error-font-size;
+                        font-family: "monospace";
+                        selection-background-color: Theme.field-selection;
+                        accessible-label: "Command and what it touches";
+                    }
+                    HorizontalLayout {
+                        spacing: ConfirmTheme.spacing;
+                        DialogButton {
+                            label: "Cancel";
+                            accent: Theme.text;
+                            enabled: !root.busy;
+                            clicked => { root.cancel(); }
+                        }
+                        DialogButton {
+                            label: root.busy ? "Working..." : "Run";
+                            accent: Theme.owner-working;
+                            enabled: root.can-run && !root.busy;
+                            clicked => { root.run(); }
+                        }
+                    }
+                }
+            }
+            if root.result != "": result-text := Text {
+                text: root.result;
+                color: Theme.detail-copied;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
+            if root.error != "": error-text := Text {
+                text: root.error;
+                color: Theme.error;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: ConfirmTheme.spacing;
+                if root.action-label != "" && !root.confirming: DialogButton {
+                    label: root.action-label;
+                    accent: Theme.owner-working;
+                    enabled: !root.busy;
+                    clicked => { root.action(); }
+                }
+                DialogButton {
+                    label: "Check again";
+                    accent: Theme.text;
+                    enabled: !root.busy;
+                    clicked => { root.recheck(); }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Pohunek Companion";
     icon: @image-url("../../../assets/icons/pohunek-app-256.png");
     preferred-width: 320px;
     preferred-height: 800px;
     background: Theme.background;
+
+    // The setup screen: shown instead of the list while the local daemon
+    // cannot be reached; the host fills the texts and the action state.
+    in property <bool> setup-open;
+    in property <string> setup-heading;
+    in property <string> setup-body;
+    in property <string> setup-commands;
+    in property <string> setup-detail;
+    in property <string> setup-action-label;
+    in property <bool> setup-confirming;
+    in property <string> setup-preview;
+    in property <bool> setup-can-run;
+    in property <bool> setup-busy;
+    in property <string> setup-result;
+    in property <string> setup-error;
+    callback setup-action();
+    callback setup-run();
+    callback setup-cancel();
+    callback setup-recheck();
 
     // The owner's groups in order, each with its sessions in order.
     in property <[GroupData]> groups;
@@ -1739,6 +1900,25 @@ export component AppWindow inherits Window {
             }
         }
     }
+    }
+    if root.setup-open: setup-panel := SetupPanel {
+        width: root.width;
+        height: root.height;
+        heading: root.setup-heading;
+        body: root.setup-body;
+        commands: root.setup-commands;
+        detail: root.setup-detail;
+        action-label: root.setup-action-label;
+        confirming: root.setup-confirming;
+        preview: root.setup-preview;
+        can-run: root.setup-can-run;
+        busy: root.setup-busy;
+        result: root.setup-result;
+        error: root.setup-error;
+        action => { root.setup-action(); }
+        run => { root.setup-run(); }
+        cancel => { root.setup-cancel(); }
+        recheck => { root.setup-recheck(); }
     }
     if root.detail-open: detail-modal := DetailModal {
         width: root.width;
