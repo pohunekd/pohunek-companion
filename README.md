@@ -37,8 +37,8 @@ reported as waiting. Clicking a row attaches a terminal to the session.
 
 ### Tray icon
 
-The tray icon is the Pohunek herder figure in the colour of the most urgent
-state, with a badge for the number of sessions that need you. Its menu lists
+The tray icon is the Pohunek herder figure with a badge in the colour of the
+most urgent state, showing the number of sessions that need you. Its menu lists
 those sessions and attaches on click, and has entries for New session and
 Assistant. A Linux tray needs a StatusNotifierItem host (a bar with a tray
 module, or the AppIndicator extension on GNOME).

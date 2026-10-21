@@ -398,6 +398,9 @@ finish_showcase() {
         sleep 0.3
     done
     [ "$ready" -eq 1 ] || die "the showcase sessions did not reach their activities"
+    # Every showcase agent label must be a shell-based profile, never a real agent.
+    [ -z "$(jq -r '.ok[] | select(.agent_base != "shell") | .id' <<<"$list")" ] ||
+        die "a showcase session runs a real agent runtime; refusing to continue"
     for line in "${showcase_sessions[@]}"; do
         IFS='|' read -r name _ _ state _ _ <<<"$line"
         [ "$state" = stopped ] || continue
