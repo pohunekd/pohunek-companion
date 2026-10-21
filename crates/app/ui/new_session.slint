@@ -1,4 +1,4 @@
-import { CheckBox, LineEdit, TextEdit } from "std-widgets.slint";
+import { CheckBox, LineEdit, Palette, TextEdit } from "std-widgets.slint";
 import { Theme } from "app.slint";
 import { ChipField, DialogTheme, FieldLabel, SearchSelect } from "dialog_fields.slint";
 
@@ -9,6 +9,9 @@ export component NewSessionWindow inherits Window {
     preferred-height: 600px;
     background: Theme.background;
     forward-focus: project-field;
+
+    // The window background is dark; stock widgets follow it, not the system scheme.
+    init => { Palette.color-scheme = ColorScheme.dark; }
 
     // Host labels, Local first.
     in property <[string]> host-names;
