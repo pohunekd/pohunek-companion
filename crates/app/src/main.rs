@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 mod assistant;
+mod cli;
+mod completion;
 mod confirm;
 #[cfg(target_os = "linux")]
 mod desktop;
@@ -17,7 +19,8 @@ mod resume;
 mod setup;
 mod tray;
 
-use launch::{ASSISTANT_COMMAND, NEW_SESSION_COMMAND};
+use clap::Parser;
+use cli::{Cli, Command, DesktopAction};
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, DialogHost, GroupError, GroupPlacement,
@@ -1364,18 +1367,12 @@ fn attach_outcome(
     })
 }
 
-const DESKTOP_COMMAND: &str = "desktop";
-
 /// `desktop install` and `desktop uninstall`; they never open a window.
 #[cfg(target_os = "linux")]
-fn run_desktop_command(action: Option<&str>) -> Result<(), slint::PlatformError> {
+fn run_desktop_command(action: DesktopAction) -> Result<(), slint::PlatformError> {
     let (verb, result) = match action {
-        Some("install") => ("installed", desktop::install()),
-        Some("uninstall") => ("uninstalled", desktop::uninstall()),
-        _ => {
-            eprintln!("{}", desktop::USAGE);
-            std::process::exit(2);
-        }
+        DesktopAction::Install => ("installed", desktop::install()),
+        DesktopAction::Uninstall => ("uninstalled", desktop::uninstall()),
     };
     match result {
         Ok(root) => {
@@ -1384,56 +1381,46 @@ fn run_desktop_command(action: Option<&str>) -> Result<(), slint::PlatformError>
             Ok(())
         }
         Err(err) => {
-            eprintln!("desktop {}: {err}", action.unwrap_or_default());
+            let name = match action {
+                DesktopAction::Install => "install",
+                DesktopAction::Uninstall => "uninstall",
+            };
+            eprintln!("desktop {name}: {err}");
             std::process::exit(1);
         }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run_desktop_command(_action: Option<&str>) -> Result<(), slint::PlatformError> {
+fn run_desktop_command(_action: DesktopAction) -> Result<(), slint::PlatformError> {
+    use cli::DESKTOP_COMMAND;
     eprintln!("`{DESKTOP_COMMAND}` is Linux-only; macOS uses the app bundle");
     std::process::exit(2);
 }
 
-fn usage() -> String {
-    format!(
-        "usage: pohunek-companion [{NEW_SESSION_COMMAND} [--host TARGET] [--project ID] [--group ID] [--known-hosts JSON]] | pohunek-companion {ASSISTANT_COMMAND} [--host TARGET] [--project ID] [--intent INTENT] [--known-hosts JSON] | pohunek-companion {DESKTOP_COMMAND} <install|uninstall>"
-    )
-}
-
 fn main() -> Result<(), slint::PlatformError> {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
+    completion::complete_env();
+    match Cli::parse().command {
         None => run_sidebar(),
-        Some("--version") => {
-            println!("pohunek-companion {}", env!("CARGO_PKG_VERSION"));
+        Some(Command::NewSession(args)) => {
+            if let Err(err) = logging::init() {
+                eprintln!("logging disabled: {err}");
+            }
+            new_session::run(args)
+        }
+        Some(Command::Assistant(args)) => {
+            if let Err(err) = logging::init() {
+                eprintln!("logging disabled: {err}");
+            }
+            assistant::run(args)
+        }
+        Some(Command::Desktop { action }) => run_desktop_command(action),
+        Some(Command::Completions { shell, dynamic }) => {
+            if let Err(err) = completion::run(shell, dynamic) {
+                eprintln!("completions: {err}");
+                std::process::exit(1);
+            }
             Ok(())
-        }
-        Some(NEW_SESSION_COMMAND) => {
-            let parsed = new_session::parse_args(args).unwrap_or_else(|message| {
-                eprintln!("{message}\n{}", usage());
-                std::process::exit(2);
-            });
-            if let Err(err) = logging::init() {
-                eprintln!("logging disabled: {err}");
-            }
-            new_session::run(parsed)
-        }
-        Some(ASSISTANT_COMMAND) => {
-            let parsed = assistant::parse_args(args).unwrap_or_else(|message| {
-                eprintln!("{message}\n{}", usage());
-                std::process::exit(2);
-            });
-            if let Err(err) = logging::init() {
-                eprintln!("logging disabled: {err}");
-            }
-            assistant::run(parsed)
-        }
-        Some(DESKTOP_COMMAND) => run_desktop_command(args.next().as_deref()),
-        Some(other) => {
-            eprintln!("unknown command `{other}`\n{}", usage());
-            std::process::exit(2);
         }
     }
 }

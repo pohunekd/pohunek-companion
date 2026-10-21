@@ -53,8 +53,6 @@ const ICONS: [(&str, &[u8]); 7] = [
 const SVG: &[u8] =
     include_bytes!("../../../assets/icons/hicolor/scalable/apps/pohunek-companion.svg");
 
-pub const USAGE: &str = "usage: pohunek-companion desktop <install|uninstall>";
-
 #[derive(Debug, thiserror::Error)]
 pub enum DesktopError {
     #[error("cannot locate the data directory: neither {DATA_HOME_ENV} nor {HOME_ENV} is set")]
