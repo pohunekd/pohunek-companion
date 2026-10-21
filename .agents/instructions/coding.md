@@ -14,8 +14,11 @@
 - Herd membership and Pohunek Work links (`work.link.*`, `work.role`, legacy
   `link.*`) are read-only structure for the companion. A drag never adds or
   removes a herd member or relinks a work item.
-- No network calls other than to Pohunek daemons. GitHub, Linear and similar
-  providers are reached only through metadata Pohunek Work already wrote.
+- No network calls other than to Pohunek daemons, with one exception: the setup
+  screen's Install action downloads the release files of the pinned Pohunek tag
+  (`setup.release_base_url`, GitHub by default) over HTTPS, and only after the
+  owner clicked it. GitHub, Linear and similar providers are otherwise reached
+  only through metadata Pohunek Work already wrote.
 
 ## Rust
 

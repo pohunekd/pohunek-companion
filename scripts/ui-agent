@@ -61,6 +61,8 @@
 # isolated HOME the pre-install check of the unpacked CLI refuses, because no
 # service manager is reachable. `install-tampered` points the download at a
 # loopback mirror whose `.sha256` file is altered, to show the refusal.
+# UI_AGENT_NO_BUILD=1 skips the cargo build and runs the binary already
+# present under $UI_AGENT_DIR/cargo-target.
 # With UI_AGENT_SANDBOX=1 inside a throwaway container (a /.dockerenv or
 # /run/.containerenv marker is required) `install` keeps the container's own
 # HOME, runtime directory and user service manager, so Run installs for real
@@ -1270,6 +1272,10 @@ start() {
 # Debug info is what gives elements their ids; the separate target dir keeps
 # the MCP build from invalidating the normal one.
 build_app() {
+    # A prebuilt binary under $UI_AGENT_DIR/cargo-target (a container without a
+    # toolchain) is used as is.
+    [ "${UI_AGENT_NO_BUILD:-}" != 1 ] || [ -x "$bin" ] || die "UI_AGENT_NO_BUILD=1 needs $bin"
+    [ "${UI_AGENT_NO_BUILD:-}" != 1 ] || return 0
     (
         cd "$root"
         SLINT_EMIT_DEBUG_INFO=1 CARGO_TARGET_DIR="$state/cargo-target" \

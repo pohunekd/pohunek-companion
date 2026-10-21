@@ -200,7 +200,7 @@ no timer of their own. The probe finds the `pohunek` CLI (`pohunek_bin`, then
 
 | State | Screen |
 | --- | --- |
-| CLI not found | install commands from the Pohunek README, release link |
+| CLI not found | "Install Pohunek" on Linux x86_64 (release archive) and on macOS 14+ with Homebrew (`brew install`); manual steps on macOS without Homebrew; "platform not supported" with the install guide link elsewhere |
 | service not installed | "Install service" |
 | installed, daemon not running | "Start service" when `pohunek service --help` lists `start`, else the job name to start by hand |
 | job running, daemon silent | the connection error |
@@ -219,9 +219,40 @@ screen. After the first connection a later outage keeps the list and the
 status line, as before. A remote host that lists sessions keeps the list
 visible. Remote hosts never use this screen.
 
-The CLI-missing state has no action yet; an Install button belongs in
-`SetupState::action`/`describe` (`SetupAction` gets a variant, and
-`run_action` its argv).
+### Installing Pohunek
+
+`SetupAction::InstallRelease` (Linux x86_64) and `BrewInstall` (macOS) are
+offered from the CLI-missing state; the machine's `InstallPlan` comes from
+`plan_for_host` (`crates/core/src/install.rs`). The version is the git tag of
+`pohunek-client` in `Cargo.lock`, read by `crates/core/build.rs`, never
+"latest". The first click of the Linux install runs everything that does not
+touch the machine, in a fresh 0700 directory below the state directory (it is
+on disk and not `noexec`, unlike `/tmp` on hardened systems), removed on every
+path by a drop guard:
+
+1. download `pohunek-daemon-<version>-x86_64-unknown-linux-gnu.tar.gz` and its
+   `.sha256` from `<setup.release_base_url>/<tag>/` with `ureq` (rustls and the
+   bundled webpki roots); `https` only, redirects capped, bodies capped by
+   `setup.download_max_mib`, `http` accepted only for a loopback base URL;
+2. parse the checksum file (exactly `<64 hex>  <archive name>`) and compare it
+   with the archive's sha256; any difference refuses the install;
+3. `gh attestation verify <archive> --repo zajca/pohunek` when `gh` is on the
+   machine and signed in (a failure refuses; otherwise the screen says "not
+   checked" and why);
+4. unpack with `flate2` and `tar`, entry by entry: only regular files and
+   directories below the archive's single root directory with plain path
+   components, exclusive file creation, modes reduced to 0755 or 0644, and caps
+   on entries and unpacked size;
+5. run the unpacked `pohunek service check --json` and show its plan.
+
+Run then executes the archive's `packaging/install-daemon.sh` with no
+argument (never `--accept-runtime-loss`), which installs under `~/.local` and
+starts the login service; the screen then follows the normal detection to the
+list. `pohunek assistant setup` and `pohunek integration install` are named in
+text and never run. The macOS action runs `brew install
+zajca/pohunek/pohunek`; the formula's current release can be newer than the
+pinned tag, and the screen says so. The service step is the existing "Install
+service" action.
 
 ## Tray states
 

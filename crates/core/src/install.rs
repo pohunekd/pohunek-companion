@@ -39,9 +39,13 @@ const PROGRESS_STEP: u64 = 4 << 20;
 /// Longest checksum file read, in bytes.
 const CHECKSUM_FILE_MAX: u64 = 4096;
 const SHA256_HEX_LEN: usize = 64;
+/// Leading hex digits of a hash shown on the screen; the full values are logged.
+const SHA256_SHOWN: usize = 16;
 const COPY_BUFFER: usize = 64 << 10;
 const GH_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
-const TEMP_PREFIX: &str = "pohunek-companion-install-";
+/// Below the state directory; holds one directory per running install.
+const TEMP_DIR: &str = "install";
+const TEMP_PREFIX: &str = "run-";
 /// Name of the install script inside the unpacked archive.
 const INSTALL_SCRIPT: &str = "packaging/install-daemon.sh";
 /// The Homebrew formula of the macOS install.
@@ -294,9 +298,16 @@ pub fn verify_sha256(path: &Path, expected: &str) -> Result<(), StepError> {
     if actual == expected {
         Ok(())
     } else {
+        warn!(%expected, %actual, "release archive sha256 mismatch");
+        let short = |hash: &str| hash.chars().take(SHA256_SHOWN).collect::<String>();
         Err(StepError::new(
             Step::Verify,
-            format!("sha256 mismatch: the release states {expected}, the download is {actual}"),
+            format!(
+                "sha256 mismatch, the archive was refused. The release states {}..., the download \
+                 is {}...",
+                short(expected),
+                short(&actual)
+            ),
         ))
     }
 }
@@ -308,9 +319,17 @@ pub struct TempDir {
 }
 
 impl TempDir {
-    /// A fresh directory (mode 0700) below the system temporary directory.
+    /// A fresh directory (mode 0700) below the app's state directory, which
+    /// is on disk and, unlike `/tmp` on hardened systems, not mounted `noexec`:
+    /// the unpacked `pohunek` is executed from it.
     pub fn create() -> io::Result<Self> {
-        let base = std::env::temp_dir();
+        let base = crate::layout::state_dir()
+            .map_err(|err| io::Error::other(err.to_string()))?
+            .join(TEMP_DIR);
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&base)?;
         for _ in 0..32 {
             let mut hasher = RandomState::new().build_hasher();
             hasher.write_u32(std::process::id());
