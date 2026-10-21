@@ -201,7 +201,8 @@ show the owner's real sessions (names, ids, working directories, Work links).
   (Run) needs a real systemd user manager and is exercised only in a
   throwaway qemu/KVM VM, never on the host and never in a container:
   `UI_AGENT_SANDBOX=1` (accepted only when `/etc/ui-agent-sandbox` exists, a
-  file that belongs in the VM image only) keeps the VM's `HOME`, runtime
+  file that belongs in the VM image only, and `systemd-detect-virt --vm`
+  reports a virtual machine) keeps the VM's `HOME`, runtime
   directory and bus, and `UI_AGENT_NO_BUILD=1` runs a prebuilt binary under
   `$UI_AGENT_DIR/cargo-target`. Never set either on the owner's machine.
 - Raw MCP output (`tree`, `find`, `call`) can contain session names: treat it
