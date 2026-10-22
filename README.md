@@ -1,4 +1,14 @@
-<h1 align="center">Pohunek Companion</h1>
+<p align="center">
+  <img src=".github/assets/readme-hero.png" alt="Pohunek Companion: desktop sidebar that shows which agent needs you. Engraving of a farmhand and a farm girl with a chalk slate beside three server cabinets pulling a plow." />
+</p>
+
+<p align="center">
+  <a href="https://pohunek.dev/surfaces/companion/">pohunek.dev/surfaces/companion</a>
+  ·
+  <a href="https://pohunek.dev/docs/">Pohunek docs</a>
+  ·
+  <a href="https://github.com/pohunekd/pohunek-companion/releases/latest">Latest release</a>
+</p>
 
 <p align="center">
 A narrow desktop sidebar for everyone who runs many coding-agent sessions:
@@ -15,8 +25,9 @@ Linux Wayland and macOS) for the owner of a [Pohunek](https://github.com/zajca/p
 daemon. It is a client of the Pohunek protocol and owns no session state: the
 daemon runs the sessions, the companion shows them and starts new ones.
 
-Status: early development. See [docs/architecture.md](docs/architecture.md) and
-the [project board](https://github.com/orgs/pohunekd/projects/1).
+See [docs/architecture.md](docs/architecture.md), the
+[project board](https://github.com/orgs/pohunekd/projects/1) and the
+[companion page on pohunek.dev](https://pohunek.dev/surfaces/companion/).
 
 ## Why
 
