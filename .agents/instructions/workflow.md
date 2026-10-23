@@ -74,7 +74,13 @@ of these hold on the current head:
    each finding is fixed, filed as an issue, or rejected with evidence in a PR
    comment.
 3. Every DoD item is met with evidence in the PR.
-4. The branch is up to date with `main` (the ruleset requires it).
+4. Right before the merge, the branch is rebased onto the current `origin/main`
+   and `scripts/gates` passed on the rebased tree. The ruleset does not require
+   an up-to-date branch, so two PRs that are each green can still break `main`
+   together; this step catches that.
+5. A PR that changes what the user sees (UI layout, icons, colours, published
+   screenshots) has the owner's explicit approval in the PR. Until then it
+   carries the `needs-design-ok` label and is not merged.
 
 After merging, confirm the merge commit is on `origin/main` and its `main` CI
 run is green, then close the issue and set the project status to Done. A red
