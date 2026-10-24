@@ -27,6 +27,7 @@
 #   scripts/ui-agent click ELEMENT_ID [N]            click the Nth match (0-based)
 #   scripts/ui-agent log                             print the app's JSON log path
 #   scripts/ui-agent layout                          print the run's own layout.toml path
+#   scripts/ui-agent pohunek ARGS...                 run the pohunek CLI against the isolated daemon
 #
 # Isolated mode (the default) runs `pohunekd --dev-subprocess` with its own
 # XDG_RUNTIME_DIR, state, config, data, and cache directories under one
@@ -1435,6 +1436,14 @@ case $cmd in
         call_json click_element "$(jq -cn --argjson h "$eh" '{elementHandle:$h,action:"SingleClick",button:"Left"}')"
         ;;
     log) echo "$state/logs/companion.json" ;;
+    pohunek)
+        # Only ever the isolated daemon: without an isolated run there is
+        # nothing to talk to, never the owner's daemon.
+        [ -f "$iso_file" ] || die "no isolated run; start one with: scripts/ui-agent start"
+        iso=$(cat "$iso_file")
+        mapfile -t envs < <(isolated_env "$iso")
+        exec env "${envs[@]}" "PATH=$iso/bin:$PATH" "$cli" "$@"
+        ;;
     layout)
         if [ -f "$iso_file" ]; then
             echo "$(cat "$iso_file")/state/pohunek-companion/layout.toml"

@@ -1,6 +1,8 @@
-//! The owner's client-side layout: groups of sessions in a manual order,
-//! persisted in `layout.toml` under the state directory. Never stored in
-//! session metadata and never sent to the daemon.
+//! The owner's client-side layout: groups, the order of groups and sessions,
+//! collapse and view state, persisted in `layout.toml` under the state
+//! directory. Which group a session is in comes from its `companion.group`
+//! metadata; the layout holds the rest and the placements of sessions that
+//! carry no key.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, DirBuilder, OpenOptions};
@@ -13,6 +15,7 @@ use tracing::{info, warn};
 
 use crate::config::PlacementRule;
 use crate::filter::StoredFilter;
+use crate::group_key::match_key;
 use crate::needs_you::NEEDS_YOU_ID;
 use crate::session::{SessionKey, SessionRow};
 use crate::sort_key;
@@ -83,6 +86,28 @@ pub struct Group {
     /// The header shows with the session count and the rows are hidden.
     #[serde(default, skip_serializing_if = "is_false")]
     pub collapsed: bool,
+    /// Who made the group; only a learned group is written to the file.
+    #[serde(default, skip_serializing_if = "GroupOrigin::is_created")]
+    pub origin: GroupOrigin,
+}
+
+/// Who made a group.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupOrigin {
+    /// The owner on this client or a placement rule: the
+    /// group stays until the owner deletes it, even when empty.
+    #[default]
+    Created,
+    /// A session's `companion.group` value named it: the group goes away
+    /// once no session is in it.
+    Learned,
+}
+
+impl GroupOrigin {
+    fn is_created(&self) -> bool {
+        *self == Self::Created
+    }
 }
 
 /// A session's place: its group and its sort key within that group.
@@ -228,6 +253,23 @@ pub struct Reconciled {
     pub pruned: Vec<SessionKey>,
 }
 
+/// What [`Layout::apply_group_values`] changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupSync {
+    /// Names of the learned groups it appended.
+    pub learned: Vec<String>,
+    /// Sessions it moved to the group their key names.
+    pub moved: Vec<SessionKey>,
+    /// Sessions whose manual flag it cleared because the key is the record.
+    pub unpinned: Vec<SessionKey>,
+}
+
+impl GroupSync {
+    pub fn is_empty(&self) -> bool {
+        self.learned.is_empty() && self.moved.is_empty() && self.unpinned.is_empty()
+    }
+}
+
 /// A session a placement pass moved: the rule that selected its group, or
 /// `None` when it returned to Inbox, and the group id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +329,7 @@ fn inbox_group(order: String) -> Group {
         name: INBOX_NAME.to_owned(),
         order,
         collapsed: false,
+        origin: GroupOrigin::Created,
     }
 }
 
@@ -409,9 +452,9 @@ impl Layout {
         result
     }
 
-    /// Places every session the owner never dragged: the first rule in
-    /// `rules` that matches selects the group (created when missing), else
-    /// the session belongs in Inbox. A session already in its group keeps its
+    /// Places every session the owner never dragged and that carries no valid
+    /// `companion.group` key: the first rule in `rules` that matches selects
+    /// the group (created when missing), else the session belongs in Inbox. A session already in its group keeps its
     /// position; any other is appended to the end of the group. Sessions
     /// without a placement are skipped; [`reconcile`](Self::reconcile) adds
     /// them first.
@@ -425,7 +468,7 @@ impl Layout {
             let Some(index) = self.items.iter().position(|item| item.key() == row.key) else {
                 continue;
             };
-            if self.items[index].manual {
+            if self.items[index].manual || row.group.is_some() {
                 continue;
             }
             let rule = rules.iter().position(|rule| rule_matches(rule, row));
@@ -452,6 +495,82 @@ impl Layout {
         moved
     }
 
+    /// Places every session with a valid `companion.group` key in the group
+    /// of that name (ignoring case; `Inbox` is Inbox). A name no group has
+    /// appends a learned group after the last one. The key is now the record,
+    /// so the item's manual flag is cleared. A session that arrives in a group
+    /// goes to that group's end; one already there keeps its position.
+    /// Sessions without a placement are skipped; [`reconcile`](Self::reconcile)
+    /// adds them first.
+    pub fn apply_group_values(&mut self, rows: &[SessionRow]) -> GroupSync {
+        let mut sync = GroupSync::default();
+        for row in rows {
+            let Some(name) = row.group.as_deref() else {
+                continue;
+            };
+            let Some(index) = self.items.iter().position(|item| item.key() == row.key) else {
+                continue;
+            };
+            let wanted = match_key(name);
+            let target = if wanted == match_key(INBOX_NAME) {
+                INBOX_ID.to_owned()
+            } else if let Some(group) = self.groups.iter().find(|g| match_key(&g.name) == wanted) {
+                group.id.clone()
+            } else {
+                sync.learned.push(name.to_owned());
+                self.append_learned_group(name)
+            };
+            if std::mem::take(&mut self.items[index].manual) {
+                sync.unpinned.push(row.key.clone());
+            }
+            if self.items[index].group == target {
+                continue;
+            }
+            let last = self
+                .group_items(&target)
+                .last()
+                .map(|item| item.order.clone());
+            let item = &mut self.items[index];
+            item.order = sort_key::between(last.as_deref(), None);
+            item.group = target;
+            sync.moved.push(row.key.clone());
+        }
+        sync
+    }
+
+    /// Drops learned groups no item is in; returns how many went. Call it only
+    /// once every host is seeded, so a host that has not sent its list cannot
+    /// make its groups look empty, and after [`apply_rules`](Self::apply_rules)
+    /// has placed the sessions whose key went away.
+    pub fn drop_empty_learned_groups(&mut self) -> usize {
+        let in_use: HashSet<&str> = self.items.iter().map(|item| item.group.as_str()).collect();
+        let before = self.groups.len();
+        self.groups.retain(|group| {
+            group.origin != GroupOrigin::Learned || in_use.contains(group.id.as_str())
+        });
+        before - self.groups.len()
+    }
+
+    fn append_learned_group(&mut self, name: &str) -> String {
+        let id = self.unused_group_id();
+        let last = self.ordered_groups().last().map(|g| g.order.clone());
+        self.groups.push(Group {
+            id: id.clone(),
+            name: name.to_owned(),
+            order: sort_key::between(last.as_deref(), None),
+            collapsed: false,
+            origin: GroupOrigin::Learned,
+        });
+        id
+    }
+
+    fn unused_group_id(&self) -> String {
+        (self.groups.len()..)
+            .map(|n| format!("g{n}"))
+            .find(|id| self.groups.iter().all(|g| g.id != *id))
+            .expect("an unused group id exists")
+    }
+
     /// Clears the manual flag of `row`'s item and places it by `rules` like
     /// any session the owner never dragged (see [`apply_rules`](Self::apply_rules)).
     /// Returns whether the item changed; a session that is not manual is left
@@ -474,14 +593,16 @@ impl Layout {
     }
 
     /// Id of the group named `name` (ignoring case); appended after the last
-    /// group when no group has that name.
+    /// group when no group has that name. A rule that uses a learned group
+    /// makes it a created one.
     fn group_for_name(&mut self, name: &str) -> String {
         let name = name.trim();
         if let Some(group) = self
             .groups
-            .iter()
+            .iter_mut()
             .find(|group| group.name.to_lowercase() == name.to_lowercase())
         {
+            group.origin = GroupOrigin::Created;
             return group.id.clone();
         }
         let slug: String = name
@@ -508,6 +629,7 @@ impl Layout {
             name: name.to_owned(),
             order,
             collapsed: false,
+            origin: GroupOrigin::Created,
         });
         id
     }
@@ -623,16 +745,14 @@ impl Layout {
     pub fn create_group(&mut self, name: &str) -> Result<String, GroupError> {
         let name = clean_name(name)?;
         self.check_unique(name, None)?;
-        let id = (self.groups.len()..)
-            .map(|n| format!("g{n}"))
-            .find(|id| self.groups.iter().all(|g| g.id != *id))
-            .expect("an unused group id exists");
+        let id = self.unused_group_id();
         let last = self.ordered_groups().last().map(|g| g.order.clone());
         self.groups.push(Group {
             id: id.clone(),
             name: name.to_owned(),
             order: sort_key::between(last.as_deref(), None),
             collapsed: false,
+            origin: GroupOrigin::Created,
         });
         Ok(id)
     }
@@ -999,6 +1119,32 @@ impl LayoutStore {
             );
         }
         moved
+    }
+
+    /// Places sessions by their `companion.group` key (see
+    /// [`Layout::apply_group_values`]) and logs the outcome with keys and
+    /// counts only, never a group name.
+    pub fn apply_group_values(&mut self, rows: &[SessionRow]) -> GroupSync {
+        let sync = self.layout.apply_group_values(rows);
+        if !sync.is_empty() {
+            info!(
+                learned = sync.learned.len(),
+                moved = ?sync.moved.iter().map(|k| (k.host.as_str(), k.session_id.as_str())).collect::<Vec<_>>(),
+                unpinned = sync.unpinned.len(),
+                "sessions placed by their group key"
+            );
+        }
+        sync
+    }
+
+    /// Drops learned groups without a member (see
+    /// [`Layout::drop_empty_learned_groups`]) and logs how many went.
+    pub fn drop_empty_learned_groups(&mut self) -> usize {
+        let dropped = self.layout.drop_empty_learned_groups();
+        if dropped > 0 {
+            info!(dropped, "empty learned groups dropped");
+        }
+        dropped
     }
 
     /// Moves a session (see [`Layout::move_session`]) and logs it with keys
@@ -1776,6 +1922,8 @@ order = "g"
             host_label: None,
             host_unreachable: false,
             details: Default::default(),
+            group: None,
+            group_problem: None,
         }
     }
 
@@ -1964,5 +2112,223 @@ order = "g"
         let other = [rule("empty", |r| r.agent = Some("claude".into()))];
         layout.apply_rules(&rows, &other);
         assert_eq!(group_of(&layout, "a"), "Work");
+    }
+
+    fn keyed(host: &str, id: &str, group: Option<&str>) -> SessionRow {
+        let mut row = session(id, None, None);
+        row.key = remote_key(host, id);
+        row.group = group.map(str::to_owned);
+        row
+    }
+
+    fn seed(layout: &mut Layout, rows: &[SessionRow]) {
+        for host in ["host-a", "host-b"] {
+            let keys: Vec<SessionKey> = rows
+                .iter()
+                .filter(|r| r.key.host == host)
+                .map(|r| r.key.clone())
+                .collect();
+            layout.reconcile(host, &keys);
+        }
+    }
+
+    fn group_name_of(layout: &Layout, host: &str, id: &str) -> String {
+        let item = layout
+            .items()
+            .iter()
+            .find(|i| i.host == host && i.session_id == id)
+            .expect("item");
+        layout
+            .groups()
+            .iter()
+            .find(|g| g.id == item.group)
+            .expect("group")
+            .name
+            .clone()
+    }
+
+    fn names(layout: &Layout) -> Vec<String> {
+        layout
+            .ordered_groups()
+            .iter()
+            .map(|g| g.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn keys_merge_ignoring_case_across_hosts_and_keep_the_groups_spelling() {
+        let mut layout = Layout::default();
+        let later = layout.create_group("Later").expect("group");
+        let rows = [
+            keyed("host-a", "a1", Some("later")),
+            keyed("host-b", "b1", Some("LATER")),
+            keyed("host-b", "b2", Some("Night shift")),
+            keyed("host-a", "a2", Some("night shift")),
+        ];
+        seed(&mut layout, &rows);
+        let sync = layout.apply_group_values(&rows);
+
+        assert_eq!(names(&layout), ["Inbox", "Later", "Night shift"]);
+        assert_eq!(sync.learned, ["Night shift"]);
+        assert_eq!(group_name_of(&layout, "host-a", "a1"), "Later");
+        assert_eq!(group_name_of(&layout, "host-b", "b1"), "Later");
+        assert_eq!(group_name_of(&layout, "host-b", "b2"), "Night shift");
+        assert_eq!(group_name_of(&layout, "host-a", "a2"), "Night shift");
+        assert!(layout.groups().iter().any(|g| g.id == later));
+    }
+
+    #[test]
+    fn the_inbox_value_places_a_session_in_inbox_and_beats_rules() {
+        let rules = [rule("Work", |r| r.agent = Some("claude".into()))];
+        let rows = [
+            keyed("host-a", "a1", Some("inbox")),
+            keyed("host-a", "a2", None),
+        ];
+        let mut layout = Layout::default();
+        seed(&mut layout, &rows);
+        layout.apply_group_values(&rows);
+        layout.apply_rules(&rows, &rules);
+
+        assert_eq!(group_name_of(&layout, "host-a", "a1"), "Inbox");
+        assert_eq!(group_name_of(&layout, "host-a", "a2"), "Work");
+        assert_eq!(names(&layout), ["Inbox", "Work"], "Inbox is not learned");
+    }
+
+    #[test]
+    fn a_learned_group_is_dropped_only_when_empty_and_created_groups_stay() {
+        let mut layout = Layout::default();
+        layout.create_group("Mine").expect("group");
+        let keyed_rows = [keyed("host-a", "a1", Some("Night shift"))];
+        seed(&mut layout, &keyed_rows);
+        layout.apply_group_values(&keyed_rows);
+        assert_eq!(names(&layout), ["Inbox", "Mine", "Night shift"]);
+        assert_eq!(layout.drop_empty_learned_groups(), 0, "still has a member");
+
+        let cleared = [keyed("host-a", "a1", None)];
+        layout.apply_group_values(&cleared);
+        layout.apply_rules(&cleared, &[]);
+        assert_eq!(group_name_of(&layout, "host-a", "a1"), "Inbox");
+        assert_eq!(layout.drop_empty_learned_groups(), 1);
+        assert_eq!(names(&layout), ["Inbox", "Mine"]);
+    }
+
+    #[test]
+    fn an_empty_learned_group_survives_until_the_caller_drops_it() {
+        let mut layout = Layout::default();
+        let rows = [keyed("host-a", "a1", Some("Night shift"))];
+        seed(&mut layout, &rows);
+        layout.apply_group_values(&rows);
+        // The only member's host is gone from the seeded list.
+        layout.reconcile("host-a", &[]);
+        assert_eq!(names(&layout), ["Inbox", "Night shift"]);
+        assert_eq!(layout.drop_empty_learned_groups(), 1);
+    }
+
+    #[test]
+    fn a_key_clears_the_manual_flag_and_the_session_arrives_at_the_group_end() {
+        let mut layout = Layout::default();
+        let a = layout.create_group("A").expect("group");
+        layout.create_group("B").expect("group");
+        let rows = [
+            keyed("host-a", "x", None),
+            keyed("host-a", "y", Some("B")),
+            keyed("host-a", "z", Some("B")),
+        ];
+        seed(&mut layout, &rows);
+        layout.apply_group_values(&rows);
+        layout
+            .move_session(&key_on("host-a", "x"), &a, Placement::End)
+            .expect("move");
+        assert!(
+            layout
+                .items()
+                .iter()
+                .find(|i| i.session_id == "x")
+                .expect("x")
+                .manual
+        );
+
+        let moved = [
+            keyed("host-a", "x", Some("B")),
+            keyed("host-a", "y", Some("B")),
+            keyed("host-a", "z", Some("B")),
+        ];
+        let sync = layout.apply_group_values(&moved);
+        assert_eq!(sync.unpinned, [key_on("host-a", "x")]);
+        let x = layout
+            .items()
+            .iter()
+            .find(|i| i.session_id == "x")
+            .expect("x");
+        assert!(!x.manual);
+        let section = layout
+            .arrange(&moved)
+            .into_iter()
+            .find(|s| s.name == "B")
+            .expect("B");
+        let order: Vec<&str> = section
+            .rows
+            .iter()
+            .map(|r| r.key.session_id.as_str())
+            .collect();
+        assert_eq!(order, ["y", "z", "x"]);
+
+        // The key goes away: rules (here none) put it in Inbox, not in A.
+        let cleared = [keyed("host-a", "x", None)];
+        layout.apply_group_values(&cleared);
+        layout.apply_rules(&cleared, &[]);
+        assert_eq!(group_name_of(&layout, "host-a", "x"), "Inbox");
+    }
+
+    fn key_on(host: &str, id: &str) -> SessionKey {
+        remote_key(host, id)
+    }
+
+    #[test]
+    fn rules_skip_keyed_sessions_and_a_rule_makes_a_learned_group_created() {
+        let rules = [rule("Reviews", |r| r.agent = Some("claude".into()))];
+        let rows = [
+            keyed("host-a", "a1", Some("Night shift")),
+            keyed("host-a", "a2", None),
+        ];
+        let mut layout = Layout::default();
+        seed(&mut layout, &rows);
+        layout.apply_group_values(&rows);
+        layout.apply_rules(&rows, &rules);
+        assert_eq!(group_name_of(&layout, "host-a", "a1"), "Night shift");
+        assert_eq!(group_name_of(&layout, "host-a", "a2"), "Reviews");
+
+        let other = [rule("night shift", |r| r.agent = Some("claude".into()))];
+        let unkeyed = [keyed("host-a", "a3", None)];
+        layout.reconcile("host-a", &[key_on("host-a", "a3")]);
+        layout.apply_rules(&unkeyed, &other);
+        let group = layout
+            .groups()
+            .iter()
+            .find(|g| g.name == "Night shift")
+            .expect("group");
+        assert_eq!(group.origin, GroupOrigin::Created);
+    }
+
+    #[test]
+    fn only_a_learned_origin_is_written_to_the_file() {
+        let mut layout = Layout::default();
+        layout.create_group("Mine").expect("group");
+        let rows = [keyed("host-a", "a1", Some("Night shift"))];
+        seed(&mut layout, &rows);
+        layout.apply_group_values(&rows);
+        let text = layout.to_toml();
+        assert_eq!(text.matches("origin").count(), 1, "{text}");
+        let parsed: Layout = toml::from_str(&text).expect("parses");
+        assert_eq!(parsed, layout);
+        let origins: Vec<GroupOrigin> = parsed.ordered_groups().iter().map(|g| g.origin).collect();
+        assert_eq!(
+            origins,
+            [
+                GroupOrigin::Created,
+                GroupOrigin::Created,
+                GroupOrigin::Learned
+            ]
+        );
     }
 }

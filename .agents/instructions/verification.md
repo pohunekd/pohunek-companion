@@ -69,6 +69,7 @@ scripts/ui-agent tree                   # element tree with ids
 scripts/ui-agent find SessionRow::row-touch
 scripts/ui-agent click SessionRow::row-touch 0
 scripts/ui-agent call TOOL '{"json":"args"}'   # any other Slint MCP tool
+scripts/ui-agent pohunek ARGS...        # the pohunek CLI against the isolated daemon only
 scripts/ui-agent restart                # stop and start only the app
 scripts/ui-agent stop                   # always stop it when done
 ```

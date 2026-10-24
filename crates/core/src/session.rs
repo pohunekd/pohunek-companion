@@ -1,6 +1,7 @@
 use crate::attach::AttachRefusal;
 use crate::badge::{WorkBadge, WorkFacts, sanitize};
 use crate::detail::{DetailSource, SessionDetails};
+use crate::group_key::{GroupNameProblem, GroupValue, parse_group_value};
 use crate::open::OpenTargets;
 use crate::owner_state::OwnerState;
 use crate::resume::{ResumeOffer, resume_offer};
@@ -64,6 +65,11 @@ pub struct SessionRow {
     pub host_unreachable: bool,
     /// Grouped, copyable facts for the detail view.
     pub details: SessionDetails,
+    /// The usable `companion.group` value (sanitized): the group that places
+    /// the session. `None` without the key or when its value is rejected.
+    pub group: Option<String>,
+    /// Why a present `companion.group` value was treated as absent.
+    pub group_problem: Option<GroupNameProblem>,
 }
 
 /// Whether the session's runtime is in the given state.
@@ -106,6 +112,7 @@ fn runtime_detail(info: &SessionInfo) -> String {
 
 impl SessionRow {
     /// A row of a session of `host`; `host_label` is `Some` for a remote host.
+    /// `group_name_max_bytes` bounds a usable `companion.group` value.
     pub(crate) fn from_host(
         host: &str,
         host_label: Option<&str>,
@@ -113,6 +120,7 @@ impl SessionRow {
         owner_state: OwnerState,
         waiting_since: Option<OffsetDateTime>,
         known_label: Option<&str>,
+        group_name_max_bytes: usize,
     ) -> Self {
         let (can_stop, can_remove) = (offer_stop(&info), offer_remove(&info));
         let runtime_detail = runtime_detail(&info);
@@ -130,6 +138,11 @@ impl SessionRow {
             }
         });
         let work = WorkFacts::from_metadata(&info.metadata);
+        let (group, group_problem) = match parse_group_value(&info.metadata, group_name_max_bytes) {
+            GroupValue::Present(name) => (Some(name), None),
+            GroupValue::Rejected(problem) => (None, Some(problem)),
+            GroupValue::Absent => (None, None),
+        };
         let details = SessionDetails::build(&DetailSource {
             info: &info,
             host,
@@ -162,6 +175,8 @@ impl SessionRow {
             host_label: host_label.map(str::to_owned),
             host_unreachable: false,
             details,
+            group,
+            group_problem,
         }
     }
 }
@@ -206,6 +221,7 @@ mod tests {
             OwnerState::Working,
             None,
             known_label,
+            64,
         )
     }
 

@@ -113,19 +113,24 @@ All facts come from the public protocol (Pohunek `docs/public-api.md`):
 
 Owner decisions of 2026-10-19 (epic #3):
 
-- **Client-side.** Groups and manual order live in
+- **Client-side state.** Group order, session order, collapse, views,
+  filters and rules live in
   `$XDG_STATE_HOME/pohunek-companion/layout.toml` (`~/.local/state/...` when
   unset; `~/Library/Application Support/pohunek-companion/` on macOS unless an
-  absolute `XDG_STATE_HOME` is set), keyed by `(host, session_id)`. Nothing is
-  written to the daemon and a drag never changes session metadata: that would
-  broadcast every drag to all clients, fails for read-only external sessions,
-  and puts one client's view into shared state.
-- **Metadata drives placement, not storage.** Owner-defined rules map session
-  metadata (project, `work.link.*`, `work.role`, agent, later herd) to a group
-  so a new session lands there without a drag. A rule only decides the first
-  placement; the result is stored like a manual one, and a manual drag
-  overrides the rule for that session. Sessions that match no rule land in
-  Inbox, or under their `spawned_by` parent when it is known.
+  absolute `XDG_STATE_HOME` is set), keyed by `(host, session_id)`. Reordering
+  and collapsing never touch session metadata: that would broadcast every drag
+  to all clients and put one client's view into shared state.
+  *Revised 2026-10-24 (decision on #216, option A):* the one fact that is
+  shared is which group a session is in, held in its `companion.group`
+  metadata (see "Shared groups"). Issues #218 and #219 add the writes.
+- **Metadata drives placement.** A valid `companion.group` key places the
+  session in the group of that name. Without the key, a local manual placement
+  in the layout file applies (sessions that cannot carry the key), then the
+  owner-defined rules, which map session metadata (project, `work.link.*`,
+  `work.role`, agent, later herd) to a group so a new session lands there
+  without a drag. A rule applies only while the key is absent and never writes
+  it. Sessions that match no rule land in Inbox, or under their `spawned_by`
+  parent when it is known.
 - **Four views** over the same sessions: My groups (default, the only view
   that accepts drag and drop), By state, By project, and By Work item / herd.
   The derived views are read-only as views (no drag and drop, no group
@@ -161,7 +166,8 @@ Storage and reconciliation:
 - An item is a session now; a whole herd block that moves as a unit and keeps
   its own tree order (manager, then members by role, nested herds inside)
   comes with herds (M3).
-- A drag in My groups moves one session: it rewrites that item's group and
+- *Operations below (a drag, the menu moves, group edits) are changed by #218:
+  they write `companion.group`.* A drag in My groups moves one session: it rewrites that item's group and
   sort key only and sets `manual = true` on it, which placement rules must
   respect. The drop is addressed by session key, so a daemon update during a
   drag cannot lose it.
@@ -172,8 +178,10 @@ Storage and reconciliation:
   trimmed, non-empty, and unique ignoring case (placement rules select a group
   by name); Inbox cannot be renamed or deleted. A collapsed group keeps its
   sessions that need the owner in the Needs-you section.
-- Drag never changes daemon state: no herd add/remove, no work relinking.
-- **A session created from a row's menu** lands in that row's group. The
+- Drag never changes herd or Work state: no herd add/remove, no work relinking.
+- *Changed by #219: a session created from a row's menu gets
+  `companion.group` at creation, and a fork copies it.* **A session created
+  from a row's menu** lands in that row's group. The
   dialog is a separate process, so the sidebar passes the group id as
   `new-session --group <id>`. After `session.new` returns the id, the dialog
   appends `(host, session id, group id, time)` to `pending-placement.toml` in
@@ -186,6 +194,51 @@ Storage and reconciliation:
   deleted and logged. A group deleted meanwhile refuses the move and the
   session keeps its rule or Inbox placement. Without `--group` (tray, sidebar
   button, standalone command) nothing is recorded.
+
+### Shared groups
+
+Decided on #216 (option A) and implemented in #217 to #219; the Android
+companion implements the same semantics. This subsection states the read side
+(#217) and the known limitation; the writes, the migration and the not-shared
+marker are described by #218 and #219 when they land.
+
+- **Key and value.** Group membership is the session metadata key
+  `companion.group`; its value is the group's display name. No other key is
+  added. The value is trimmed; a value that is empty, longer than
+  `layout.group_name_max_bytes` UTF-8 bytes (default 64, at most the daemon's
+  4096) or that contains a control or bidirectional-format character is
+  treated as absent and logged once at `warn` with the host, session id and
+  reason, never the value. A valid value is shown through `badge::sanitize`.
+  The rules live in `crates/core/src/group_key.rs`.
+- **Merging.** Names merge ignoring case across all sessions of all hosts.
+  The value `Inbox` (ignoring case) means the owner put the session in Inbox;
+  a missing key means the session is unplaced.
+- **Precedence.** A valid key places the session. With no key, a local
+  `manual` placement places it. With neither, the first matching rule places
+  it, else Inbox. When a session carries a valid key its local `manual` flag
+  is cleared, so removing the key later returns it to the rules or Inbox
+  instead of a stale local group. Rules never write the key, so two desktops
+  with different rules never fight over it.
+- **Learned groups.** Each group has an origin, `created` (by the owner on this
+  client or by a rule) or `learned`, and only a learned one is written to the
+  file. A valid key naming a group this client does not have
+  appends a learned group after the last group. A learned group with no member
+  is dropped once every host is seeded; a created group stays until the owner
+  deletes it, even when empty. When another client renames a group, this
+  client's created group with the old name stays, empty, until deleted.
+- **Order.** Session order inside a group is per client. A session that
+  arrives in a group without a local position (a new session, a session moved
+  by another client, one that got its key from the CLI) goes to that group's
+  end.
+- **Concurrency.** The daemon applies each metadata patch under its sessions
+  lock, so the last write wins per key. A client re-derives membership from
+  the next `session_updated` event, and the periodic re-seed corrects a missed
+  event; there is no membership state of its own to reconcile.
+- **Known limitation.** At v0.35.2, `session.set_metadata` is persisted only
+  for sessions with a native reference (zajca/pohunek#1556). A group written
+  to a plain shell, or to an agent session before it reports its native id,
+  may be lost on a daemon restart; the session then shows by the precedence
+  above. Nothing in the companion works around it.
 
 ## Setup screen
 

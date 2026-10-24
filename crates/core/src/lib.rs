@@ -12,6 +12,7 @@ mod detail;
 mod discovery;
 mod error;
 mod filter;
+mod group_key;
 mod install;
 mod layout;
 mod lifecycle;
@@ -56,13 +57,17 @@ pub use filter::{
     StateSelection, StoredFilter, filter_sections, fuzzy_matches, host_options, project_chips,
     state_chips, state_from_key, state_key,
 };
+pub use group_key::{
+    GROUP_KEY, GroupNameProblem, GroupValue, INBOX_VALUE, check_group_name, parse_group_value,
+};
 pub use install::{
     Attestation, CLIENT_TAG, InstallPlan, Prepared, Release, Step, StepError, plan_for_host,
     prepare_release, run_brew_install, run_release_install,
 };
 pub use layout::{
-    CreateAndMoveError, GroupError, GroupPlacement, GroupSection, INBOX_ID, LayoutError,
-    LayoutStore, MoveError, Placement, Reconciled, RulePlacement, layout_path, state_dir,
+    CreateAndMoveError, GroupError, GroupOrigin, GroupPlacement, GroupSection, GroupSync, INBOX_ID,
+    LayoutError, LayoutStore, MoveError, Placement, Reconciled, RulePlacement, layout_path,
+    state_dir,
 };
 pub use lifecycle::{
     LifecycleAction, LifecycleError, LifecycleOutcome, Resumed, run_lifecycle_action,
