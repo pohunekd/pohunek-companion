@@ -26,7 +26,8 @@ export struct SessionRowData {
     attach-refusal: string,
     // Id of the owner group that holds the session, whatever section shows it.
     owner-group: string,
-    // The owner placed the session by hand, so placement rules leave it alone.
+    // The owner placed the session by hand or its `companion.group` key does,
+    // so placement rules leave it alone.
     manual: bool,
     // Pohunek id of the session's project; empty without a project.
     project-id: string,

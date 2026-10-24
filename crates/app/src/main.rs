@@ -12,6 +12,7 @@ mod confirm;
 #[cfg(target_os = "linux")]
 mod desktop;
 mod detail;
+mod group_edit;
 mod launch;
 mod logging;
 mod new_session;
@@ -25,12 +26,12 @@ use cli::{Cli, Command, DesktopAction};
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, DialogHost, GroupError, GroupPlacement,
     GroupSection, HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, LOCAL_HOST,
-    LayoutStore, LiveHost, LiveUpdate, MoveError, NEEDS_YOU_ID, OpenConfig, OpenKind, OwnerState,
-    PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection, SessionFilter,
-    SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, attach, clip_display,
-    dialog_hosts, discover_records, filter_sections, host_naming_this_machine, host_options,
-    layout_path, name_from_input, open, plan_discovery, project_chips, rename_session, run_live,
-    set_route, state_chips, state_from_key,
+    LayoutConfig, LayoutStore, LiveHost, LiveUpdate, NEEDS_YOU_ID, OpenConfig, OpenKind,
+    OwnerState, PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection,
+    SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, WriteOutcome,
+    attach, clip_display, dialog_hosts, discover_records, filter_sections,
+    host_naming_this_machine, host_options, layout_path, name_from_input, open, plan_discovery,
+    project_chips, rename_session, run_live, set_route, state_chips, state_from_key, write_group,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -67,6 +68,8 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 None => Default::default(),
             };
             let (owner_group, manual) = placed.get(&s.key).cloned().unwrap_or_default();
+            // A group key is the record of the placement like a manual one.
+            let manual = manual || s.group.is_some() || s.group_problem.is_some();
             let (project_id, project_label) = s
                 .project
                 .map(|project| (project.id, project.label))
@@ -326,6 +329,12 @@ struct LayoutState {
     rules: Vec<PlacementRule>,
     /// Longest title of a derived section, from `view.section_title_max_chars`.
     title_max_chars: usize,
+    /// `layout.group_name_max_bytes`: bounds a group name written as a
+    /// `companion.group` value.
+    group_name_max_bytes: usize,
+    /// The daemon settings group writes use; an error when `companion.toml`
+    /// is unusable.
+    daemon: Result<DaemonConfig, String>,
     /// The filter of the selected view: its stored states and project, and the
     /// query typed into the filter field.
     filter: SessionFilter,
@@ -461,44 +470,11 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
         ..Refusal::default()
     };
     match request {
-        LayoutRequest::Drop { key, group, anchor } => {
-            let placement = match &anchor {
-                Some((anchor, false)) => Placement::Before(anchor),
-                Some((anchor, true)) => Placement::After(anchor),
-                None => Placement::End,
-            };
-            Refusal {
-                drop: state
-                    .store
-                    .move_session(&key, &group, placement)
-                    .err()
-                    .map(|err| {
-                        warn!(session = %key.session_id, group = %group, error = %err, "drop refused");
-                        format!("Cannot move {}: {err}", key.session_id)
-                    }),
-                group: None,
-            }
-        }
         LayoutRequest::CreateGroup(name) => group(
-            state
-                .store
-                .create_group(&name)
+            group_edit::checked_name(state, &name)
+                .and_then(|name| state.store.create_group(&name))
                 .err()
                 .and_then(|err| group_refusal("create the group", "new", &err)),
-        ),
-        LayoutRequest::CreateGroupAndMove { name, key } => {
-            let outcome = state.store.create_group_and_move(&name, &key);
-            group(outcome.err().map(|err| {
-                warn!(session = %key.session_id, reason = err.kind(), "group operation refused");
-                format!("Cannot create the group: {err}")
-            }))
-        }
-        LayoutRequest::RenameGroup { id, name } => group(
-            state
-                .store
-                .rename_group(&id, &name)
-                .err()
-                .and_then(|err| group_refusal("rename the group", &id, &err)),
         ),
         LayoutRequest::SetCollapsed { id, collapsed } => group(
             state
@@ -520,22 +496,6 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
                     .err()
                     .and_then(|err| group_refusal("move the group", &id, &err)),
             )
-        }
-        LayoutRequest::ReturnToRule(key) => {
-            let LayoutState {
-                store, rows, rules, ..
-            } = state;
-            let outcome = match rows.iter().find(|row| row.key == key) {
-                Some(row) => store.return_to_rule(row, rules),
-                None => Err(MoveError::UnknownSession(key.session_id.clone())),
-            };
-            Refusal {
-                drop: outcome.err().map(|err| {
-                    warn!(session = %key.session_id, error = %err, "return to rule refused");
-                    format!("Cannot return {} to rule placement: {err}", key.session_id)
-                }),
-                group: None,
-            }
         }
         LayoutRequest::SetFilter(query) => {
             state.filter.set_query(&query);
@@ -578,13 +538,14 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
             }
             Refusal::default()
         }
-        LayoutRequest::DeleteGroup(id) => group(
-            state
-                .store
-                .delete_group(&id)
-                .err()
-                .and_then(|err| group_refusal("delete the group", &id, &err)),
-        ),
+        LayoutRequest::Drop { .. }
+        | LayoutRequest::CreateGroupAndMove { .. }
+        | LayoutRequest::RenameGroup { .. }
+        | LayoutRequest::ReturnToRule(_)
+        | LayoutRequest::DeleteGroup(_) => {
+            error!("a request that writes metadata reached the local layout handler");
+            Refusal::default()
+        }
     }
 }
 
@@ -600,12 +561,19 @@ fn spawn_layout_worker(
 ) -> mpsc::Sender<LayoutRequest> {
     let (sender, receiver) = mpsc::channel::<LayoutRequest>();
     std::thread::spawn(move || {
+        let writer = group_edit::Writer::new();
         for request in receiver {
-            let mut state = lock(&layout);
+            // A request that writes metadata locks the layout only around its
+            // local changes, never across the daemon calls.
             let Refusal {
                 drop,
                 group: group_error,
-            } = apply_request(&mut state, request);
+            } = if group_edit::writes_metadata(&request) {
+                group_edit::apply(&layout, &writer, request)
+            } else {
+                apply_request(&mut lock(&layout), request)
+            };
+            let mut state = lock(&layout);
             let layout_error = match (drop, save_layout(&mut state)) {
                 (Some(moved), Some(saved)) => Some(format!("{moved}\n{saved}")),
                 (moved, saved) => moved.or(saved),
@@ -657,11 +625,27 @@ struct Publisher {
     rules: Vec<PlacementRule>,
     /// `layout.group_name_max_bytes`: bounds a usable `companion.group` value.
     group_name_max_bytes: usize,
+    /// The daemon settings the migration writes use.
+    daemon: DaemonConfig,
+    migrations: Rc<RefCell<Migrations>>,
     pending: Option<(PendingStore, Duration)>,
     layout: SharedLayout,
     hosts: Rc<RefCell<HostsView>>,
     /// The setup screen; absent when `companion.toml` is unusable.
     setup: Option<Arc<setup::Setup>>,
+}
+
+/// The writes of one migration and the host's rows they address.
+type MigrationRun = (Vec<(SessionKey, String)>, Vec<SessionRow>);
+
+/// Per host state of the migration of manual placements into session
+/// metadata (`LayoutStore::migration_plan`).
+#[derive(Default)]
+struct Migrations {
+    /// Hosts that connected and have not run the migration since.
+    armed: HashSet<String>,
+    /// Hosts whose migration writes are in flight.
+    running: HashSet<String>,
 }
 
 /// The latest session list of every followed host and the hosts that are
@@ -834,6 +818,12 @@ impl Publisher {
     /// Applies one update of `host` to the layout and queues the window update.
     fn publish(&self, host: &LiveHost, update: LiveUpdate) {
         let local = host.target == LOCAL_HOST;
+        if matches!(update, LiveUpdate::Connected) {
+            self.migrations
+                .borrow_mut()
+                .armed
+                .insert(host.target.clone());
+        }
         if let LiveUpdate::Sessions(sessions) = &update {
             self.hosts
                 .borrow_mut()
@@ -903,6 +893,7 @@ impl Publisher {
         // Reconciled and saved here so the UI thread never waits on disk;
         // the lock is held until the update is queued.
         let mut guard = None;
+        let mut migration = None;
         let arranged = match &union {
             Some(all) => {
                 let mut state = lock(&self.layout);
@@ -923,6 +914,7 @@ impl Publisher {
                         state.store.drop_empty_learned_groups();
                         state.store.prune_collapsed_sections(all, title_max_chars);
                     }
+                    migration = self.plan_migration(&mut state, &host.target, sessions);
                 }
                 let layout_error = save_layout(&mut state);
                 state.rows = all.clone();
@@ -974,6 +966,102 @@ impl Publisher {
         if let Err(err) = applied {
             error!(error = %err, "deliver a daemon update to the UI");
         }
+        if let Some((writes, rows)) = migration {
+            self.spawn_migration(&host.target, writes, rows);
+        }
+    }
+
+    /// Plans the migration of `host`'s manual placements after its first
+    /// seed of a connection. Placements the daemon cannot hold are marked not
+    /// shared; a host with nothing to write is recorded as migrated at once.
+    /// Returns the writes to run, with the host's rows for their targets.
+    fn plan_migration(
+        &self,
+        state: &mut LayoutState,
+        host: &str,
+        rows: &[SessionRow],
+    ) -> Option<MigrationRun> {
+        let mut migrations = self.migrations.borrow_mut();
+        if migrations.running.contains(host) || !migrations.armed.remove(host) {
+            return None;
+        }
+        let plan = state
+            .store
+            .migration_plan(host, rows, state.group_name_max_bytes);
+        state.store.mark_not_shared(plan.unshared);
+        if plan.writes.is_empty() {
+            state.store.mark_migrated(host);
+            return None;
+        }
+        migrations.running.insert(host.to_owned());
+        Some((plan.writes, rows.to_vec()))
+    }
+
+    /// Writes the planned keys on this thread's runtime. The host is recorded
+    /// as migrated only when no write failed; a refused session keeps its
+    /// local placement and is not retried, a failed one is retried at the
+    /// host's next connection.
+    fn spawn_migration(
+        &self,
+        host: &str,
+        writes: Vec<(SessionKey, String)>,
+        rows: Vec<SessionRow>,
+    ) {
+        let (layout, window, daemon) = (
+            self.layout.clone(),
+            self.window.clone(),
+            self.daemon.clone(),
+        );
+        let (migrations, host) = (self.migrations.clone(), host.to_owned());
+        let max_bytes = self.group_name_max_bytes;
+        tokio::task::spawn_local(async move {
+            let mut unwritable = Vec::new();
+            let mut failures = Vec::new();
+            for (key, name) in &writes {
+                let Some(row) = rows.iter().find(|row| row.key == *key) else {
+                    continue;
+                };
+                let target = group_edit::target_of(row);
+                match write_group(&daemon, &target, Some(name), max_bytes).await {
+                    WriteOutcome::Written => {}
+                    WriteOutcome::Unwritable => unwritable.push(key.clone()),
+                    WriteOutcome::Failed { host_label, reason } => {
+                        failures.push((host_label, reason));
+                    }
+                }
+            }
+            info!(
+                host = %host,
+                written = writes.len() - unwritable.len() - failures.len(),
+                unwritable = unwritable.len(),
+                failed = failures.len(),
+                "group migration run"
+            );
+            let message = {
+                let mut state = lock(&layout);
+                state.store.mark_not_shared(unwritable);
+                if failures.is_empty() {
+                    state.store.mark_migrated(&host);
+                }
+                let saved = save_layout(&mut state);
+                match failures.first() {
+                    Some((host_label, reason)) => Some(format!(
+                        "Cannot move {} of {} group placements to the daemon; first failure on {host_label}: {reason}",
+                        failures.len(),
+                        writes.len()
+                    )),
+                    None => saved,
+                }
+            };
+            migrations.borrow_mut().running.remove(&host);
+            if let Some(message) = message
+                && let Err(err) = window.upgrade_in_event_loop(move |window| {
+                    window.set_layout_error(message.into());
+                })
+            {
+                error!(error = %err, "deliver the migration result to the UI");
+            }
+        });
     }
 }
 
@@ -1042,6 +1130,8 @@ fn follow_daemons(
             tray,
             rules,
             group_name_max_bytes,
+            daemon: daemon.clone(),
+            migrations: Rc::default(),
             pending,
             layout,
             hosts: Rc::new(RefCell::new(HostsView::new(&hosts))),
@@ -1496,6 +1586,8 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         load_error: layout_error.clone(),
         rules: Vec::new(),
         title_max_chars: ViewConfig::default().section_title_max_chars,
+        group_name_max_bytes: LayoutConfig::default().group_name_max_bytes,
+        daemon: Err("companion.toml is not loaded".to_owned()),
         filter: SessionFilter::default(),
         queries: HashMap::new(),
     }));
@@ -1525,6 +1617,8 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                 let mut state = lock(&layout);
                 state.title_max_chars = config.view.section_title_max_chars;
                 state.rules = config.layout.rules.clone();
+                state.group_name_max_bytes = config.layout.group_name_max_bytes;
+                state.daemon = Ok(config.daemon.clone());
             }
             let context = AttachContext {
                 config_path,

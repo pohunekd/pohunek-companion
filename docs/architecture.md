@@ -122,7 +122,7 @@ Owner decisions of 2026-10-19 (epic #3):
   to all clients and put one client's view into shared state.
   *Revised 2026-10-24 (decision on #216, option A):* the one fact that is
   shared is which group a session is in, held in its `companion.group`
-  metadata (see "Shared groups"). Issues #218 and #219 add the writes.
+  metadata (see "Shared groups"); moves and group edits write it.
 - **Metadata drives placement.** A valid `companion.group` key places the
   session in the group of that name. Without the key, a local manual placement
   in the layout file applies (sessions that cannot carry the key), then the
@@ -143,7 +143,9 @@ Owner decisions of 2026-10-19 (epic #3):
 
 Storage and reconciliation:
 
-- The file has a format version. Groups carry a stable id, a name, and a
+- The file has a format version (2; version 1 is still read and counts as
+  migrated for no host) and `migrated_hosts`, the client host keys whose
+  manual placements were written to metadata. Groups carry a stable id, a name, and a
   fractional sort key; items carry the session key, a group id, and a sort
   key, so a move rewrites exactly one item. Sort keys are short lowercase
   strings that order lexicographically, so repeated inserts between the same
@@ -166,18 +168,31 @@ Storage and reconciliation:
 - An item is a session now; a whole herd block that moves as a unit and keeps
   its own tree order (manager, then members by role, nested herds inside)
   comes with herds (M3).
-- *Operations below (a drag, the menu moves, group edits) are changed by #218:
-  they write `companion.group`.* A drag in My groups moves one session: it rewrites that item's group and
-  sort key only and sets `manual = true` on it, which placement rules must
-  respect. The drop is addressed by session key, so a daemon update during a
-  drag cannot lose it.
-- Group operations rewrite one group entry: create appends after the last
-  group, rename and collapse change that group's fields, a header drag
-  rewrites its sort key, and delete appends the group's sessions to the end of
-  Inbox in their display order with their `manual` flag kept. Names are
-  trimmed, non-empty, and unique ignoring case (placement rules select a group
-  by name); Inbox cannot be renamed or deleted. A collapsed group keeps its
-  sessions that need the owner in the Needs-you section.
+- A drag across groups, "Move to group" and "New group..." with a move write
+  `companion.group` (the target group's name, `Inbox` for Inbox) to the
+  session first and store the sort key of the drop position once the daemon
+  accepted it; the key is then the record, so the item's `manual` flag stays
+  clear. A drag inside a group writes nothing and rewrites that item's sort
+  key only; it sets `manual = true` only for a session without a key, which
+  placement rules must respect. The drop is addressed by session key, so a
+  daemon update during a drag cannot lose it. "Return to rule placement"
+  removes the key (`null`) and hands the session to the rules.
+- Group operations: create appends after the last group (no write), collapse
+  changes that group's field, a header drag rewrites its sort key. Rename
+  writes the new name to every member session on every host and renames the
+  group here only when every write that could be sent succeeded; delete
+  writes `Inbox` the same way and then appends the group's sessions to the end
+  of Inbox. Members are the sessions whose key folds to the group's name plus
+  the ones the group holds locally without a key. A member on an unreachable
+  host is not written and counts as not updated; the owner sees one line
+  through the layout error line (how many of how many sessions, the first
+  failure's host and reason), and repeating the rename writes only to the
+  sessions that still carry the old name. There is no retry queue. Renaming
+  into the name of a learned group merges it. Names are trimmed, non-empty,
+  within `layout.group_name_max_bytes`, free of control characters, and unique
+  among created groups ignoring case (placement rules select a group by name);
+  Inbox cannot be renamed or deleted. A collapsed group keeps its sessions
+  that need the owner in the Needs-you section.
 - Drag never changes herd or Work state: no herd add/remove, no work relinking.
 - *Changed by #219: a session created from a row's menu gets
   `companion.group` at creation, and a fork copies it.* **A session created
@@ -199,8 +214,8 @@ Storage and reconciliation:
 
 Decided on #216 (option A) and implemented in #217 to #219; the Android
 companion implements the same semantics. This subsection states the read side
-(#217) and the known limitation; the writes, the migration and the not-shared
-marker are described by #218 and #219 when they land.
+(#217), the writes and the migration (#218) and the known limitation; the
+not-shared marker is described by #219 when it lands.
 
 - **Key and value.** Group membership is the session metadata key
   `companion.group`; its value is the group's display name. No other key is
@@ -234,6 +249,25 @@ marker are described by #218 and #219 when they land.
   lock, so the last write wins per key. A client re-derives membership from
   the next `session_updated` event, and the periodic re-seed corrects a missed
   event; there is no membership state of its own to reconcile.
+- **Writes.** The operations above call `session.set_metadata` with
+  `{"companion.group": "<name>"}` (`null` removes the key) one session at a
+  time, from the layout worker thread and never while holding the layout lock
+  (`crates/core/src/group_write.rs`, `crates/app/src/group_edit.rs`). A row
+  changes group when the daemon's `session_updated` event or the call's
+  result arrives, not before. Sessions known to be external are never sent a
+  request.
+- **Sessions that cannot carry the key.** A refusal that says so (an external
+  session, a runtime that is not launchable on the host, a daemon without the
+  method) keeps the move as a local manual placement and puts the session in
+  an in-memory `not_shared` set of the layout store. Any other failure leaves
+  the session where it is and is reported.
+- **Migration.** After a host's first seed of a connection, the manual
+  placements of that host's sessions that have no key (an unusable value
+  counts as a key) are written: the group's name, or `Inbox` for a manual
+  item in Inbox. A refusal as above marks the session as not shared and is
+  not retried; a failed write keeps the local placement and is retried at the
+  host's next connection. The host goes into `migrated_hosts` only when every
+  candidate was written or refused. Rule-placed items are not migrated.
 - **Known limitation.** At v0.35.2, `session.set_metadata` is persisted only
   for sessions with a native reference (zajca/pohunek#1556). A group written
   to a plain shell, or to an agent session before it reports its native id,

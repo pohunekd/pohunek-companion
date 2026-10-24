@@ -127,7 +127,7 @@ show the owner's real sessions (names, ids, working directories, Work links).
   to the daemon's activities. No real agent runs and no token is spent; the
   profiles never point at the claude or codex packages. The layout is written
   before the app starts (sessions marked `manual` so placement rules leave them
-  in their groups), and `tray.idle_threshold_secs` is set to 1 so idle sessions
+  in their groups; the app writes them to the sessions' `companion.group` on its first start), and `tray.idle_threshold_secs` is set to 1 so idle sessions
   show as Idle at once. Resume cannot be shown: a shell-based profile cannot
   declare a resume spec and a real runtime needs the agent's own hook to report
   a conversation id, so the details view of an ended session shows the refusal

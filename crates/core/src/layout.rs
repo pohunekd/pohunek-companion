@@ -15,13 +15,15 @@ use tracing::{info, warn};
 
 use crate::config::PlacementRule;
 use crate::filter::StoredFilter;
-use crate::group_key::match_key;
+use crate::group_key::{GroupNameProblem, check_group_name, match_key};
 use crate::needs_you::NEEDS_YOU_ID;
 use crate::session::{SessionKey, SessionRow};
 use crate::sort_key;
 use crate::view::View;
 
-const FORMAT_VERSION: u32 = 1;
+/// Version 2 adds `migrated_hosts`; a version-1 file reads as migrated for no host.
+const FORMAT_VERSION: u32 = 2;
+const OLDEST_FORMAT_VERSION: u32 = 1;
 const LAYOUT_FILE: &str = "layout.toml";
 const APP_DIR: &str = "pohunek-companion";
 const STATE_HOME_ENV: &str = "XDG_STATE_HOME";
@@ -152,6 +154,10 @@ pub struct Layout {
     /// groups keeps its state on the groups themselves.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     collapsed_sections: BTreeMap<String, BTreeSet<String>>,
+    /// Client host keys whose manual placements were written to session
+    /// metadata; the migration runs once per host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    migrated_hosts: Vec<String>,
     #[serde(default)]
     groups: Vec<Group>,
     #[serde(default)]
@@ -203,6 +209,10 @@ pub enum GroupPlacement<'a> {
 pub enum GroupError {
     #[error("a group name cannot be empty")]
     EmptyName,
+    #[error("a group name is longer than the configured limit")]
+    NameTooLong,
+    #[error("a group name cannot contain a control or bidirectional-format character")]
+    NameHasControlCharacter,
     #[error("a group named {0:?} already exists")]
     DuplicateName(String),
     #[error("group {0:?} is not in the layout")]
@@ -213,11 +223,23 @@ pub enum GroupError {
     AmbiguousOrder,
 }
 
+impl From<GroupNameProblem> for GroupError {
+    fn from(problem: GroupNameProblem) -> Self {
+        match problem {
+            GroupNameProblem::Empty => Self::EmptyName,
+            GroupNameProblem::TooLong => Self::NameTooLong,
+            GroupNameProblem::ControlCharacter => Self::NameHasControlCharacter,
+        }
+    }
+}
+
 impl GroupError {
     /// A label for logs: names the refusal without the group name it carries.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::EmptyName => "empty name",
+            Self::NameTooLong => "name too long",
+            Self::NameHasControlCharacter => "control character in name",
             Self::DuplicateName(_) => "duplicate name",
             Self::UnknownGroup(_) => "unknown group",
             Self::InboxFixed => "inbox is fixed",
@@ -270,6 +292,15 @@ impl GroupSync {
     }
 }
 
+/// What the migration of one host has to do.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MigrationPlan {
+    /// `companion.group` values to write: the session and the group name.
+    pub writes: Vec<(SessionKey, String)>,
+    /// Manual placements that stay local because the daemon cannot hold them.
+    pub unshared: Vec<SessionKey>,
+}
+
 /// A session a placement pass moved: the rule that selected its group, or
 /// `None` when it returned to Inbox, and the group id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,6 +348,7 @@ impl Default for Layout {
             view: None,
             filters: BTreeMap::new(),
             collapsed_sections: BTreeMap::new(),
+            migrated_hosts: Vec::new(),
             groups: vec![inbox_group(sort_key::between(None, None))],
             items: Vec::new(),
         }
@@ -450,6 +482,88 @@ impl Layout {
             result.added.push(key.clone());
         }
         result
+    }
+
+    /// The sessions a rename or delete of group `id` has to write: those whose
+    /// `companion.group` value names the group (ignoring case) and the ones
+    /// the group holds locally without a valid key, in the group's display
+    /// order and then the order of `rows`. Inbox and unknown groups have none.
+    pub fn group_members(&self, id: &str, rows: &[SessionRow]) -> Vec<SessionKey> {
+        let Some(group) = self.groups.iter().find(|g| g.id == id && g.id != INBOX_ID) else {
+            return Vec::new();
+        };
+        let wanted = match_key(&group.name);
+        let position: HashMap<SessionKey, usize> = self
+            .group_items(id)
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item.key(), index))
+            .collect();
+        let mut members: Vec<&SessionRow> = rows
+            .iter()
+            .filter(|row| match &row.group {
+                Some(name) => match_key(name) == wanted,
+                None => position.contains_key(&row.key),
+            })
+            .collect();
+        members.sort_by_key(|row| position.get(&row.key).copied().unwrap_or(usize::MAX));
+        members.into_iter().map(|row| row.key.clone()).collect()
+    }
+
+    /// The writes that move the manual placements of `host` into session
+    /// metadata; none once the host is migrated. A candidate is a manual item
+    /// of a listed, non-external session with no `companion.group` key at all
+    /// (an unusable value counts as a key and is never overwritten). A
+    /// manual item in Inbox is written as `Inbox`, so rules keep leaving it
+    /// alone. Placements that cannot be written (external sessions, group
+    /// names no value can hold) are listed as `unshared`.
+    pub fn migration_plan(
+        &self,
+        host: &str,
+        rows: &[SessionRow],
+        name_max_bytes: usize,
+    ) -> MigrationPlan {
+        let mut plan = MigrationPlan::default();
+        if self.migrated_hosts.iter().any(|migrated| migrated == host) {
+            return plan;
+        }
+        let names: HashMap<&str, &str> = self
+            .groups
+            .iter()
+            .map(|g| (g.id.as_str(), g.name.as_str()))
+            .collect();
+        let by_key: HashMap<&SessionKey, &SessionRow> =
+            rows.iter().map(|row| (&row.key, row)).collect();
+        for item in self.items.iter().filter(|i| i.host == host && i.manual) {
+            let Some(row) = by_key.get(&item.key()) else {
+                continue;
+            };
+            if row.external {
+                plan.unshared.push(item.key());
+                continue;
+            }
+            if row.group.is_some() || row.group_problem.is_some() {
+                continue;
+            }
+            let Some(name) = names.get(item.group.as_str()) else {
+                continue;
+            };
+            match check_group_name(name, name_max_bytes) {
+                Ok(value) => plan.writes.push((item.key(), value.to_owned())),
+                Err(_) => plan.unshared.push(item.key()),
+            }
+        }
+        plan
+    }
+
+    /// Records `host` as migrated, so [`migration_plan`](Self::migration_plan)
+    /// gives nothing for it from now on.
+    pub fn mark_migrated(&mut self, host: &str) -> bool {
+        if self.migrated_hosts.iter().any(|migrated| migrated == host) {
+            return false;
+        }
+        self.migrated_hosts.push(host.to_owned());
+        true
     }
 
     /// Places every session the owner never dragged and that carries no valid
@@ -654,6 +768,19 @@ impl Layout {
         group: &str,
         placement: Placement<'_>,
     ) -> Result<bool, MoveError> {
+        self.place_session(key, group, placement, true)
+    }
+
+    /// Like [`move_session`](Self::move_session), with the manual flag set to
+    /// `manual`: false once the session's `companion.group` key is the record
+    /// of its group.
+    pub fn place_session(
+        &mut self,
+        key: &SessionKey,
+        group: &str,
+        placement: Placement<'_>,
+        manual: bool,
+    ) -> Result<bool, MoveError> {
         if !self.groups.iter().any(|g| g.id == group) {
             return Err(MoveError::UnknownGroup(group.to_owned()));
         }
@@ -667,7 +794,7 @@ impl Layout {
             Placement::End => None,
         };
         if anchor == Some(key) {
-            return Ok(self.pin(index));
+            return Ok(self.set_manual(index, manual));
         }
         let neighbours: Vec<&Item> = self
             .group_items(group)
@@ -693,7 +820,7 @@ impl Layout {
             && lower.is_none_or(|lower| lower < current.order.as_str())
             && upper.is_none_or(|upper| current.order.as_str() < upper);
         if stays {
-            return Ok(self.pin(index));
+            return Ok(self.set_manual(index, manual));
         }
         if let (Some(lower), Some(upper)) = (lower, upper)
             && lower >= upper
@@ -704,13 +831,13 @@ impl Layout {
         let item = &mut self.items[index];
         item.group = group.to_owned();
         item.order = order;
-        item.manual = true;
+        item.manual = manual;
         Ok(true)
     }
 
-    /// Marks the item manually placed; returns whether the flag changed.
-    fn pin(&mut self, index: usize) -> bool {
-        !std::mem::replace(&mut self.items[index].manual, true)
+    /// Sets the manual flag of the item; returns whether it changed.
+    fn set_manual(&mut self, index: usize, manual: bool) -> bool {
+        std::mem::replace(&mut self.items[index].manual, manual) != manual
     }
 
     fn group_index(&self, id: &str) -> Result<usize, GroupError> {
@@ -721,14 +848,20 @@ impl Layout {
     }
 
     /// Refuses a name another group (other than `except`) has, ignoring case:
-    /// placement rules address groups by name.
-    fn check_unique(&self, name: &str, except: Option<&str>) -> Result<(), GroupError> {
+    /// placement rules address groups by name. A learned group only mirrors
+    /// what other clients wrote, so a rename may ignore it.
+    fn check_unique(
+        &self,
+        name: &str,
+        except: Option<&str>,
+        ignore_learned: bool,
+    ) -> Result<(), GroupError> {
         let folded = name.to_lowercase();
-        if self
-            .groups
-            .iter()
-            .any(|g| Some(g.id.as_str()) != except && g.name.to_lowercase() == folded)
-        {
+        if self.groups.iter().any(|g| {
+            Some(g.id.as_str()) != except
+                && !(ignore_learned && g.origin == GroupOrigin::Learned)
+                && g.name.to_lowercase() == folded
+        }) {
             return Err(GroupError::DuplicateName(name.to_owned()));
         }
         Ok(())
@@ -744,7 +877,7 @@ impl Layout {
     /// Appends a group after the last one and returns its id.
     pub fn create_group(&mut self, name: &str) -> Result<String, GroupError> {
         let name = clean_name(name)?;
-        self.check_unique(name, None)?;
+        self.check_unique(name, None, false)?;
         let id = self.unused_group_id();
         let last = self.ordered_groups().last().map(|g| g.order.clone());
         self.groups.push(Group {
@@ -781,19 +914,49 @@ impl Layout {
         outcome
     }
 
-    /// Renames a group; Inbox keeps its name. Returns whether the name changed.
+    /// Renames a group; Inbox keeps its name. A created group of the new name
+    /// refuses the rename; a learned one is merged: its sessions join the end
+    /// of the renamed group and it goes. Returns whether anything changed.
     pub fn rename_group(&mut self, id: &str, name: &str) -> Result<bool, GroupError> {
         let index = self.group_index(id)?;
         if id == INBOX_ID {
             return Err(GroupError::InboxFixed);
         }
         let name = clean_name(name)?;
-        self.check_unique(name, Some(id))?;
-        if self.groups[index].name == name {
+        self.check_unique(name, Some(id), true)?;
+        let learned = self
+            .groups
+            .iter()
+            .find(|g| {
+                g.id != id
+                    && g.origin == GroupOrigin::Learned
+                    && match_key(&g.name) == match_key(name)
+            })
+            .map(|g| g.id.clone());
+        if self.groups[index].name == name && learned.is_none() {
             return Ok(false);
         }
         self.groups[index].name = name.to_owned();
+        if let Some(learned) = learned {
+            self.absorb_group(&learned, id);
+        }
         Ok(true)
+    }
+
+    /// Moves the sessions of group `from` to the end of group `into`, in
+    /// their order, and drops `from`.
+    fn absorb_group(&mut self, from: &str, into: &str) {
+        let moving: Vec<SessionKey> = self.group_items(from).iter().map(|i| i.key()).collect();
+        let mut last = self.group_items(into).last().map(|item| item.order.clone());
+        for key in &moving {
+            let order = sort_key::between(last.as_deref(), None);
+            last = Some(order.clone());
+            if let Some(item) = self.items.iter_mut().find(|item| item.key() == *key) {
+                item.group = into.to_owned();
+                item.order = order;
+            }
+        }
+        self.groups.retain(|group| group.id != from);
     }
 
     /// Collapses or expands a section of the selected view: an owner group in
@@ -913,12 +1076,13 @@ impl Layout {
     /// Rejects an inconsistent hand-edited layout and re-adds a deleted Inbox;
     /// returns whether it changed anything.
     fn validate(&mut self) -> Result<bool, String> {
-        if self.version != FORMAT_VERSION {
+        if !(OLDEST_FORMAT_VERSION..=FORMAT_VERSION).contains(&self.version) {
             return Err(format!(
-                "unsupported format version {} (this build reads version {FORMAT_VERSION})",
+                "unsupported format version {} (this build reads versions {OLDEST_FORMAT_VERSION} to {FORMAT_VERSION})",
                 self.version
             ));
         }
+        self.version = FORMAT_VERSION;
         let mut ids = HashSet::new();
         for group in &self.groups {
             if group.id.is_empty() || !ids.insert(group.id.as_str()) {
@@ -981,6 +1145,9 @@ pub struct LayoutStore {
     path: PathBuf,
     layout: Layout,
     writable: bool,
+    /// Sessions whose group is only a local placement because the daemon
+    /// refused to hold the key; kept in memory only.
+    not_shared: HashSet<SessionKey>,
     /// The layout as last read from or written to the file, so a hand-edited
     /// file is not rewritten for formatting alone; `None` when the file needs
     /// writing.
@@ -1005,6 +1172,7 @@ impl LayoutStore {
                         path,
                         layout,
                         writable: true,
+                        not_shared: HashSet::new(),
                         saved,
                     },
                     None,
@@ -1017,6 +1185,7 @@ impl LayoutStore {
                         path,
                         layout: Layout::default(),
                         writable: false,
+                        not_shared: HashSet::new(),
                         saved: None,
                     },
                     Some(err),
@@ -1032,6 +1201,7 @@ impl LayoutStore {
             path: PathBuf::new(),
             layout: Layout::default(),
             writable: false,
+            not_shared: HashSet::new(),
             saved: None,
         }
     }
@@ -1067,6 +1237,9 @@ impl LayoutStore {
     /// Reconciles with the full session list of `host` and logs the outcome.
     pub fn reconcile(&mut self, host: &str, current: &[SessionKey]) -> Reconciled {
         let result = self.layout.reconcile(host, current);
+        for key in &result.pruned {
+            self.not_shared.remove(key);
+        }
         if !result.added.is_empty() || !result.pruned.is_empty() {
             info!(
                 host,
@@ -1126,6 +1299,9 @@ impl LayoutStore {
     /// counts only, never a group name.
     pub fn apply_group_values(&mut self, rows: &[SessionRow]) -> GroupSync {
         let sync = self.layout.apply_group_values(rows);
+        for row in rows.iter().filter(|row| row.group.is_some()) {
+            self.not_shared.remove(&row.key);
+        }
         if !sync.is_empty() {
             info!(
                 learned = sync.learned.len(),
@@ -1161,6 +1337,56 @@ impl LayoutStore {
             info!(session = %key.session_id, group, placement = ?placement_log(placement), "session moved");
         }
         Ok(changed)
+    }
+
+    /// Moves a session with an explicit manual flag (see
+    /// [`Layout::place_session`]) and logs it with keys and group ids only.
+    pub fn place_session(
+        &mut self,
+        key: &SessionKey,
+        group: &str,
+        placement: Placement<'_>,
+        manual: bool,
+    ) -> Result<bool, MoveError> {
+        let changed = self.layout.place_session(key, group, placement, manual)?;
+        if changed {
+            info!(session = %key.session_id, group, manual, placement = ?placement_log(placement), "session moved");
+        }
+        Ok(changed)
+    }
+
+    /// Records sessions whose group stays a local placement because the
+    /// daemon cannot hold the key.
+    pub fn mark_not_shared(&mut self, keys: impl IntoIterator<Item = SessionKey>) {
+        for key in keys {
+            if self.not_shared.insert(key.clone()) {
+                info!(host = %key.host, session = %key.session_id, "group is not shared");
+            }
+        }
+    }
+
+    /// Whether the session's group is only a local placement.
+    pub fn is_not_shared(&self, key: &SessionKey) -> bool {
+        self.not_shared.contains(key)
+    }
+
+    /// Records `host` as migrated; saved by the next
+    /// [`save_if_changed`](Self::save_if_changed).
+    pub fn mark_migrated(&mut self, host: &str) {
+        if self.layout.mark_migrated(host) {
+            info!(host, "host migrated to session metadata");
+        }
+    }
+
+    /// The writes that migrate the manual placements of `host` (see
+    /// [`Layout::migration_plan`]).
+    pub fn migration_plan(
+        &self,
+        host: &str,
+        rows: &[SessionRow],
+        name_max_bytes: usize,
+    ) -> MigrationPlan {
+        self.layout.migration_plan(host, rows, name_max_bytes)
     }
 
     /// Hands a manually placed session back to the placement rules (see
@@ -1924,6 +2150,7 @@ order = "g"
             details: Default::default(),
             group: None,
             group_problem: None,
+            external: false,
         }
     }
 
@@ -2329,6 +2556,149 @@ order = "g"
                 GroupOrigin::Created,
                 GroupOrigin::Learned
             ]
+        );
+    }
+
+    fn manual_in(layout: &mut Layout, row: &SessionRow, group: &str) {
+        layout
+            .move_session(&row.key, group, Placement::End)
+            .expect("move");
+    }
+
+    #[test]
+    fn the_migration_writes_manual_items_only_and_never_overwrites_a_key() {
+        let mut layout = Layout::default();
+        let reviews = layout.create_group("Reviews").expect("group");
+        let mut keyed_row = keyed("host-a", "has-key", Some("Other"));
+        let mut odd = keyed("host-a", "odd-key", None);
+        odd.group_problem = Some(GroupNameProblem::Empty);
+        let mut external = keyed("host-a", "external", None);
+        external.external = true;
+        let rows = [
+            keyed("host-a", "in-group", None),
+            keyed("host-a", "in-inbox", None),
+            keyed("host-a", "by-rule", None),
+            keyed("host-b", "other-host", None),
+            keyed_row.clone(),
+            odd.clone(),
+            external.clone(),
+        ];
+        seed(&mut layout, &rows);
+        manual_in(&mut layout, &rows[0], &reviews);
+        manual_in(&mut layout, &rows[1], INBOX_ID);
+        manual_in(&mut layout, &rows[3], &reviews);
+        manual_in(&mut layout, &odd, &reviews);
+        manual_in(&mut layout, &external, &reviews);
+        // A key set after the placement: the session is not a candidate.
+        manual_in(&mut layout, &keyed_row, &reviews);
+        keyed_row.group = Some("Other".to_owned());
+
+        let plan = layout.migration_plan("host-a", &rows, 64);
+        assert_eq!(
+            plan.writes,
+            [
+                (key_on("host-a", "in-group"), "Reviews".to_owned()),
+                (key_on("host-a", "in-inbox"), "Inbox".to_owned()),
+            ]
+        );
+        assert_eq!(plan.unshared, [key_on("host-a", "external")]);
+
+        assert!(layout.mark_migrated("host-a"));
+        assert!(!layout.mark_migrated("host-a"));
+        assert_eq!(
+            layout.migration_plan("host-a", &rows, 64),
+            MigrationPlan::default()
+        );
+        assert_eq!(
+            layout.migration_plan("host-b", &rows, 64).writes,
+            [(key_on("host-b", "other-host"), "Reviews".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_group_name_no_value_can_hold_stays_local() {
+        let mut layout = Layout::default();
+        let long = layout
+            .create_group("Quite a long group name")
+            .expect("group");
+        let rows = [keyed("host-a", "a1", None)];
+        seed(&mut layout, &rows);
+        manual_in(&mut layout, &rows[0], &long);
+        let plan = layout.migration_plan("host-a", &rows, 5);
+        assert!(plan.writes.is_empty());
+        assert_eq!(plan.unshared, [key_on("host-a", "a1")]);
+    }
+
+    #[test]
+    fn a_version_1_file_loads_as_unmigrated_and_a_version_2_file_keeps_its_hosts() {
+        let v1 = "version = 1\n\n[[groups]]\nid = \"inbox\"\nname = \"Inbox\"\norder = \"n\"\n";
+        let mut layout: Layout = toml::from_str(v1).expect("parses");
+        layout.validate().expect("valid");
+        assert_eq!(layout.migrated_hosts, Vec::<String>::new());
+        layout.mark_migrated("local");
+        let text = layout.to_toml();
+        assert!(
+            text.contains("version = 2") && text.contains("migrated_hosts"),
+            "{text}"
+        );
+        let again: Layout = toml::from_str(&text).expect("parses");
+        assert_eq!(again.migrated_hosts, ["local"]);
+    }
+
+    #[test]
+    fn group_members_are_the_keyed_sessions_ignoring_case_plus_local_only_placements() {
+        let mut layout = Layout::default();
+        let later = layout.create_group("Later").expect("group");
+        let rows = [
+            keyed("host-a", "keyed", Some("LATER")),
+            keyed("host-b", "keyed-b", Some("later")),
+            keyed("host-a", "local-only", None),
+            keyed("host-a", "elsewhere", Some("Other")),
+            keyed("host-a", "unplaced", None),
+        ];
+        seed(&mut layout, &rows);
+        layout.apply_group_values(&rows);
+        manual_in(&mut layout, &rows[2], &later);
+        manual_in(&mut layout, &rows[3], &later);
+
+        let members = layout.group_members(&later, &rows);
+        assert_eq!(
+            members,
+            [
+                key_on("host-a", "keyed"),
+                key_on("host-b", "keyed-b"),
+                key_on("host-a", "local-only"),
+            ]
+        );
+        assert!(layout.group_members(INBOX_ID, &rows).is_empty());
+        assert!(layout.group_members("nope", &rows).is_empty());
+    }
+
+    #[test]
+    fn renaming_into_a_learned_groups_name_merges_it() {
+        let mut layout = Layout::default();
+        let mine = layout.create_group("Later").expect("group");
+        let rows = [
+            keyed("host-a", "a1", Some("Someday")),
+            keyed("host-a", "a2", None),
+        ];
+        seed(&mut layout, &rows);
+        layout.apply_group_values(&rows);
+        layout
+            .move_session(&key_on("host-a", "a2"), &mine, Placement::End)
+            .expect("move");
+        assert_eq!(names(&layout), ["Inbox", "Later", "Someday"]);
+
+        assert_eq!(layout.rename_group(&mine, "someday"), Ok(true));
+        assert_eq!(names(&layout), ["Inbox", "someday"]);
+        assert_eq!(group_name_of(&layout, "host-a", "a1"), "someday");
+        assert_eq!(group_name_of(&layout, "host-a", "a2"), "someday");
+
+        layout.create_group("Mine").expect("group");
+        assert_eq!(
+            layout.rename_group(&mine, "mine"),
+            Err(GroupError::DuplicateName("mine".to_owned())),
+            "a created group still refuses the name"
         );
     }
 }

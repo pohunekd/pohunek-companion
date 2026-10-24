@@ -537,6 +537,7 @@ mod tests {
             details: Default::default(),
             group: None,
             group_problem: None,
+            external: false,
         }
     }
 

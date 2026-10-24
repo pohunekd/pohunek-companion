@@ -13,6 +13,7 @@ mod discovery;
 mod error;
 mod filter;
 mod group_key;
+mod group_write;
 mod install;
 mod layout;
 mod lifecycle;
@@ -60,14 +61,17 @@ pub use filter::{
 pub use group_key::{
     GROUP_KEY, GroupNameProblem, GroupValue, INBOX_VALUE, check_group_name, parse_group_value,
 };
+pub use group_write::{
+    GroupWriteError, WriteOutcome, WriteSummary, WriteTarget, set_group, write_all, write_group,
+};
 pub use install::{
     Attestation, CLIENT_TAG, InstallPlan, Prepared, Release, Step, StepError, plan_for_host,
     prepare_release, run_brew_install, run_release_install,
 };
 pub use layout::{
     CreateAndMoveError, GroupError, GroupOrigin, GroupPlacement, GroupSection, GroupSync, INBOX_ID,
-    LayoutError, LayoutStore, MoveError, Placement, Reconciled, RulePlacement, layout_path,
-    state_dir,
+    LayoutError, LayoutStore, MigrationPlan, MoveError, Placement, Reconciled, RulePlacement,
+    layout_path, state_dir,
 };
 pub use lifecycle::{
     LifecycleAction, LifecycleError, LifecycleOutcome, Resumed, run_lifecycle_action,

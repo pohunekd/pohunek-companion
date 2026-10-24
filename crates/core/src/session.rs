@@ -70,6 +70,8 @@ pub struct SessionRow {
     pub group: Option<String>,
     /// Why a present `companion.group` value was treated as absent.
     pub group_problem: Option<GroupNameProblem>,
+    /// An observed session the daemon does not own; it refuses metadata writes.
+    pub external: bool,
 }
 
 /// Whether the session's runtime is in the given state.
@@ -177,6 +179,7 @@ impl SessionRow {
             details,
             group,
             group_problem,
+            external: info.external == Some(true),
         }
     }
 }
