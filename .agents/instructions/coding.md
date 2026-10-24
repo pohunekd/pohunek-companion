@@ -9,8 +9,10 @@
   not depend on them.
 - The daemon owns session, herd, and notification state. The companion only
   reads it and calls public methods; it never infers or caches authority.
-- The owner's layout (groups, order) is client-side state in the companion's
-  own state file. Never write it into session metadata.
+- The owner's layout (group order, session order, collapse, views, filters) is
+  client-side state in the companion's own state file. The one shared fact is a
+  session's group: the `companion.group` metadata key, written only by group
+  moves, rename, delete and the migration, never by a reorder or by rules.
 - Herd membership and Pohunek Work links (`work.link.*`, `work.role`, legacy
   `link.*`) are read-only structure for the companion. A drag never adds or
   removes a herd member or relinks a work item.
