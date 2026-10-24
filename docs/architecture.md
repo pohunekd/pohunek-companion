@@ -158,7 +158,8 @@ Storage and reconciliation:
   a list seeded from host H reconciles only H's keys, and a host that is
   disconnected or has never been seeded prunes nothing, so a lost host keeps
   its placements. Resume keeps the session id and therefore the position; a fork
-  is a new session.
+  is a new session that copies its source's metadata, so it lands in its
+  parent's group.
 - Writes are atomic (temporary file in the same directory, then rename), the
   directory is `0700` and the file `0600`, and a write happens only when the
   content changed.
@@ -194,28 +195,22 @@ Storage and reconciliation:
   Inbox cannot be renamed or deleted. A collapsed group keeps its sessions
   that need the owner in the Needs-you section.
 - Drag never changes herd or Work state: no herd add/remove, no work relinking.
-- *Changed by #219: a session created from a row's menu gets
-  `companion.group` at creation, and a fork copies it.* **A session created
-  from a row's menu** lands in that row's group. The
+- **A session created from a row's menu** starts in that row's group. The
   dialog is a separate process, so the sidebar passes the group id as
-  `new-session --group <id>`. After `session.new` returns the id, the dialog
-  appends `(host, session id, group id, time)` to `pending-placement.toml` in
-  the state directory (atomic write, read-modify-write under an exclusive
-  `flock` on `pending-placement.lock`). The sidebar checks the file on every
-  session list: for a session that is present it moves the session to the
-  group's end as a manual placement (the layout stays the sidebar's alone) and
-  deletes the entry; an entry older than
-  `new_session.pending_placement_max_age_secs` whose session never appeared is
-  deleted and logged. A group deleted meanwhile refuses the move and the
-  session keeps its rule or Inbox placement. Without `--group` (tray, sidebar
-  button, standalone command) nothing is recorded.
+  `new-session --group <id>`. At submit the dialog reads `layout.toml`
+  read-only, resolves the id to the group's name and, for any group but
+  Inbox, puts `companion.group` into the `session.new` metadata. An unknown id,
+  Inbox, an unreadable file or a name no value can hold sends no key (the last
+  two are logged). The session therefore shows in that group on every client
+  as soon as it is listed. Without `--group` (tray, sidebar button,
+  standalone command) no key is sent.
 
 ### Shared groups
 
 Decided on #216 (option A) and implemented in #217 to #219; the Android
 companion implements the same semantics. This subsection states the read side
-(#217), the writes and the migration (#218) and the known limitation; the
-not-shared marker is described by #219 when it lands.
+(#217), the writes and the migration (#218), the not-shared marker and the
+new-session key (#219), and the known limitation.
 
 - **Key and value.** Group membership is the session metadata key
   `companion.group`; its value is the group's display name. No other key is
@@ -268,6 +263,12 @@ not-shared marker is described by #219 when it lands.
   not retried; a failed write keeps the local placement and is retried at the
   host's next connection. The host goes into `migrated_hosts` only when every
   candidate was written or refused. Rule-placed items are not migrated.
+- **Not-shared marker.** A session is not shared when it is external or in the
+  store's `not_shared` set. Its row shows a small "local" marker and its
+  details a "Group: only on this computer" line.
+- **New sessions and forks.** A session created from a group other than Inbox
+  gets `companion.group` in the `session.new` metadata; a fork copies its
+  source's metadata and so lands in its parent's group.
 - **Known limitation.** At v0.35.2, `session.set_metadata` is persisted only
   for sessions with a native reference (zajca/pohunek#1556). A group written
   to a plain shell, or to an agent session before it reports its native id,
@@ -415,8 +416,7 @@ and does not follow the session stream.
   the project and agent when the host has them; a host that cannot be reached
   shows its error and leaves Create disabled. `session.new` goes to the chosen
   host, and "New session in ..." on a remote row passes the row's host key
-  with its group, so the pending placement carries that host in the session
-  key.
+  with its group, so the group's metadata is created on that host.
 - Choices come from `project.list` (projects) and `host.inspect` (agents) of
   the chosen host. The projects are shown as soon as `project.list` answers;
   the agents follow when `host.inspect` does, which can take seconds on a

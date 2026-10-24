@@ -41,11 +41,21 @@ pub fn install(window: &AppWindow, layout: SharedLayout) {
             host: host.to_string(),
             session_id: id.to_string(),
         };
-        let row = lock(&layout)
-            .rows
-            .iter()
-            .find(|row| row.key == key)
-            .cloned();
+        let row = {
+            let state = lock(&layout);
+            let not_shared = state.store.is_not_shared(&key);
+            state
+                .rows
+                .iter()
+                .find(|row| row.key == key)
+                .cloned()
+                .map(|mut row| {
+                    if row.external || not_shared {
+                        row.details = row.details.with_local_group();
+                    }
+                    row
+                })
+        };
         let Some(row) = row else {
             warn!(host = %host, session = %id, "details requested for a session that is gone");
             return;

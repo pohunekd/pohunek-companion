@@ -172,6 +172,20 @@ impl SessionDetails {
         Self { sections }
     }
 
+    /// Adds the "Group: only on this computer" line for a session whose group
+    /// the daemon cannot hold, so it is a placement on this computer only.
+    pub fn with_local_group(mut self) -> Self {
+        self.sections.push(DetailSection {
+            title: "Group",
+            fields: vec![DetailField {
+                label: "Group",
+                value: "only on this computer".to_owned(),
+                link: false,
+            }],
+        });
+        self
+    }
+
     /// A plain-text block of `label: value` lines under the session's name,
     /// for pasting into an issue or a chat.
     pub fn copy_all(&self, name: &str) -> String {

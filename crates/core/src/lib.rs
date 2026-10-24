@@ -23,7 +23,6 @@ mod needs_you;
 mod new_session;
 mod open;
 mod owner_state;
-mod pending_placement;
 mod rename;
 mod resume;
 mod routes;
@@ -71,7 +70,7 @@ pub use install::{
 pub use layout::{
     CreateAndMoveError, GroupError, GroupOrigin, GroupPlacement, GroupSection, GroupSync, INBOX_ID,
     LayoutError, LayoutStore, MigrationPlan, MoveError, Placement, Reconciled, RulePlacement,
-    layout_path, state_dir,
+    layout_path, new_session_group_value, state_dir,
 };
 pub use lifecycle::{
     LifecycleAction, LifecycleError, LifecycleOutcome, Resumed, run_lifecycle_action,
@@ -89,7 +88,6 @@ pub use open::{
     OpenConfig, OpenKind, OpenTargets, OpenTemplate, default_open_template, is_openable_url, open,
 };
 pub use owner_state::{OwnerState, derive};
-pub use pending_placement::{Pending, PendingEntry, PendingError, PendingStore, Settled};
 pub use pohunek_client::LOCAL_HOST;
 pub use pohunek_client::protocol::SessionNewParams;
 pub use rename::{RenameError, name_from_input, rename_session};

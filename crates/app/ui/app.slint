@@ -29,6 +29,9 @@ export struct SessionRowData {
     // The owner placed the session by hand or its `companion.group` key does,
     // so placement rules leave it alone.
     manual: bool,
+    // The session's group is only a placement on this computer: the daemon
+    // cannot hold the `companion.group` key for it.
+    not-shared: bool,
     // Pohunek id of the session's project; empty without a project.
     project-id: string,
     // Label of that project, shown in the "New session in" menu entry.
@@ -156,6 +159,11 @@ export global Theme {
     out property <color> row-dragging: #3a3d44;
     out property <color> badge-background: #3a3d44;
     out property <color> badge-text: #c9d1d9;
+    // Marker on a row whose group is kept only on this computer.
+    out property <string> not-shared-text: "local";
+    out property <length> not-shared-font-size: 10px;
+    out property <color> not-shared-background: Theme.badge-background;
+    out property <color> not-shared-color: Theme.detail;
     out property <length> about-width: 360px;
     out property <length> about-height: 320px;
     out property <length> about-logo-size: 128px;
@@ -433,6 +441,22 @@ component SessionRow inherits Rectangle {
                 text: root.data.name;
                 color: Theme.text;
                 overflow: elide;
+            }
+            if root.data.not-shared: Rectangle {
+                background: Theme.not-shared-background;
+                border-radius: Theme.badge-radius;
+                horizontal-stretch: 0;
+                width: not-shared-label.preferred-width + 2 * Theme.badge-padding;
+                HorizontalLayout {
+                    padding-left: Theme.badge-padding;
+                    padding-right: Theme.badge-padding;
+                    not-shared-label := Text {
+                        text: Theme.not-shared-text;
+                        color: Theme.not-shared-color;
+                        font-size: Theme.not-shared-font-size;
+                        vertical-alignment: center;
+                    }
+                }
             }
             if root.data.host-label != "": Rectangle {
                 background: Theme.badge-background;

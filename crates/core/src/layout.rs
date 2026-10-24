@@ -1509,6 +1509,35 @@ impl LayoutStore {
     }
 }
 
+/// The `companion.group` value a session created from group `group_id` gets,
+/// read from the layout file at `path` without writing it. Inbox, an unknown
+/// id, an unreadable file and a name no value can hold give `None` (the last
+/// two are logged); the dialog then sends no key.
+pub fn new_session_group_value(path: &Path, group_id: &str, max_bytes: usize) -> Option<String> {
+    if group_id == INBOX_ID {
+        return None;
+    }
+    let (layout, _) = match LayoutStore::load(path) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            warn!(error = %err, group = group_id, "layout not readable; creating the session without a group");
+            return None;
+        }
+    };
+    let group = layout.groups.iter().find(|group| group.id == group_id)?;
+    match check_group_name(&group.name, max_bytes) {
+        Ok(name) => Some(name.to_owned()),
+        Err(problem) => {
+            warn!(
+                group = group_id,
+                reason = problem.code(),
+                "group name cannot be a metadata value; creating the session without a group"
+            );
+            None
+        }
+    }
+}
+
 fn placement_log(placement: Placement<'_>) -> String {
     match placement {
         Placement::Before(anchor) => format!("before {}", anchor.session_id),
