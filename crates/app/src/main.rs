@@ -1045,11 +1045,17 @@ impl Publisher {
                 }
                 let saved = save_layout(&mut state);
                 match failures.first() {
-                    Some((host_label, reason)) => Some(format!(
-                        "Cannot move {} of {} group placements to the daemon; first failure on {host_label}: {reason}",
-                        failures.len(),
-                        writes.len()
-                    )),
+                    Some((host_label, reason)) => {
+                        let failed = format!(
+                            "Cannot move {} of {} group placements to the daemon; first failure on {host_label}: {reason}",
+                            failures.len(),
+                            writes.len()
+                        );
+                        Some(match saved {
+                            Some(saved) => format!("{failed}\n{saved}"),
+                            None => failed,
+                        })
+                    }
                     None => saved,
                 }
             };

@@ -21,7 +21,7 @@ use crate::session::{SessionKey, SessionRow};
 use crate::sort_key;
 use crate::view::View;
 
-/// Version 2 adds `migrated_hosts`; a version-1 file reads as migrated for no host.
+/// Current format; version 1 has no `migrated_hosts`, so it reads as migrated for no host.
 const FORMAT_VERSION: u32 = 2;
 const OLDEST_FORMAT_VERSION: u32 = 1;
 const LAYOUT_FILE: &str = "layout.toml";
@@ -485,16 +485,22 @@ impl Layout {
     }
 
     /// The sessions a rename or delete of group `id` has to write: those whose
-    /// `companion.group` value names the group (ignoring case) and the ones
-    /// the group holds locally without a valid key, in the group's display
-    /// order and then the order of `rows`. Inbox and unknown groups have none.
+    /// `companion.group` value names the group (ignoring case) and the manual
+    /// local placements the group holds without a valid key, in the group's
+    /// display order and then the order of `rows`. Rule-placed sessions are
+    /// not members: rules never write the key. Inbox and unknown groups have none.
     pub fn group_members(&self, id: &str, rows: &[SessionRow]) -> Vec<SessionKey> {
         let Some(group) = self.groups.iter().find(|g| g.id == id && g.id != INBOX_ID) else {
             return Vec::new();
         };
         let wanted = match_key(&group.name);
-        let position: HashMap<SessionKey, usize> = self
-            .group_items(id)
+        let items = self.group_items(id);
+        let manual: HashSet<SessionKey> = items
+            .iter()
+            .filter(|item| item.manual)
+            .map(|item| item.key())
+            .collect();
+        let position: HashMap<SessionKey, usize> = items
             .iter()
             .enumerate()
             .map(|(index, item)| (item.key(), index))
@@ -503,7 +509,7 @@ impl Layout {
             .iter()
             .filter(|row| match &row.group {
                 Some(name) => match_key(name) == wanted,
-                None => position.contains_key(&row.key),
+                None => manual.contains(&row.key),
             })
             .collect();
         members.sort_by_key(|row| position.get(&row.key).copied().unwrap_or(usize::MAX));
@@ -1386,7 +1392,11 @@ impl LayoutStore {
         rows: &[SessionRow],
         name_max_bytes: usize,
     ) -> MigrationPlan {
-        self.layout.migration_plan(host, rows, name_max_bytes)
+        let mut plan = self.layout.migration_plan(host, rows, name_max_bytes);
+        // A session the daemon already refused is not asked again.
+        plan.writes
+            .retain(|(key, _)| !self.not_shared.contains(key));
+        plan
     }
 
     /// Hands a manually placed session back to the placement rules (see
@@ -2655,9 +2665,12 @@ order = "g"
             keyed("host-a", "local-only", None),
             keyed("host-a", "elsewhere", Some("Other")),
             keyed("host-a", "unplaced", None),
+            keyed("host-a", "by-rule", None),
         ];
         seed(&mut layout, &rows);
         layout.apply_group_values(&rows);
+        let by_rule = [rule("Later", |r| r.agent = Some("claude".into()))];
+        layout.apply_rules(&rows[5..], &by_rule);
         manual_in(&mut layout, &rows[2], &later);
         manual_in(&mut layout, &rows[3], &later);
 
