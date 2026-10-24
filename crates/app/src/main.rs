@@ -27,11 +27,11 @@ use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, DialogHost, GroupError, GroupPlacement,
     GroupSection, HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, LOCAL_HOST,
     LayoutConfig, LayoutStore, LiveHost, LiveUpdate, NEEDS_YOU_ID, OpenConfig, OpenKind,
-    OwnerState, PendingStore, Placement, PlacementRule, ProjectChip, ProjectSelection,
-    SessionFilter, SessionKey, SessionRow, StateChip, TraySummary, View, ViewConfig, WriteOutcome,
-    attach, clip_display, dialog_hosts, discover_records, filter_sections,
-    host_naming_this_machine, host_options, layout_path, name_from_input, open, plan_discovery,
-    project_chips, rename_session, run_live, set_route, state_chips, state_from_key, write_group,
+    OwnerState, PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey,
+    SessionRow, StateChip, TraySummary, View, ViewConfig, WriteOutcome, attach, clip_display,
+    dialog_hosts, discover_records, filter_sections, host_naming_this_machine, host_options,
+    layout_path, name_from_input, open, plan_discovery, project_chips, rename_session, run_live,
+    set_route, state_chips, state_from_key, write_group,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -67,7 +67,7 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 ),
                 None => Default::default(),
             };
-            let (owner_group, manual) = placed.get(&s.key).cloned().unwrap_or_default();
+            let (owner_group, manual, not_shared) = placed.get(&s.key).cloned().unwrap_or_default();
             // A group key is the record of the placement like a manual one.
             let manual = manual || s.group.is_some() || s.group_problem.is_some();
             let (project_id, project_label) = s
@@ -79,6 +79,7 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 project_label: project_label.into(),
                 owner_group: owner_group.into(),
                 manual,
+                not_shared,
                 name: s.display_name.into(),
                 agent: s.agent.into(),
                 state: s.state.into(),
@@ -110,8 +111,9 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
         .collect()
 }
 
-/// Each session's owner group id and whether the owner placed it by hand.
-type Placements = HashMap<SessionKey, (String, bool)>;
+/// Each session's owner group id, whether the owner placed it by hand, and
+/// whether its group is only a placement on this computer.
+type Placements = HashMap<SessionKey, (String, bool, bool)>;
 
 /// What the window shows of the layout: the sections of the selected view,
 /// each session's placement, and the owner groups in display order as
@@ -176,6 +178,12 @@ fn selected_project_id(state: &LayoutState) -> String {
 fn arrange(state: &LayoutState) -> Arranged {
     let started = Instant::now();
     let layout = state.store.layout();
+    let external: HashSet<&SessionKey> = state
+        .rows
+        .iter()
+        .filter(|row| row.external)
+        .map(|row| &row.key)
+        .collect();
     let sections = filter_sections(
         layout.present(&state.rows, state.title_max_chars),
         &state.filter,
@@ -205,7 +213,8 @@ fn arrange(state: &LayoutState) -> Arranged {
                     host: item.host.clone(),
                     session_id: item.session_id.clone(),
                 };
-                (key, (item.group.clone(), item.manual))
+                let not_shared = state.store.is_not_shared(&key) || external.contains(&key);
+                (key, (item.group.clone(), item.manual, not_shared))
             })
             .collect(),
         owner_groups: layout
@@ -591,33 +600,6 @@ fn spawn_layout_worker(
     sender
 }
 
-/// Moves sessions the new-session dialog recorded a group for into that group
-/// (as a manual placement, so rules leave them alone) once they are in the
-/// session list, and drops entries that expired.
-fn apply_pending(
-    store: &mut LayoutStore,
-    pending: &PendingStore,
-    present: &[SessionKey],
-    max_age: Duration,
-) {
-    let present: HashSet<SessionKey> = present.iter().cloned().collect();
-    let settled = match pending.take(&present, max_age) {
-        Ok(settled) => settled,
-        Err(err) => {
-            warn!(error = %err, "read the pending placements");
-            return;
-        }
-    };
-    for key in &settled.expired {
-        warn!(session = %key.session_id, "pending placement expired before the session appeared");
-    }
-    for (key, group) in settled.apply {
-        if let Err(err) = store.move_session(&key, &group, Placement::End) {
-            warn!(session = %key.session_id, group = %group, error = %err, "pending placement refused");
-        }
-    }
-}
-
 /// Everything a host's loop needs to publish an update to the window.
 struct Publisher {
     window: slint::Weak<AppWindow>,
@@ -628,7 +610,6 @@ struct Publisher {
     /// The daemon settings the migration writes use.
     daemon: DaemonConfig,
     migrations: Rc<RefCell<Migrations>>,
-    pending: Option<(PendingStore, Duration)>,
     layout: SharedLayout,
     hosts: Rc<RefCell<HostsView>>,
     /// The setup screen; absent when `companion.toml` is unusable.
@@ -901,10 +882,6 @@ impl Publisher {
                 if let LiveUpdate::Sessions(sessions) = &update {
                     let keys: Vec<SessionKey> = sessions.iter().map(|s| s.key.clone()).collect();
                     state.store.reconcile(&host.target, &keys);
-                    if let Some((pending, max_age)) = &self.pending {
-                        let all_keys: Vec<SessionKey> = all.iter().map(|s| s.key.clone()).collect();
-                        apply_pending(&mut state.store, pending, &all_keys, *max_age);
-                    }
                     state.store.apply_group_values(all);
                     state.store.apply_rules(all, &self.rules);
                     let title_max_chars = state.title_max_chars;
@@ -1088,7 +1065,6 @@ struct FollowSettings {
     idle_threshold: Duration,
     rules: Vec<PlacementRule>,
     group_name_max_bytes: usize,
-    pending: Option<(PendingStore, Duration)>,
     setup: Option<Arc<setup::Setup>>,
 }
 
@@ -1108,7 +1084,6 @@ fn follow_daemons(
         idle_threshold,
         rules,
         group_name_max_bytes,
-        pending,
         setup,
     } = settings;
     std::thread::spawn(move || {
@@ -1138,7 +1113,6 @@ fn follow_daemons(
             group_name_max_bytes,
             daemon: daemon.clone(),
             migrations: Rc::default(),
-            pending,
             layout,
             hosts: Rc::new(RefCell::new(HostsView::new(&hosts))),
             setup,
@@ -1630,13 +1604,6 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                 config_path,
                 settings: Ok(config.attach()),
             };
-            let pending = match PendingStore::open() {
-                Ok(store) => Some((store, config.new_session.pending_placement_max_age())),
-                Err(err) => {
-                    error!(error = %err, "locate the pending placements");
-                    None
-                }
-            };
             let setup = setup::Setup::new(&window, &config);
             follow_daemons(
                 window.as_weak(),
@@ -1648,7 +1615,6 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                     idle_threshold: config.tray.idle_threshold(),
                     rules: config.layout.rules,
                     group_name_max_bytes: config.layout.group_name_max_bytes,
-                    pending,
                     setup: Some(setup),
                 },
                 layout.clone(),

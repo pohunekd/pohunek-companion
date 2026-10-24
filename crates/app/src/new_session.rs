@@ -5,14 +5,15 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use pohunek_companion_core::{
     Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, DialogHost,
-    DiscoveryPlan, FormError, Generation, HostConfig, LOCAL_HOST, NewSessionConfig, NewSessionForm,
-    PendingStore, ProjectChoice, Recipe, SessionKey, SessionNewParams, attach, build_params,
-    create_session, dialog_hosts, discover_dialog_hosts, fuzzy_matches, load_choices_staged,
-    load_recipe, load_templates, register_dialog_routes, submit_blocker,
+    DiscoveryPlan, FormError, GROUP_KEY, Generation, HostConfig, LOCAL_HOST, NewSessionConfig,
+    NewSessionForm, ProjectChoice, Recipe, SessionKey, SessionNewParams, attach, build_params,
+    create_session, dialog_hosts, discover_dialog_hosts, fuzzy_matches, layout_path,
+    load_choices_staged, load_recipe, load_templates, new_session_group_value,
+    register_dialog_routes, submit_blocker,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -33,7 +34,8 @@ pub struct Args {
     /// Project id to preselect.
     #[arg(long, value_name = "ID", allow_hyphen_values = true, value_parser = crate::cli::non_empty)]
     pub project: Option<String>,
-    /// Id of the My groups group the created session is placed in.
+    /// Id of the My groups group the created session starts in: its name goes
+    /// into the session's `companion.group` metadata (none for Inbox).
     #[arg(long, value_name = "ID", allow_hyphen_values = true, value_parser = crate::cli::non_empty)]
     pub group: Option<String>,
     /// The remote hosts the sidebar already resolved, with their routes. The
@@ -628,27 +630,6 @@ pub(crate) fn attach_created(after: &AttachAfter, host: &str, session: &str) -> 
     })
 }
 
-/// Where the created session goes in My groups.
-#[derive(Clone)]
-struct PlaceAfter {
-    group: String,
-    max_age: Duration,
-}
-
-/// Records the placement for the sidebar to apply; the error text reports
-/// that the session already exists.
-fn record_placement(place: &PlaceAfter, host: &str, session: &str) -> Result<(), String> {
-    let key = SessionKey {
-        host: host.to_owned(),
-        session_id: session.to_owned(),
-    };
-    PendingStore::open()
-        .and_then(|store| store.record(&key, &place.group, place.max_age))
-        .map_err(|err| {
-            format!("Session {session} was created, but its group could not be recorded: {err}")
-        })
-}
-
 fn submit_in_background(
     window: slint::Weak<NewSessionWindow>,
     templates: Templates,
@@ -656,7 +637,6 @@ fn submit_in_background(
     config: NewSessionConfig,
     params: SessionNewParams,
     attach_after: Option<AttachAfter>,
-    place_after: Option<PlaceAfter>,
 ) {
     std::thread::spawn(move || {
         let outcome = match block_on(create_session(&host, &templates.daemon, &config, params)) {
@@ -669,13 +649,6 @@ fn submit_in_background(
             Ok(id) => info!(host = %host, session = %id, "create succeeded"),
             Err(err) => warn!(host = %host, code = err.code(), "create failed"),
         }
-        let placed = match (&outcome, &place_after) {
-            (Ok(id), Some(place)) => record_placement(place, &host, id),
-            _ => Ok(()),
-        };
-        if let Err(message) = &placed {
-            warn!(error = %message, "record placement after create failed");
-        }
         let attached = match (&outcome, &attach_after) {
             (Ok(id), Some(after)) => attach_created(after, &host, id),
             _ => Ok(()),
@@ -683,8 +656,6 @@ fn submit_in_background(
         if let Err(message) = &attached {
             warn!(error = %message, "attach after create failed");
         }
-        // The first failure after a successful create is the one shown.
-        let attached = placed.and(attached);
         let delivered = window.upgrade_in_event_loop(move |window| match (outcome, attached) {
             (Ok(_), Ok(())) => {
                 if let Err(err) = window.hide() {
@@ -988,7 +959,18 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                     Templates::activity(&window),
                     &config.new_session,
                 ) {
-                    Ok(params) => {
+                    Ok(mut params) => {
+                        if let Some(name) = group.as_deref().and_then(|id| {
+                            layout_path().ok().and_then(|path| {
+                                new_session_group_value(
+                                    &path,
+                                    id,
+                                    config.layout.group_name_max_bytes,
+                                )
+                            })
+                        }) {
+                            params.metadata.insert(GROUP_KEY.to_owned(), name);
+                        }
                         info!(agent = %params.agent, "create requested");
                         window.set_error("".into());
                         window.set_busy(true);
@@ -997,10 +979,6 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                             settings: config.attach(),
                             config_path: config_path.clone(),
                         });
-                        let place_after = group.clone().map(|group| PlaceAfter {
-                            group,
-                            max_age: config.new_session.pending_placement_max_age(),
-                        });
                         submit_in_background(
                             weak.clone(),
                             templates.clone(),
@@ -1008,7 +986,6 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                             config.new_session.clone(),
                             params,
                             attach_after,
-                            place_after,
                         );
                     }
                     Err(err) => window.set_error(err.to_string().into()),
