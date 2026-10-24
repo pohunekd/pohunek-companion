@@ -960,14 +960,16 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                     &config.new_session,
                 ) {
                     Ok(mut params) => {
-                        if let Some(name) = group.as_deref().and_then(|id| {
-                            layout_path().ok().and_then(|path| {
-                                new_session_group_value(
-                                    &path,
-                                    id,
-                                    config.layout.group_name_max_bytes,
-                                )
-                            })
+                        if let Some(name) = group.as_deref().and_then(|id| match layout_path() {
+                            Ok(path) => new_session_group_value(
+                                &path,
+                                id,
+                                config.layout.group_name_max_bytes,
+                            ),
+                            Err(err) => {
+                                warn!(error = %err, "layout path unknown; creating the session without a group");
+                                None
+                            }
                         }) {
                             params.metadata.insert(GROUP_KEY.to_owned(), name);
                         }

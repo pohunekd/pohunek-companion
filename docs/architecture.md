@@ -268,8 +268,7 @@ new-session key (#219), and the known limitation.
   details a "Group: only on this computer" line.
 - **New sessions and forks.** A session created from a group other than Inbox
   gets `companion.group` in the `session.new` metadata; a fork copies its
-  source's metadata and so lands in its parent's group. There is no
-  pending-placement file.
+  source's metadata and so lands in its parent's group.
 - **Known limitation.** At v0.35.2, `session.set_metadata` is persisted only
   for sessions with a native reference (zajca/pohunek#1556). A group written
   to a plain shell, or to an agent session before it reports its native id,
