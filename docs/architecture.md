@@ -220,8 +220,8 @@ marker are described by #218 and #219 when they land.
   instead of a stale local group. Rules never write the key, so two desktops
   with different rules never fight over it.
 - **Learned groups.** Each group has an origin, `created` (by the owner on this
-  client, by a rule, or by the migration) or `learned`, and only a learned one
-  is written to the file. A valid key naming a group this client does not have
+  client or by a rule) or `learned`, and only a learned one is written to the
+  file. A valid key naming a group this client does not have
   appends a learned group after the last group. A learned group with no member
   is dropped once every host is seeded; a created group stays until the owner
   deletes it, even when empty. When another client renames a group, this

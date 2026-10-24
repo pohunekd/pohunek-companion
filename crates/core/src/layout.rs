@@ -95,7 +95,7 @@ pub struct Group {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GroupOrigin {
-    /// The owner on this client, a placement rule, or the migration: the
+    /// The owner on this client or a placement rule: the
     /// group stays until the owner deletes it, even when empty.
     #[default]
     Created,
