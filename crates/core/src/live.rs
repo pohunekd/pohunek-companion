@@ -1,6 +1,7 @@
 //! Keeps a [`SessionStore`] current against the local daemon: subscribe,
 //! seed, stream events, and reconnect with exponential backoff.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use pohunek_client::Subscription;
@@ -14,9 +15,10 @@ use crate::config::{DaemonConfig, HostConfig};
 use crate::connect::{fetch_seed, socket_for_host, subscribe};
 use crate::discovery::DiscoveredHost;
 use crate::error::CoreError;
+use crate::group_key::GroupNameProblem;
 use crate::model::{Applied, SessionStore};
 use crate::routes::set_route;
-use crate::session::SessionRow;
+use crate::session::{SessionKey, SessionRow};
 use pohunek_client::LOCAL_HOST;
 
 /// What the sidebar should show next.
@@ -95,6 +97,7 @@ pub async fn run_live(
     host: &LiveHost,
     config: &DaemonConfig,
     idle_threshold: Duration,
+    group_name_max_bytes: usize,
     mut publish: impl FnMut(LiveUpdate),
 ) {
     let mut cycle: u64 = 0;
@@ -109,6 +112,7 @@ pub async fn run_live(
             host,
             config,
             idle_threshold,
+            group_name_max_bytes,
             &mut store,
             &mut established_at,
             &mut publish,
@@ -161,11 +165,22 @@ async fn run_cycle(
     host: &LiveHost,
     config: &DaemonConfig,
     idle_threshold: Duration,
+    group_name_max_bytes: usize,
     store: &mut SessionStore,
     established_at: &mut Option<Instant>,
     publish: &mut impl FnMut(LiveUpdate),
 ) -> CoreError {
-    match cycle_inner(host, config, idle_threshold, store, established_at, publish).await {
+    match cycle_inner(
+        host,
+        config,
+        idle_threshold,
+        group_name_max_bytes,
+        store,
+        established_at,
+        publish,
+    )
+    .await
+    {
         Ok(never) => match never {},
         Err(err) => err,
     }
@@ -175,6 +190,7 @@ async fn cycle_inner(
     host: &LiveHost,
     config: &DaemonConfig,
     idle_threshold: Duration,
+    group_name_max_bytes: usize,
     store: &mut SessionStore,
     established_at: &mut Option<Instant>,
     publish: &mut impl FnMut(LiveUpdate),
@@ -197,7 +213,8 @@ async fn cycle_inner(
     }
     *established_at = Some(Instant::now());
     info!(host = %host.target, "daemon connection established");
-    let mut shown = rows(host, store, idle_threshold);
+    let mut shown = rows(host, store, idle_threshold, group_name_max_bytes);
+    log_rejected_group_values(&host.target, &[], &shown);
     publish(LiveUpdate::Connected);
     publish(LiveUpdate::Sessions(shown.clone()));
 
@@ -224,8 +241,9 @@ async fn cycle_inner(
             () = idle_deadline_reached(idle_deadline) => true,
         };
         if applied {
-            let current = rows(host, store, idle_threshold);
+            let current = rows(host, store, idle_threshold, group_name_max_bytes);
             if current != shown {
+                log_rejected_group_values(&host.target, &shown, &current);
                 shown = current;
                 publish(LiveUpdate::Sessions(shown.clone()));
             }
@@ -295,7 +313,34 @@ async fn idle_deadline_reached(deadline: Option<Instant>) {
     }
 }
 
-fn rows(host: &LiveHost, store: &SessionStore, idle_threshold: Duration) -> Vec<SessionRow> {
+/// Warns once per session and reason about a `companion.group` value that is
+/// treated as absent. The value itself is never logged.
+fn log_rejected_group_values(host: &str, before: &[SessionRow], after: &[SessionRow]) {
+    let previous: HashMap<&SessionKey, GroupNameProblem> = before
+        .iter()
+        .filter_map(|row| Some((&row.key, row.group_problem?)))
+        .collect();
+    for row in after {
+        let Some(problem) = row.group_problem else {
+            continue;
+        };
+        if previous.get(&row.key) != Some(&problem) {
+            warn!(
+                host,
+                session = %row.key.session_id,
+                reason = problem.code(),
+                "companion.group value ignored"
+            );
+        }
+    }
+}
+
+fn rows(
+    host: &LiveHost,
+    store: &SessionStore,
+    idle_threshold: Duration,
+    group_name_max_bytes: usize,
+) -> Vec<SessionRow> {
     let now = Instant::now();
     let mut rows: Vec<SessionRow> = store
         .sessions_with_state(now, idle_threshold)
@@ -312,6 +357,7 @@ fn rows(host: &LiveHost, store: &SessionStore, idle_threshold: Duration) -> Vec<
                 owner_state,
                 waiting_since,
                 known_label,
+                group_name_max_bytes,
             )
         })
         .collect();

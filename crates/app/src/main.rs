@@ -655,6 +655,8 @@ struct Publisher {
     window: slint::Weak<AppWindow>,
     tray: slint::Weak<Tray>,
     rules: Vec<PlacementRule>,
+    /// `layout.group_name_max_bytes`: bounds a usable `companion.group` value.
+    group_name_max_bytes: usize,
     pending: Option<(PendingStore, Duration)>,
     layout: SharedLayout,
     hosts: Rc<RefCell<HostsView>>,
@@ -912,9 +914,13 @@ impl Publisher {
                         let all_keys: Vec<SessionKey> = all.iter().map(|s| s.key.clone()).collect();
                         apply_pending(&mut state.store, pending, &all_keys, *max_age);
                     }
+                    state.store.apply_group_values(all);
                     state.store.apply_rules(all, &self.rules);
                     let title_max_chars = state.title_max_chars;
                     if all_seeded {
+                        // After the rules: a session whose key went away is
+                        // placed by them first, so its learned group is empty.
+                        state.store.drop_empty_learned_groups();
                         state.store.prune_collapsed_sections(all, title_max_chars);
                     }
                 }
@@ -987,6 +993,7 @@ struct FollowSettings {
     remotes: Vec<HostConfig>,
     idle_threshold: Duration,
     rules: Vec<PlacementRule>,
+    group_name_max_bytes: usize,
     pending: Option<(PendingStore, Duration)>,
     setup: Option<Arc<setup::Setup>>,
 }
@@ -1006,6 +1013,7 @@ fn follow_daemons(
         remotes,
         idle_threshold,
         rules,
+        group_name_max_bytes,
         pending,
         setup,
     } = settings;
@@ -1033,6 +1041,7 @@ fn follow_daemons(
             window,
             tray,
             rules,
+            group_name_max_bytes,
             pending,
             layout,
             hosts: Rc::new(RefCell::new(HostsView::new(&hosts))),
@@ -1069,7 +1078,8 @@ fn follow_daemons(
                                 return;
                             }
                         }
-                        run_live(&host, &daemon, idle_threshold, |update| {
+                        let max_bytes = publisher.group_name_max_bytes;
+                        run_live(&host, &daemon, idle_threshold, max_bytes, |update| {
                             publisher.publish(&host, update);
                         })
                         .await;
@@ -1156,7 +1166,8 @@ async fn follow_discovered(
                         let (host, daemon, publisher) =
                             (host.clone(), daemon.clone(), publisher.clone());
                         tokio::task::spawn_local(async move {
-                            run_live(&host, &daemon, idle_threshold, |update| {
+                            let max_bytes = publisher.group_name_max_bytes;
+                            run_live(&host, &daemon, idle_threshold, max_bytes, |update| {
                                 publisher.publish(&host, update);
                             })
                             .await;
@@ -1536,6 +1547,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
                     remotes: config.hosts,
                     idle_threshold: config.tray.idle_threshold(),
                     rules: config.layout.rules,
+                    group_name_max_bytes: config.layout.group_name_max_bytes,
                     pending,
                     setup: Some(setup),
                 },

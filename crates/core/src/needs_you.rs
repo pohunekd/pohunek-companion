@@ -78,6 +78,8 @@ mod tests {
             host_label: None,
             host_unreachable: false,
             details: Default::default(),
+            group: None,
+            group_problem: None,
         }
     }
 

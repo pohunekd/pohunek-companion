@@ -36,6 +36,12 @@ pub enum ConfigError {
     Parse { path: PathBuf, message: String },
     #[error("invalid {path}: `{key}` must be greater than zero")]
     ZeroValue { path: PathBuf, key: &'static str },
+    #[error("invalid {path}: `{key}` must be at most {max}")]
+    TooLarge {
+        path: PathBuf,
+        key: &'static str,
+        max: usize,
+    },
     #[error(
         "invalid {path}: `attach_command` and `attach_terminal` are mutually exclusive; set only one"
     )]
@@ -205,14 +211,32 @@ impl HostConfig {
 }
 
 /// `[layout]` table.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LayoutConfig {
     /// `[[layout.rules]]`: ordered placement rules. The first rule whose
     /// conditions all match a session selects its group; a session the owner
     /// dragged is never moved by a rule. Optional; default none.
     pub rules: Vec<PlacementRule>,
+    /// `layout.group_name_max_bytes`: longest group name in UTF-8 bytes, for
+    /// the `companion.group` session metadata value the companion writes and
+    /// accepts, greater than zero and at most 4096 (the daemon's value
+    /// limit). Optional; default 64.
+    pub group_name_max_bytes: usize,
 }
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            rules: Vec::new(),
+            group_name_max_bytes: 64,
+        }
+    }
+}
+
+/// Largest `layout.group_name_max_bytes`: the daemon's limit on a metadata
+/// value.
+const GROUP_NAME_MAX_BYTES_LIMIT: usize = 4096;
 
 /// One `[[layout.rules]]` entry: a target group and the conditions a session
 /// must all meet, each an exact string comparison. At least one condition is
@@ -651,6 +675,10 @@ impl Config {
                 u64::try_from(self.view.section_title_max_chars).unwrap_or(u64::MAX),
             ),
             (
+                "layout.group_name_max_bytes",
+                u64::try_from(self.layout.group_name_max_bytes).unwrap_or(u64::MAX),
+            ),
+            (
                 "daemon.reconnect_initial_ms",
                 self.daemon.reconnect_initial_ms,
             ),
@@ -680,6 +708,13 @@ impl Config {
             return Err(ConfigError::ZeroValue {
                 path: path.to_owned(),
                 key,
+            });
+        }
+        if self.layout.group_name_max_bytes > GROUP_NAME_MAX_BYTES_LIMIT {
+            return Err(ConfigError::TooLarge {
+                path: path.to_owned(),
+                key: "layout.group_name_max_bytes",
+                max: GROUP_NAME_MAX_BYTES_LIMIT,
             });
         }
         if let Err(problem) = crate::install::check_base_url(&self.setup.release_base_url) {
@@ -937,6 +972,19 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(msg.contains("daemon.request_timeout_ms"), "{msg}");
+    }
+
+    #[test]
+    fn group_name_max_bytes_is_read_and_bounded() {
+        assert_eq!(parse("").unwrap().layout.group_name_max_bytes, 64);
+        let config = parse("[layout]\ngroup_name_max_bytes = 4096\n").unwrap();
+        assert_eq!(config.layout.group_name_max_bytes, 4096);
+        for value in ["0", "5000"] {
+            let msg = parse(&format!("[layout]\ngroup_name_max_bytes = {value}\n"))
+                .unwrap_err()
+                .to_string();
+            assert!(msg.contains("layout.group_name_max_bytes"), "{msg}");
+        }
     }
 
     #[test]
