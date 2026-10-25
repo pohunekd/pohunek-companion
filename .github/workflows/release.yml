@@ -398,17 +398,33 @@ jobs:
     timeout-minutes: 10
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      EVENT: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Toolchain
         run: rustup show active-toolchain
+      - name: Build the changelog tool
+        run: cargo build --quiet --locked -p pohunek-companion-changelog
+      # A tag must publish a committed section, so a missing section or unfolded
+      # fragments fail here. A dry run of a version without a section folds the
+      # fragments in a scratch copy and shows the body the next release would
+      # publish; the checkout itself is never changed.
       - name: Render the version section
         run: |
           set -euo pipefail
+          tool="$GITHUB_WORKSPACE/target/debug/changelog"
           mkdir -p "$RUNNER_TEMP/body"
-          scripts/changelog notes "$VERSION" > "$RUNNER_TEMP/body/changelog.md"
+          if [ "$EVENT" = push ] || grep -qE "^## ${VERSION//./\\.} - " CHANGELOG.md; then
+            "$tool" notes "$VERSION" > "$RUNNER_TEMP/body/changelog.md"
+          else
+            echo "::notice::dry run: folding the unreleased fragments of $VERSION in a scratch copy"
+            scratch="$RUNNER_TEMP/dry-run"
+            mkdir -p "$scratch"
+            cp -R CHANGELOG.md changelog.toml changelog.d "$scratch/"
+            (cd "$scratch" && "$tool" fold "$VERSION" >&2 && "$tool" notes "$VERSION") > "$RUNNER_TEMP/body/changelog.md"
+          fi
       # The changelog block comes first; the release's own text follows it after one blank line.
       - name: Compose the release body
         run: |
