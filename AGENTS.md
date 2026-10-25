@@ -30,6 +30,8 @@ Read a guide when its trigger applies.
 - **Any code change:** [.agents/instructions/coding.md](.agents/instructions/coding.md)
   for Rust, Slint, the Pohunek protocol boundary, configuration, security, and
   comment rules.
+- **Any user-visible change:** [.agents/instructions/changelog.md](.agents/instructions/changelog.md)
+  for the changelog fragment in `changelog.d/` and when `no-changelog` applies.
 - **Before any commit or PR:** [.agents/instructions/verification.md](.agents/instructions/verification.md)
   for the gate set, the testing policy, CI, and evidence.
 - **Architecture or product decisions:** [docs/architecture.md](docs/architecture.md)
@@ -53,6 +55,7 @@ links to them. Edit only `.agents/skills/`.
 
 ```bash
 scripts/gates                 # fmt, clippy, tests: the same set CI runs
+scripts/changelog check       # validate the changelog fragments (CI runs it too)
 cargo run -p pohunek-companion
 scripts/ui-agent start        # headless app + isolated daemon + Slint MCP: screenshots, element tree, clicks
 ```

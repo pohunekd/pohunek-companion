@@ -9,6 +9,11 @@ issue number anywhere else in the body, even negated: GitHub closes it. -->
 <!-- The change, the reason, and any autonomous decision taken. Before/after
 narrative belongs here, not in code comments. -->
 
+## Changelog
+
+<!-- A fragment under changelog.d/ (see .agents/instructions/changelog.md), or the
+no-changelog label with the reason. -->
+
 ## Definition of done
 
 | Item | Status | Evidence |
