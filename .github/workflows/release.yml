@@ -19,8 +19,12 @@ name: Release
 #                  signature and Info.plist and runs the packaged binary.
 #   inventory      checks that both archives and both checksums are present
 #                  and match; uploads the inventory (every event).
+#   body           read-only: folds nothing, checks that the tagged commit's
+#                  CHANGELOG.md has the version section and no fragments are
+#                  left, and composes the release body. Uploads it (every event).
 #   attest         only job with `id-token`/`attestations: write`; tag pushes only.
-#   publish        only job with `contents: write`; tag pushes only.
+#   publish        only job with `contents: write`; tag pushes only. It creates the
+#                  draft with the body from `body` as data and runs no code from it.
 #
 # The macOS archive is ad-hoc signed and not notarized; no job uses a signing
 # credential. Provenance of both archives comes from `attest`.
@@ -44,6 +48,11 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "scripts/release-*"
+      - "scripts/changelog"
+      - "changelog.toml"
+      - "CHANGELOG.md"
+      - "changelog.d/**"
+      - "crates/changelog/**"
       - "packaging/macos/**"
       - "packaging/linux/**"
       - "crates/app/src/cli.rs"
@@ -381,6 +390,39 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Read-only: the changelog tool runs here, its output is data for publish.
+  body:
+    name: Build the release body
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup show active-toolchain
+      - name: Render the version section
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/body"
+          scripts/changelog notes "$VERSION" > "$RUNNER_TEMP/body/changelog.md"
+      # The changelog block comes first; the release's own text follows it after one blank line.
+      - name: Compose the release body
+        run: |
+          set -euo pipefail
+          existing="Pohunek Companion ${VERSION} for x86_64 Linux (glibc) and Apple Silicon macOS (ad-hoc signed, not notarized). Verify with \`sha256sum -c\` and \`gh attestation verify <archive> --repo ${GITHUB_REPOSITORY}\`."
+          { cat "$RUNNER_TEMP/body/changelog.md"; printf '\n%s\n' "$existing"; } > "$RUNNER_TEMP/body/release-body.md"
+          cat "$RUNNER_TEMP/body/release-body.md"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: changelog-body
+          path: ${{ runner.temp }}/body/release-body.md
+          if-no-files-found: error
+          retention-days: 14
+
   # Checks out nothing: no repository code runs while the OIDC token exists.
   attest:
     name: Attest the release assets
@@ -410,7 +452,7 @@ jobs:
   # digests against the local files, then publishes.
   publish:
     name: Publish the release
-    needs: [prepare, build, inventory, attest]
+    needs: [prepare, build, inventory, body, attest]
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -428,6 +470,10 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: changelog-body
+          path: ${{ runner.temp }}/changelog-body
       - name: Check the asset set and the checksums
         run: scripts/release-inventory "$RUNNER_TEMP/release" "$VERSION"
       - name: Create the draft and upload the assets
@@ -442,9 +488,8 @@ jobs:
             exit 1
           fi
           cd "$RUNNER_TEMP/release"
-          notes="Pohunek Companion ${VERSION} for x86_64 Linux (glibc) and Apple Silicon macOS (ad-hoc signed, not notarized). Verify with \`sha256sum -c\` and \`gh attestation verify <archive> --repo ${GITHUB_REPOSITORY}\`."
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
-            --title "$TAG" --notes "$notes" ./*
+            --title "$TAG" --notes-file "$RUNNER_TEMP/changelog-body/release-body.md" ./*
       - name: Verify the draft's assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -457,6 +502,15 @@ jobs:
             echo "$f $(stat -c %s "$f") sha256:$(sha256sum "$f" | cut -d' ' -f1)"
           done | LC_ALL=C sort > "$RUNNER_TEMP/local.txt"
           diff "$RUNNER_TEMP/local.txt" "$RUNNER_TEMP/remote.txt"
+      - name: Verify the draft's body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # jq -j writes the body without the newline that gh's --jq adds.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body > "$RUNNER_TEMP/remote.json"
+          jq -j .body "$RUNNER_TEMP/remote.json" > "$RUNNER_TEMP/remote-body.md"
+          cmp "$RUNNER_TEMP/changelog-body/release-body.md" "$RUNNER_TEMP/remote-body.md"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}

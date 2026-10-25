@@ -250,6 +250,9 @@ checkout.
 
 - One Linux job runs the gate set with `Swatinem/rust-cache`. Only `main`
   writes the cache; PRs restore it, so a PR builds only its own changes.
+- A `changelog` job on pull requests validates every changelog fragment and
+  requires one unless the pull request carries `no-changelog`; see
+  [changelog.md](changelog.md).
 - A macOS job runs clippy and tests on every push to `main`, on manual
   dispatch, and on PRs that touch platform-sensitive paths (see the `changes`
   job filter). Add a path there when a new file holds platform-specific code.

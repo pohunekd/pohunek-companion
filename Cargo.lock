@@ -3429,6 +3429,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pohunek-companion-changelog"
+version = "0.1.6"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "pohunek-companion-core"
 version = "0.1.6"
 dependencies = [

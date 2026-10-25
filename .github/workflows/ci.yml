@@ -2,15 +2,17 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
 
 # A newer push to the same PR cancels its older run; main runs are never
-# cancelled so every merge commit gets a result.
+# cancelled so every merge commit gets a result. A label change re-runs the
+# same head and must not cancel the run that is still producing its results.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action != 'labeled' && github.event.action != 'unlabeled' }}
 
 permissions:
   contents: read
@@ -74,6 +76,38 @@ jobs:
       - name: test
         run: cargo test --workspace --locked
 
+  # Validates every changelog fragment and requires one unless the pull request
+  # carries `no-changelog`. Needs the full history for the base commit.
+  changelog:
+    name: changelog
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Toolchain
+        run: rustup show active-toolchain
+      - name: Validate the fragments
+        run: scripts/changelog check
+      - name: Require a fragment
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          NO_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+        run: |
+          set -euo pipefail
+          if [ "$NO_CHANGELOG" = "true" ]; then
+            echo "Labelled no-changelog: no fragment required."
+            exit 0
+          fi
+          added="$(git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- 'changelog.d/*.md')"
+          if [ -z "$added" ]; then
+            echo "::error::add a changelog fragment under changelog.d/ or label the pull request no-changelog"
+            exit 1
+          fi
+          echo "$added"
+
   macos:
     name: macos
     needs: changes
@@ -98,7 +132,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, linux, macos]
+    needs: [changes, linux, changelog, macos]
     if: always()
     runs-on: ubuntu-24.04
     steps:
