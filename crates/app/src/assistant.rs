@@ -57,7 +57,9 @@ pub struct Args {
         action = clap::ArgAction::Set,
         value_parser = crate::cli::dialog_hosts_json
     )]
-    pub known_hosts: Option<Vec<DialogHost>>,
+    // The full path keeps clap from reading `Vec` as a repeated flag of
+    // `DialogHost`: the parser yields the whole list from one JSON word.
+    pub known_hosts: Option<std::vec::Vec<DialogHost>>,
 }
 
 /// Shows `text` with its first line as the message and the rest as the hint.

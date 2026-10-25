@@ -100,3 +100,39 @@ impl TypedValueParser for IntentParser {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use pohunek_companion_core::encode_dialog_hosts;
+
+    use super::*;
+
+    fn hosts() -> Vec<DialogHost> {
+        vec![DialogHost {
+            target: "netbird:peer~a".to_owned(),
+            label: "a".to_owned(),
+            unavailable: None,
+            route: Some("netbird:peer~a@1".to_owned()),
+        }]
+    }
+
+    fn parse(subcommand: &str) -> Command {
+        let json = encode_dialog_hosts(&hosts()).expect("encode hosts");
+        Cli::try_parse_from(["pohunek-companion", subcommand, "--known-hosts", &json])
+            .expect("parse the dialog command line")
+            .command
+            .expect("a subcommand")
+    }
+
+    #[test]
+    fn dialogs_read_known_hosts_from_one_json_word() {
+        match parse(NEW_SESSION_COMMAND) {
+            Command::NewSession(args) => assert_eq!(args.known_hosts, Some(hosts())),
+            other => panic!("unexpected command {other:?}"),
+        }
+        match parse(ASSISTANT_COMMAND) {
+            Command::Assistant(args) => assert_eq!(args.known_hosts, Some(hosts())),
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+}
