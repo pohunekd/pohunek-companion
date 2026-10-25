@@ -101,7 +101,9 @@ jobs:
             echo "Labelled no-changelog: no fragment required."
             exit 0
           fi
-          added="$(git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- 'changelog.d/*.md')"
+          # Only names that the contract accepts as fragments count; a hidden or misnamed file does not.
+          added="$(git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- 'changelog.d/*.md' \
+            | grep -E '^changelog\.d/[1-9][0-9]*-[a-z0-9]+(-[a-z0-9]+)*\.md$' || true)"
           if [ -z "$added" ]; then
             echo "::error::add a changelog fragment under changelog.d/ or label the pull request no-changelog"
             exit 1
