@@ -371,7 +371,7 @@ fn valid_repository(value: &str) -> bool {
         .is_some_and(|(owner, name)| valid_part(owner) && valid_part(name))
 }
 
-/// `X.Y.Z` or `X.Y.Z-pre` with dot-separated identifiers.
+/// `X.Y.Z` or `X.Y.Z-pre.N` with a decimal N.
 pub fn validate_version(version: &str) -> Result<(), Error> {
     let (core, pre) = match version.split_once('-') {
         Some((core, pre)) => (core, Some(pre)),
@@ -385,14 +385,14 @@ pub fn validate_version(version: &str) -> Result<(), Error> {
                 .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
     };
     let pre_ok = pre.is_none_or(|pre| {
-        pre.split('.')
-            .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        pre.strip_prefix("pre.")
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
     });
     if core_ok && pre_ok {
         Ok(())
     } else {
         Err(Error::Argument(format!(
-            "version must be X.Y.Z or X.Y.Z-pre: {version}"
+            "version must be X.Y.Z or X.Y.Z-pre.N: {version}"
         )))
     }
 }
@@ -692,6 +692,17 @@ mod tests {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         // 2000-02-29 is day 11016 after the epoch.
         assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+    }
+
+    #[test]
+    fn versions_are_release_or_pre_release() {
+        assert!(validate_version("0.37.0").is_ok());
+        assert!(validate_version("0.1.0-pre.3").is_ok());
+        assert!(validate_version("0.1.0-rc1").is_err());
+        assert!(validate_version("0.1.0-rc.1").is_err());
+        assert!(validate_version("0.1.0-pre").is_err());
+        assert!(validate_version("0.1").is_err());
+        assert!(validate_version("v0.1.0").is_err());
     }
 
     #[test]
