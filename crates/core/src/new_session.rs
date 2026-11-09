@@ -315,9 +315,14 @@ pub fn build_params(
         repo: None,
         branch,
         base_branch,
+        branch_source: None,
+        on_diverged: None,
         input: trimmed_or_none(&form.prompt),
         extended_input_ready_wait: None,
+        input_ack_timeout_ms: None,
+        secret_env: Default::default(),
         metadata: BTreeMap::new(),
+        client_request_id: None,
     })
 }
 
