@@ -5,9 +5,7 @@
 
 use std::path::PathBuf;
 
-use pohunek_assistant::launch::{
-    AssistantPaths, LaunchParams, prepare_with_options, start_prepared_with_options,
-};
+use pohunek_assistant::launch::{LaunchParams, prepare_with_options, start_prepared_with_options};
 use pohunek_assistant::{AssistantError, ConnectionOptions, HostConfig as AssistantHost};
 use pohunek_client::protocol::ProtocolError;
 use pohunek_client::{ClientError, LOCAL_HOST, OriginSource, is_local_host};
@@ -93,11 +91,13 @@ fn launch_params(form: &AssistantForm, config: &NewSessionConfig) -> LaunchParam
         repo: None,
         branch: None,
         base_branch: None,
+        branch_source: None,
+        on_diverged: None,
         cols: config.cols,
         rows: config.rows,
         no_snapshot: false,
-        degraded: false,
         auto_started_daemon: false,
+        request_id: None,
     }
 }
 
@@ -153,14 +153,13 @@ pub async fn launch_assistant(
     } else {
         AssistantHost::remote(host, route_for(host), PathBuf::new())
     };
-    let paths = AssistantPaths::resolve().map_err(prepare_failure)?;
     let options = ConnectionOptions {
         connect_timeout: daemon.connect_timeout(),
         request_timeout: Some(config.create_timeout()),
         origin_source: OriginSource::Omitted,
         ..ConnectionOptions::default()
     };
-    let prepared = prepare_with_options(&target, &paths, launch_params(form, config), options)
+    let prepared = prepare_with_options(&target, launch_params(form, config), options)
         .await
         .map_err(|err| {
             let failure = prepare_failure(err);

@@ -320,6 +320,8 @@ mod tests {
             port: 18722,
             overlay: "netbird".to_owned(),
             peer_id: Some(format!("key-{name}")),
+            local: false,
+            reason: None,
             class,
         }
     }
