@@ -3460,7 +3460,7 @@ dependencies = [
 
 [[package]]
 name = "pohunek-companion"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3475,7 +3475,7 @@ dependencies = [
 
 [[package]]
 name = "pohunek-companion-changelog"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -3484,7 +3484,7 @@ dependencies = [
 
 [[package]]
 name = "pohunek-companion-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "flate2",
  "pohunek-assistant",
