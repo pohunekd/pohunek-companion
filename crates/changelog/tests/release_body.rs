@@ -31,9 +31,11 @@ fn committed_version(dir: &Path) -> String {
     let text = fs::read_to_string(dir.join("CHANGELOG.md")).expect("read CHANGELOG.md");
     let heading = text
         .lines()
-        .find_map(|line| line.strip_prefix("## "))
-        .expect("a version section");
-    heading.split(' ').next().expect("version").to_string()
+        .filter_map(|line| line.strip_prefix("## "))
+        .filter_map(|heading| heading.split(' ').next())
+        .find(|version| version.split('.').count() == 3 && !version.contains('-'))
+        .expect("an X.Y.Z version section");
+    heading.to_string()
 }
 
 fn release_body(dir: &Path, version: &str, mode: &str) -> Output {
@@ -61,6 +63,14 @@ fn dry_run_with_a_section_and_a_fragment_previews_the_next_patch() {
         String::from_utf8_lossy(&output.stderr)
     );
     let body = stdout(&output);
+    assert!(
+        body.starts_with("<!-- pohunek-changelog:start -->"),
+        "{body}"
+    );
+    assert!(
+        body.trim_end().ends_with("<!-- pohunek-changelog:end -->"),
+        "{body}"
+    );
     assert!(body.contains("Something users hit is fixed."), "{body}");
     assert!(
         dir.join("changelog.d/9999-example.md").exists(),
@@ -89,5 +99,8 @@ fn tag_push_refuses_unfolded_fragments() {
     let dir = checkout("release-body-tag", true);
     let version = committed_version(&dir);
 
-    assert!(!release_body(&dir, &version, "push").status.success());
+    let output = release_body(&dir, &version, "push");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not folded"), "{stderr}");
 }
