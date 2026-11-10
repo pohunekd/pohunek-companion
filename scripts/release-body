@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Prints the changelog block of a release body for the repository in the
+# current directory.
+#
+# usage: CHANGELOG_TOOL=<changelog binary> scripts/release-body <version> push|dry-run
+#
+# push: the committed section for <version> must exist and no fragment may be
+#   left (`changelog notes`).
+# dry-run: shows what the next release would publish without touching the
+#   checkout. A committed section without fragments is printed as is. Otherwise
+#   the fragments are folded in a scratch copy: under <version> when it has no
+#   section yet, under the next patch version (a preview; the release version
+#   is not decided yet) when it has one.
+set -euo pipefail
+
+version="${1:?version is required}"
+mode="${2:?mode is required (push or dry-run)}"
+tool="${CHANGELOG_TOOL:?CHANGELOG_TOOL is required}"
+
+if ! [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  echo "release-body: '$version' is not a X.Y.Z version" >&2
+  exit 2
+fi
+major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
+
+case "$mode" in
+  push) exec "$tool" notes "$version" ;;
+  dry-run) ;;
+  *) echo "release-body: unknown mode '$mode'" >&2; exit 2 ;;
+esac
+
+has_section=false
+if grep -qE "^## ${version//./\\.} - " CHANGELOG.md; then has_section=true; fi
+has_fragments=false
+if [ -n "$(find changelog.d -mindepth 1 -maxdepth 1 ! -name '.*' -print -quit 2> /dev/null)" ]; then has_fragments=true; fi
+
+if $has_section && ! $has_fragments; then
+  exec "$tool" notes "$version"
+fi
+
+folded="$version"
+if $has_section; then
+  folded="$major.$minor.$((patch + 1))"
+  echo "::notice::dry run: preview folded as $folded; the release version is not decided yet" >&2
+else
+  echo "::notice::dry run: folding the unreleased fragments of $version in a scratch copy" >&2
+fi
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+cp -R CHANGELOG.md changelog.toml "$scratch/"
+if [ -d changelog.d ]; then cp -R changelog.d "$scratch/"; fi
+(cd "$scratch" && "$tool" fold "$folded" >&2 && "$tool" notes "$folded")
