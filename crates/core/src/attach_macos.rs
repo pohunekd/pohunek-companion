@@ -206,6 +206,28 @@ mod tests {
         "back\\slash\\n and \ttab",
     ];
 
+    const BUSY_RETRY_LIMIT: u32 = 100;
+    const BUSY_RETRY_DELAY: Duration = Duration::from_millis(20);
+
+    /// Runs `path` and returns its exit status, retrying while the file is
+    /// still open for writing in a child that a parallel test forked
+    /// (ETXTBSY). Regression guard for #227, same race class as #66.
+    fn run_past_busy_file(path: &Path) -> std::process::ExitStatus {
+        let mut attempts = 1;
+        loop {
+            match Command::new(path).status() {
+                Err(err)
+                    if err.kind() == io::ErrorKind::ExecutableFileBusy
+                        && attempts < BUSY_RETRY_LIMIT =>
+                {
+                    attempts += 1;
+                    std::thread::sleep(BUSY_RETRY_DELAY);
+                }
+                result => return result.unwrap(),
+            }
+        }
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ph-macos-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -238,6 +260,9 @@ mod tests {
         let body = format!("#!/bin/sh\nprintf '%s\\0' \"$@\" > '{}'\n", dump.display());
         std::fs::write(&fake_bin, body).unwrap();
         std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A successful run proves no forked child still holds `fake_bin` open
+        // for writing; the staged scripts `exec` it and cannot retry.
+        assert!(run_past_busy_file(&fake_bin).success());
 
         for (host, id) in HOSTILE
             .iter()
@@ -249,7 +274,7 @@ mod tests {
                 stage_script(&script_dir, Duration::from_secs(3600), &fake_bin, host, id).unwrap();
             let syntax = Command::new("sh").arg("-n").arg(&path).status().unwrap();
             assert!(syntax.success());
-            assert!(Command::new(&path).status().unwrap().success());
+            assert!(run_past_busy_file(&path).success());
             let raw = std::fs::read(&dump).unwrap();
             let got: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
             assert_eq!(
