@@ -21,10 +21,16 @@ fn main() {
     };
     let package_version = field("version = \"").expect("pohunek-client has a version");
     let source = field("source = \"").expect("pohunek-client has a git source");
-    let tag = source
-        .split_once("?tag=")
-        .and_then(|(_, rest)| rest.split('#').next())
-        .expect("pohunek-client is pinned to a git tag");
+    // A `rev` pin (pre-release builds) has no tag; the package version names the release.
+    let tag = match source.split_once("?tag=") {
+        Some((_, rest)) => rest
+            .split('#')
+            .next()
+            .expect("split yields at least one part")
+            .to_owned(),
+        None if source.contains("?rev=") => format!("v{package_version}"),
+        None => panic!("pohunek-client is pinned to neither a git tag nor a rev"),
+    };
     // The tag becomes a URL path segment and part of file names.
     assert!(
         tag.len() > 1

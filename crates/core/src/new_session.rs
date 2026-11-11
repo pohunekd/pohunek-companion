@@ -323,6 +323,7 @@ pub fn build_params(
         secret_env: Default::default(),
         metadata: BTreeMap::new(),
         client_request_id: None,
+        context_package_digest: None,
     })
 }
 
