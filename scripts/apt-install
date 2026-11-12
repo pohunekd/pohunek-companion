@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Installs apt packages on a CI runner and survives a short archive or DNS
+# outage. The index is refreshed only when the first install fails (a stale
+# image index); each later attempt retries update plus install after a delay.
+# Tunables come from the workflow's env block and are required:
+#   APT_FETCH_RETRIES  per-file retries (Acquire::Retries)
+#   APT_HTTP_TIMEOUT   per-connection timeout in seconds (Acquire::http::Timeout)
+#   APT_ATTEMPTS       bounded number of update+install attempts after the first install
+#   APT_RETRY_DELAY    seconds to wait between attempts
+set -euo pipefail
+
+: "${APT_FETCH_RETRIES:?APT_FETCH_RETRIES is required}"
+: "${APT_HTTP_TIMEOUT:?APT_HTTP_TIMEOUT is required}"
+: "${APT_ATTEMPTS:?APT_ATTEMPTS is required}"
+: "${APT_RETRY_DELAY:?APT_RETRY_DELAY is required}"
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: scripts/apt-install PACKAGE..." >&2
+    exit 2
+fi
+
+opts=(-o "Acquire::Retries=${APT_FETCH_RETRIES}" -o "Acquire::http::Timeout=${APT_HTTP_TIMEOUT}")
+
+apt_install() {
+    sudo apt-get "${opts[@]}" install -y --no-install-recommends "$@"
+}
+
+if apt_install "$@"; then
+    exit 0
+fi
+
+for attempt in $(seq 1 "$APT_ATTEMPTS"); do
+    echo "apt install failed; update and retry, attempt ${attempt}/${APT_ATTEMPTS} after ${APT_RETRY_DELAY}s" >&2
+    sleep "$APT_RETRY_DELAY"
+    if sudo apt-get "${opts[@]}" update && apt_install "$@"; then
+        exit 0
+    fi
+done
+
+echo "apt install of $* failed after ${APT_ATTEMPTS} update attempts" >&2
+exit 1

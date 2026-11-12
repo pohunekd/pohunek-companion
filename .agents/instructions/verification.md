@@ -256,6 +256,7 @@ checkout.
 - A macOS job runs clippy and tests on every push to `main`, on manual
   dispatch, and on PRs that touch platform-sensitive paths (see the `changes`
   job filter). Add a path there when a new file holds platform-specific code.
+- Workflows install apt packages only through `scripts/apt-install`, which retries past a short archive or DNS outage; its tunables live in the workflow `env:` block.
 - A newer push cancels the previous run of the same PR.
 - The aggregate `ci` check is the only required status check.
 

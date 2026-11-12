@@ -75,6 +75,10 @@ env:
   RUST_BACKTRACE: short
   TARGET: x86_64-unknown-linux-gnu
   MACOS_TARGET: aarch64-apple-darwin
+  APT_FETCH_RETRIES: "5"
+  APT_HTTP_TIMEOUT: "30"
+  APT_ATTEMPTS: "3"
+  APT_RETRY_DELAY: "20"
 
 jobs:
   prepare:
@@ -138,9 +142,7 @@ jobs:
         run: rustup show active-toolchain
       # Slint's font discovery links fontconfig through pkg-config.
       - name: System libraries
-        run: |
-          sudo apt-get install -y --no-install-recommends libfontconfig1-dev \
-            || { sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev; }
+        run: scripts/apt-install libfontconfig1-dev
       # A tag build starts clean so the attested binary never comes from cached artifacts.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ github.event_name != 'push' }}
@@ -194,8 +196,7 @@ jobs:
           test -f "$check/$name/share/applications/pohunek-companion.desktop"
           test -f "$check/$name/share/icons/hicolor/scalable/apps/pohunek-companion.svg"
           test "$(find "$check/$name/share/icons/hicolor" -type f -name 'pohunek-companion.png' | wc -l)" = 7
-          sudo apt-get install -y --no-install-recommends desktop-file-utils \
-            || { sudo apt-get update && sudo apt-get install -y --no-install-recommends desktop-file-utils; }
+          scripts/apt-install desktop-file-utils
           desktop-file-validate "$check/$name/share/applications/pohunek-companion.desktop"
           # The subcommand installs into a throwaway data directory and removes it again.
           data="$check/data"
