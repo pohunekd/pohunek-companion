@@ -104,10 +104,10 @@ All facts come from the public protocol (Pohunek `docs/public-api.md`):
   leaves local and configured hosts working.
 - Pohunek Work metadata: `work.link.provider|kind|id|url|branch`, `work.role`,
   `work.rev`, and the legacy `link.*` family.
-- Herds (Pohunek #1300-#1307, not shipped yet): member metadata `herd`,
-  `herd_role`, the session's `spawned_by`, and the daemon's herd record. Names
-  may change before Pohunek ships them; the companion follows the shipped
-  contract.
+- Sub-session structure: the session's `spawned_by` (the session whose
+  request created it), `work.role=manager`, and the `manager` metadata key
+  (see "Sub-sessions"). A daemon herd record (Pohunek #1300-#1307) is not
+  shipped and is not read.
 
 ## Layout model
 
@@ -129,8 +129,8 @@ Owner decisions of 2026-10-19 (epic #3):
   owner-defined rules, which map session metadata (project, `work.link.*`,
   `work.role`, agent, later herd) to a group so a new session lands there
   without a drag. A rule applies only while the key is absent and never writes
-  it. Sessions that match no rule land in Inbox, or under their `spawned_by`
-  parent when it is known.
+  it. Sessions that match no rule land in Inbox. A sub-session keeps its own
+  placement; the fold only changes where it is shown (see "Sub-sessions").
 - **Four views** over the same sessions: My groups (default, the only view
   that accepts drag and drop), By state, By project, and By Work item / herd.
   The derived views are read-only as views (no drag and drop, no group
@@ -166,9 +166,8 @@ Storage and reconciliation:
 - An unreadable or invalid file is shown as an error in the window and is
   never overwritten; the app runs with an unsaved Inbox-only layout until the
   next start.
-- An item is a session now; a whole herd block that moves as a unit and keeps
-  its own tree order (manager, then members by role, nested herds inside)
-  comes with herds (M3).
+- An item is a session. A parent and its sub-sessions are not a block: each
+  keeps its own item, and a drag moves only the dragged row.
 - A drag across groups, "Move to group" and "New group..." with a move write
   `companion.group` (the target group's name, `Inbox` for Inbox) to the
   session first and store the sort key of the drop position once the daemon
@@ -204,6 +203,44 @@ Storage and reconciliation:
   two are logged). The session therefore shows in that group on every client
   as soon as it is listed. Without `--group` (tray, sidebar button,
   standalone command) no key is sent.
+
+### Sub-sessions
+
+Decided on #243 and #244 (owner decisions of 2026-11-11 on the session
+inheritance design, Pohunek epic #2167): sub-sessions are hidden under their
+parent by default, with a toggle.
+
+- **Parent.** In this order: a `work.role=manager` session is always a root,
+  so a nested manager is never folded into the coordinator that spawned it;
+  else the session its `spawned_by` names, on the same host (matched by
+  session id only: a worker keeps the daemon id it was launched by); else the
+  one `work.role=manager` session of the same host whose `manager` value
+  equals the session's (the fallback for sessions created outside their
+  manager's session); else none. A session whose spawner is gone (removed,
+  or on another host) is an orphan and shows as a root. Two manager sessions
+  of one host with the same `manager` value give that value no parent, logged
+  once at `warn`. A `spawned_by` cycle makes each of its sessions a root. The
+  rules live in `crates/core/src/sub_sessions.rs`.
+- **Fold.** The Sub-sessions chip (after the state chips, stored per view in
+  the view's filter as `show_sub_sessions`, off by default) selects the
+  display. Off: a sub-session is shown only under its parent, wherever the
+  parent is shown and whatever group holds it; the parent row shows
+  "N sub-sessions" (direct ones), and that control expands and collapses them
+  in place, indented by depth. The row body still attaches. The expanded
+  parents are kept while the app runs and never written. On: every session is
+  in its own place, and parents still show their count.
+- **Needs you.** The fold runs after the Needs-you lift, so a folded
+  sub-session that needs the owner is in Needs you and counts in the tray like
+  any session, and is not shown a second time under its parent.
+- **Search.** While the filter searches (query, project or host) nothing is
+  folded, so every match shows. A state-only filter keeps the fold.
+- **Sections.** A section that only the fold emptied (for example a group
+  that holds only workers) is hidden while folded; a group that is empty
+  anyway keeps showing. Group bookkeeping (learned groups, collapsed
+  sections, placement rules) always sees every session.
+- **Drag and drop.** A sub-session shown under its parent usually belongs to
+  another group, so it is neither dragged nor a drop anchor; "Move to group"
+  in its context menu still works.
 
 ### Shared groups
 
@@ -769,8 +806,8 @@ No claim is made that the tray or drag and drop work on macOS.
   under 15 MB, idle CPU about 0 %, RAM under 60 MB. Decide go or fallback.
 - **M1 Sessions and tray:** live session list with reconcile, state display,
   attach, Pohunek Work badges, tray with counts and menu.
-- **M2 Layout:** owner groups, drag and drop, Inbox, `spawned_by` placement,
-  persistence.
-- **M3 Herds:** herd blocks once Pohunek ships herds.
+- **M2 Layout:** owner groups, drag and drop, Inbox, persistence.
+- **M3 Sub-sessions:** sub-sessions folded under their parent (`spawned_by`,
+  manager key); herd blocks once Pohunek ships herd records.
 - **M4 Multi-host and packaging:** `host.discover`, macOS app bundle, Linux
   package.

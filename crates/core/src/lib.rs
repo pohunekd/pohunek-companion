@@ -30,6 +30,7 @@ mod session;
 mod setup;
 mod socket;
 mod sort_key;
+mod sub_sessions;
 mod tray_summary;
 mod view;
 
@@ -100,5 +101,6 @@ pub use setup::{
     service_status, supports_service_start,
 };
 pub use socket::{SocketError, local_socket_path};
+pub use sub_sessions::{Lineage, SubSessionTree, TreePosition, fold_sections};
 pub use tray_summary::{TrayEntry, TraySummary};
 pub use view::{NO_PROJECT_ID, NO_WORK_ID, View, by_project, by_state, by_work_item};

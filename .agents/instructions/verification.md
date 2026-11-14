@@ -64,6 +64,7 @@ while it runs.
 scripts/ui-agent start                  # isolated daemon; prints http://127.0.0.1:<port>/mcp
 scripts/ui-agent start --sessions 120   # plus 120 generated sessions (124 in total)
 scripts/ui-agent start --showcase       # realistic synthetic dataset for README screenshots
+scripts/ui-agent start --sub-sessions   # plus a sub-session tree (manager, workers, fallback)
 scripts/ui-agent screenshot shot.png    # PNG of the window
 scripts/ui-agent tree                   # element tree with ids
 scripts/ui-agent find SessionRow::row-touch
@@ -114,6 +115,20 @@ show the owner's real sessions (names, ids, working directories, Work links).
   daemon. `scripts/ui-agent stop` stops the app, the daemon, and its
   sessions and deletes the directory. Everything published comes from this
   mode.
+- `scripts/ui-agent start --sub-sessions` adds a sub-session tree to the four
+  fixed sessions: `demo-manager` (`work.role=manager`, `manager=demo`, group
+  Managers), `worker-one` and `worker-two` that it spawned (`worker-two`
+  blocked, so it is in Needs you), `worker-one-helper` that `worker-one`
+  spawned, `worker-by-key` tied to the manager only by `manager=demo`, and
+  `alpha-helper` spawned by `alpha-agent`; the workers carry the group
+  Workers. A sub-session is created with its parent's origin pair in the CLI
+  environment, so the daemon records `spawned_by`; the daemon id of the pair
+  is the fixed `ui-agent-isolated` (no public method reports a daemon id, and
+  the daemon never resolves it). The script strips the caller's `POHUNEK_*`
+  first, so no real session id can reach the dataset. The workers run the
+  showcase profiles (`base = "shell"`). It cannot be combined with
+  `--showcase` or `--setup`. The expand control is
+  `SessionRow::sub-sessions-touch`.
 - `scripts/ui-agent start --showcase` replaces the four fixed sessions and three
   projects with the showcase dataset (`showcase_projects`, `showcase_groups`,
   `showcase_sessions` in the script): six projects named after Pohunek and

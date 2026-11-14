@@ -5,6 +5,7 @@ use crate::group_key::{GroupNameProblem, GroupValue, parse_group_value};
 use crate::open::OpenTargets;
 use crate::owner_state::OwnerState;
 use crate::resume::{ResumeOffer, resume_offer};
+use crate::sub_sessions::{Lineage, TreePosition};
 use pohunek_client::is_local_host;
 use pohunek_client::protocol::{RuntimeState, SessionInfo};
 use time::OffsetDateTime;
@@ -72,6 +73,11 @@ pub struct SessionRow {
     pub group_problem: Option<GroupNameProblem>,
     /// An observed session the daemon does not own; it refuses metadata writes.
     pub external: bool,
+    /// The facts that place the session in the sub-session tree.
+    pub lineage: Lineage,
+    /// Where the row is shown in the sub-session fold; set by
+    /// [`crate::fold_sections`], the default elsewhere.
+    pub tree: TreePosition,
 }
 
 /// Whether the session's runtime is in the given state.
@@ -180,6 +186,8 @@ impl SessionRow {
             group,
             group_problem,
             external: info.external == Some(true),
+            lineage: Lineage::from_info(&info),
+            tree: TreePosition::default(),
         }
     }
 }

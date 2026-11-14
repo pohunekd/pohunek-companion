@@ -7,7 +7,7 @@
 # is never part of Cargo.toml features, so normal and release builds do not
 # contain the server.
 #
-#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [--showcase]
+#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [--showcase] [--sub-sessions]
 #                          [--setup cli-missing|not-installed|not-running|version-mismatch|install|install-tampered]
 #                          [--remote-host DEST [--remote-port N]] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
@@ -44,6 +44,11 @@
 # In every case `stop` then reads `$iso/run/op-daemon.pid` and terminates that
 # `op daemon` if it still runs, and finally removes the directory.
 # `--sessions N` adds N generated sessions to the four fixed ones.
+# `--sub-sessions` adds a sub-session tree (see `sub_sessions`): a manager with
+# sub-sessions it spawned, one of them blocked and one with its own
+# sub-session, a session tied to the manager only by its `manager` key, and a
+# sub-session of alpha-agent. A sub-session is created with its parent's origin
+# pair in the CLI environment, so the daemon records `spawned_by`.
 # `--showcase` replaces the four fixed sessions and the three projects with a
 # realistic synthetic dataset (see `showcase_sessions`) for README screenshots:
 # agent profiles `claude` and `codex` that run a harmless shell program, with
@@ -399,6 +404,55 @@ create_showcase_session() {
     local out
     out=$(env "${envs[@]}" "PATH=$iso/bin:$PATH" "$cli" "${args[@]}") ||
         { echo "$name: $(jq -r '.err.msg // empty' <<<"$out")" >&2; return 1; }
+}
+
+# Sub-session dataset (`start --sub-sessions`). Each line is
+# `name|parent|agent|state|meta`: `parent` names the session whose origin pair
+# creates it (empty: none), `agent` is `shell` or a showcase profile and
+# `state` its first input (working, blocked or idle; empty for `shell`).
+sub_sessions=(
+    "demo-manager||codex|idle|work.role=manager manager=demo companion.group=Managers"
+    "worker-one|demo-manager|claude|working|manager=demo companion.group=Workers work.role=implementer"
+    "worker-two|demo-manager|claude|blocked|manager=demo companion.group=Workers work.role=reviewer"
+    "worker-one-helper|worker-one|shell||manager=demo companion.group=Workers"
+    "worker-by-key||shell||manager=demo companion.group=Workers"
+    "alpha-helper|alpha-agent|shell||"
+)
+
+# Creates the `--sub-sessions` dataset in order, parents first, and waits until
+# the blocked sub-session reports it. The daemon records the origin pair as
+# received and never resolves its daemon id, which no public method reports,
+# so a fixed synthetic id stands in for it.
+create_sub_sessions() {
+    local iso=$1 line name parent agent state meta kv list parent_id out i
+    local daemon_id=ui-agent-isolated
+    local -a envs
+    mapfile -t envs < <(isolated_env "$iso")
+    write_showcase_agents "$iso" || die "cannot write the showcase agent profiles"
+    for line in "${sub_sessions[@]}"; do
+        IFS='|' read -r name parent agent state meta <<<"$line"
+        local -a args=(session new --agent "$agent" --name "$name" --cwd "$iso/work" --json)
+        [ -z "$state" ] || args+=(--input "$state")
+        for kv in $meta; do args+=(--meta "$kv"); done
+        local -a origin=()
+        if [ -n "$parent" ]; then
+            list=$(env "${envs[@]}" "$cli" session list --json) || die "cannot list the isolated sessions"
+            parent_id=$(jq -r --arg n "$parent" '.ok[] | select(.name == $n) | .id' <<<"$list")
+            [ -n "$parent_id" ] || die "sub-session parent $parent is missing"
+            origin=("POHUNEK_SESSION_ID=$parent_id" "POHUNEK_DAEMON_ID=$daemon_id")
+        fi
+        out=$(env "${envs[@]}" "${origin[@]}" "PATH=$iso/bin:$PATH" "$cli" "${args[@]}") ||
+            die "cannot create sub-session $name: $(jq -r '.err.msg // empty' <<<"$out")"
+    done
+    for i in $(seq 1 100); do
+        list=$(env "${envs[@]}" "$cli" session list --json) || die "cannot list the isolated sessions"
+        [ "$(jq -r '.ok[] | select(.name == "worker-two") | .activity // "none"' <<<"$list")" = blocked ] && break
+        sleep 0.3
+    done
+    [ "$(jq -r '.ok[] | select(.name == "worker-two") | .activity // "none"' <<<"$list")" = blocked ] ||
+        die "worker-two did not report blocked"
+    [ -z "$(jq -r '.ok[] | select(.agent_base != "shell") | .id' <<<"$list")" ] ||
+        die "a sub-session runs a real agent runtime; refusing to continue"
 }
 
 # Waits until every showcase session reports its expected activity, stops the
@@ -1116,7 +1170,7 @@ EOF
 }
 
 start() {
-    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port="" showcase=0 setup_state=""
+    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port="" showcase=0 setup_state="" sub=0
     local -a app_args=()
     while [ $# -gt 0 ]; do
         case $1 in
@@ -1131,6 +1185,7 @@ start() {
             --windowed) windowed=1; shift ;;
             --owner-daemon) isolated=0; shift ;;
             --showcase) showcase=1; shift ;;
+            --sub-sessions) sub=1; shift ;;
             --setup)
                 setup_state=${2:?--setup needs a state}
                 case $setup_state in
@@ -1162,6 +1217,8 @@ start() {
     [ "$isolated" -eq 1 ] || [ -z "$remote_host" ] || die "--remote-host needs the isolated daemon"
     [ "$isolated" -eq 1 ] || [ "$showcase" -eq 0 ] || die "--showcase needs the isolated daemon"
     [ "$sessions" -eq 0 ] || [ "$showcase" -eq 0 ] || die "--showcase and --sessions cannot be combined"
+    [ "$sub" -eq 0 ] || { [ "$isolated" -eq 1 ] && [ "$showcase" -eq 0 ] && [ -z "$setup_state" ]; } ||
+        die "--sub-sessions needs the isolated daemon and cannot be combined with --showcase or --setup"
     [ -n "$remote_host" ] || [ -z "$remote_port" ] || die "--remote-port needs --remote-host"
     [ -z "$setup_state" ] || { [ "$isolated" -eq 1 ] && [ "$sessions" -eq 0 ] && [ "$showcase" -eq 0 ] && [ -z "$remote_host" ]; } ||
         die "--setup cannot be combined with --owner-daemon, --sessions, --showcase or --remote-host"
@@ -1189,6 +1246,9 @@ start() {
         iso=$(start_setup_dir "$setup_state")
     elif [ "$isolated" -eq 1 ]; then
         iso=$(start_isolated_daemon "$sessions" "$showcase")
+        if [ "$sub" -eq 1 ]; then
+            (create_sub_sessions "$iso") >&2 || { stop >/dev/null 2>&1 || true; exit 1; }
+        fi
     fi
 
     # A temporary config whose attach command is harmless (a click on a

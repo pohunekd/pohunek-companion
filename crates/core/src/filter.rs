@@ -153,6 +153,10 @@ pub struct StoredFilter {
     /// filtering as an empty host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     host: Option<String>,
+    /// Sub-sessions are shown in their own places instead of folded under
+    /// their parent; absent (the default) folds them.
+    #[serde(default, skip_serializing_if = "is_false")]
+    show_sub_sessions: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -304,6 +308,8 @@ pub struct SessionFilter {
     states: StateSelection,
     /// Target of the host the sidebar is narrowed to; `None` shows every host.
     host: Option<String>,
+    /// Sub-sessions are shown in their own places instead of folded.
+    show_sub_sessions: bool,
 }
 
 impl SessionFilter {
@@ -313,6 +319,7 @@ impl SessionFilter {
             project: ProjectSelection::All,
             states: StateSelection::default(),
             host: None,
+            show_sub_sessions: false,
         }
     }
 
@@ -338,6 +345,7 @@ impl SessionFilter {
             (None, _) => ProjectSelection::All,
         };
         filter.host = stored.host.clone().filter(|host| !host.is_empty());
+        filter.show_sub_sessions = stored.show_sub_sessions;
         filter
     }
 
@@ -354,6 +362,7 @@ impl SessionFilter {
             project_label,
             no_project: self.project == ProjectSelection::NoProject,
             host: self.host.clone(),
+            show_sub_sessions: self.show_sub_sessions,
         }
     }
 
@@ -405,6 +414,21 @@ impl SessionFilter {
     /// and hiding empty sections follow this, not the state selection.
     pub fn is_searching(&self) -> bool {
         !self.tokens.is_empty() || self.project != ProjectSelection::All || self.host.is_some()
+    }
+
+    /// Whether sub-sessions are shown in their own places.
+    pub fn shows_sub_sessions(&self) -> bool {
+        self.show_sub_sessions
+    }
+
+    pub fn toggle_sub_sessions(&mut self) {
+        self.show_sub_sessions = !self.show_sub_sessions;
+    }
+
+    /// Whether sub-sessions fold under their parent: the owner did not ask to
+    /// show them and no search runs, since a search shows every match.
+    pub fn folds_sub_sessions(&self) -> bool {
+        !self.show_sub_sessions && !self.is_searching()
     }
 
     /// Whether any part of the filter hides sessions.
@@ -538,6 +562,8 @@ mod tests {
             group: None,
             group_problem: None,
             external: false,
+            lineage: Default::default(),
+            tree: Default::default(),
         }
     }
 
@@ -824,6 +850,24 @@ mod tests {
             SessionFilter::default().to_stored(),
             StoredFilter::default()
         );
+    }
+
+    #[test]
+    fn showing_sub_sessions_round_trips_and_a_search_stops_the_fold() {
+        let default_text = toml::to_string(&StoredFilter::default()).expect("serializes");
+        assert!(!default_text.contains("show_sub_sessions"));
+        let mut filter = SessionFilter::default();
+        assert!(filter.folds_sub_sessions());
+        filter.set_query("alpha");
+        assert!(!filter.folds_sub_sessions());
+        filter.set_query("");
+        filter.toggle_sub_sessions();
+        assert!(!filter.folds_sub_sessions());
+        let text = toml::to_string(&filter.to_stored()).expect("serializes");
+        let stored: StoredFilter = toml::from_str(&text).expect("parses");
+        assert!(SessionFilter::from_stored(&stored).shows_sub_sessions());
+        let older: StoredFilter = toml::from_str("states = [\"working\"]\n").expect("parses");
+        assert!(!SessionFilter::from_stored(&older).shows_sub_sessions());
     }
 
     #[test]
