@@ -194,16 +194,17 @@ fn arrange(state: &LayoutState) -> Arranged {
         .filter(|row| row.external)
         .map(|row| &row.key)
         .collect();
-    // The fold runs after the Needs-you lift inside `present`, so a
-    // sub-session that needs the owner stays lifted while its parent is folded.
-    let sections = filter_sections(
-        fold_sections(
+    // The fold runs on what is displayed: after the Needs-you lift inside
+    // `present`, so a sub-session that needs the owner stays lifted, and after
+    // the filter, so a sub-session whose parent is not shown stays visible.
+    let sections = fold_sections(
+        filter_sections(
             layout.present(&state.rows, state.title_max_chars),
-            &state.tree,
-            &state.expanded,
-            state.filter.folds_sub_sessions(),
+            &state.filter,
         ),
-        &state.filter,
+        &state.tree,
+        &state.expanded,
+        state.filter.folds_sub_sessions(),
     );
     debug!(
         elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),

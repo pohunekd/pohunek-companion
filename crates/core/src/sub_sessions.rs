@@ -183,21 +183,21 @@ fn break_cycles(parents: &mut HashMap<SessionKey, SessionKey>) {
 
 /// Sets each row's sub-session count and, when `fold` is set, shows every
 /// sub-session only under its parent: expanded parents (`expanded`) are
-/// followed by their sub-sessions, indented by depth. The Needs-you section is
-/// left as it is, so a sub-session that needs the owner stays lifted there and
-/// is not shown a second time under its parent. A section that only the fold
-/// emptied is dropped; a section that was empty before stays.
+/// followed by their sub-sessions, indented by depth. Runs on the sections as
+/// they are displayed (after the Needs-you lift and the filter): a sub-session
+/// whose parent is not among the rows of the other sections (lifted into
+/// Needs you, or filtered out) is shown in its own place, so no session is
+/// hidden behind a parent that is not there to expand. The Needs-you section
+/// is left as it is, so a sub-session that needs the owner stays lifted there
+/// and is not shown a second time under its parent; its rows offer no expand
+/// control. A section that only the fold emptied is dropped; a section that
+/// was empty before stays.
 pub fn fold_sections(
     sections: Vec<GroupSection>,
     tree: &SubSessionTree,
     expanded: &HashSet<SessionKey>,
     fold: bool,
 ) -> Vec<GroupSection> {
-    let lifted: HashSet<SessionKey> = sections
-        .iter()
-        .filter(|section| section.id == NEEDS_YOU_ID)
-        .flat_map(|section| section.rows.iter().map(|row| row.key.clone()))
-        .collect();
     let mut placed: HashMap<SessionKey, SessionRow> = HashMap::new();
     let mut order: HashMap<SessionKey, usize> = HashMap::new();
     for row in sections
@@ -209,16 +209,15 @@ pub fn fold_sections(
         order.entry(row.key.clone()).or_insert(next);
         placed.entry(row.key.clone()).or_insert_with(|| row.clone());
     }
-    let position = |row: &SessionRow, depth: u32| TreePosition {
-        depth,
+    let position = |row: &SessionRow| TreePosition {
+        depth: 0,
         sub_sessions: tree.children(&row.key).len(),
-        expanded: fold && expanded.contains(&row.key),
-        folding: fold,
+        expanded: false,
+        folding: false,
     };
     let fold_context = Fold {
         tree,
         expanded,
-        lifted: &lifted,
         placed: &placed,
         order: &order,
     };
@@ -227,18 +226,17 @@ pub fn fold_sections(
         .filter_map(|mut section| {
             if section.id == NEEDS_YOU_ID || !fold {
                 for row in &mut section.rows {
-                    row.tree = position(row, 0);
+                    row.tree = position(row);
                 }
                 return Some(section);
             }
             let before = section.rows.len();
             let mut rows = Vec::with_capacity(before);
             let mut visited = HashSet::new();
-            for row in section
-                .rows
-                .into_iter()
-                .filter(|row| tree.parent(&row.key).is_none())
-            {
+            for row in section.rows.into_iter().filter(|row| {
+                tree.parent(&row.key)
+                    .is_none_or(|parent| !placed.contains_key(parent))
+            }) {
                 fold_context.push(row, 0, &mut rows, &mut visited);
             }
             if before > 0 && rows.is_empty() {
@@ -254,7 +252,8 @@ pub fn fold_sections(
 struct Fold<'a> {
     tree: &'a SubSessionTree,
     expanded: &'a HashSet<SessionKey>,
-    lifted: &'a HashSet<SessionKey>,
+    /// Rows of the sections other than Needs you: the rows a sub-session can
+    /// be shown under, and the only sub-sessions shown.
     placed: &'a HashMap<SessionKey, SessionRow>,
     order: &'a HashMap<SessionKey, usize>,
 }
@@ -287,7 +286,7 @@ impl Fold<'_> {
             .tree
             .children(&key)
             .iter()
-            .filter(|child| !self.lifted.contains(*child))
+            .filter(|child| self.placed.contains_key(*child))
             .collect();
         children.sort_by_key(|child| self.order.get(*child).copied().unwrap_or(usize::MAX));
         for child in children {
@@ -584,5 +583,42 @@ mod tests {
                 ]
             );
         }
+    }
+    #[test]
+    fn a_parent_lifted_into_needs_you_leaves_its_sub_sessions_in_place() {
+        let mut parent = row("p", Lineage::default());
+        parent.owner_state = OwnerState::NeedsOwner;
+        let rows = vec![parent, row("c", spawned("p")), row("g", spawned("c"))];
+        let tree = SubSessionTree::build(&rows);
+        let lifted = with_needs_you(vec![section("a", rows)]);
+        let folded = fold_sections(lifted, &tree, &HashSet::new(), true);
+        assert_eq!(
+            shown(&folded),
+            [
+                (NEEDS_YOU_ID.to_owned(), vec![("p".into(), 0)]),
+                ("a".to_owned(), vec![("c".into(), 0)]),
+            ]
+        );
+        assert!(!folded[0].rows[0].tree.folding);
+        assert_eq!(folded[0].rows[0].tree.sub_sessions, 1);
+        assert!(folded[1].rows[0].tree.folding);
+    }
+
+    #[test]
+    fn a_parent_the_filter_removed_leaves_its_sub_sessions_in_place() {
+        let rows = vec![
+            row("p", Lineage::default()),
+            row("c", spawned("p")),
+            row("other", Lineage::default()),
+        ];
+        let tree = SubSessionTree::build(&rows);
+        // `p` was filtered out before the fold; `c` and `other` match.
+        let filtered = vec![section("a", vec![rows[1].clone(), rows[2].clone()])];
+        let expanded: HashSet<SessionKey> = [key("local", "p")].into();
+        let folded = fold_sections(filtered, &tree, &expanded, true);
+        assert_eq!(
+            shown(&folded),
+            [("a".to_owned(), vec![("c".into(), 0), ("other".into(), 0)])]
+        );
     }
 }

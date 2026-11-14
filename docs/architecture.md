@@ -223,15 +223,19 @@ parent by default, with a toggle.
   rules live in `crates/core/src/sub_sessions.rs`.
 - **Fold.** The Sub-sessions chip (after the state chips, stored per view in
   the view's filter as `show_sub_sessions`, off by default) selects the
-  display. Off: a sub-session is shown only under its parent, wherever the
-  parent is shown and whatever group holds it; the parent row shows
+  display. Off: a sub-session is shown only under its parent, in the section
+  that shows the parent, whatever group holds the sub-session; the parent row shows
   "N sub-sessions" (direct ones), and that control expands and collapses them
   in place, indented by depth. The row body still attaches. The expanded
   parents are kept while the app runs and never written. On: every session is
   in its own place, and parents still show their count.
-- **Needs you.** The fold runs after the Needs-you lift, so a folded
-  sub-session that needs the owner is in Needs you and counts in the tray like
-  any session, and is not shown a second time under its parent.
+- **Needs you and filters.** The fold runs on what is displayed, after the
+  Needs-you lift and the filter. A folded sub-session that needs the owner is
+  in Needs you and counts in the tray like any session, and is not shown a
+  second time under its parent. A sub-session whose parent is not shown in a
+  group section (the parent is in Needs you, or the filter hides it, for
+  example an ended parent under the default state filter) is shown in its own
+  place. Rows in Needs you show their count but no expand control.
 - **Search.** While the filter searches (query, project or host) nothing is
   folded, so every match shows. A state-only filter keeps the fold.
 - **Sections.** A section that only the fold emptied (for example a group
