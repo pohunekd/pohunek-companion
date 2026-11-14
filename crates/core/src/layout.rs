@@ -2190,6 +2190,8 @@ order = "g"
             group: None,
             group_problem: None,
             external: false,
+            lineage: Default::default(),
+            tree: Default::default(),
         }
     }
 

@@ -44,6 +44,14 @@ export struct SessionRowData {
     // The session's folder exists / its Work link is an http(s) URL.
     open-folder: bool,
     open-link: bool,
+    // Levels below the parent the row is shown under; 0 in its own place.
+    depth: int,
+    // Number of direct sub-sessions.
+    sub-sessions: int,
+    // The sub-sessions are shown under the row.
+    expanded: bool,
+    // Sub-sessions are folded, so the sub-session control expands them.
+    folding: bool,
 }
 
 export struct DetailFieldData {
@@ -164,6 +172,10 @@ export global Theme {
     out property <length> not-shared-font-size: 10px;
     out property <color> not-shared-background: Theme.badge-background;
     out property <color> not-shared-color: Theme.detail;
+    // Indent of a sub-session shown under its parent, per level.
+    out property <length> sub-session-indent: 14px;
+    out property <color> sub-session-guide: #4a4e57;
+    out property <length> sub-session-guide-width: 2px;
     out property <length> about-width: 360px;
     out property <length> about-height: 320px;
     out property <length> about-logo-size: 128px;
@@ -341,6 +353,8 @@ component SessionRow inherits Rectangle {
     callback open-folder();
     callback open-link();
     callback details();
+    // Expands or collapses the row's sub-sessions.
+    callback toggle-sub-sessions();
 
     height: Theme.row-height + (root.data.badge != "" ? Theme.badge-row-height : 0px);
     background: row-drag.dragging ? Theme.row-dragging : Theme.row;
@@ -428,8 +442,15 @@ component SessionRow inherits Rectangle {
         }
     }
 
+    // A sub-session shown under its parent: a guide line at its indent.
+    if root.data.depth > 0: Rectangle {
+        x: Theme.row-padding / 2 + (root.data.depth - 1) * Theme.sub-session-indent;
+        width: Theme.sub-session-guide-width;
+        background: Theme.sub-session-guide;
+    }
+
     VerticalLayout {
-        padding-left: Theme.row-padding;
+        padding-left: Theme.row-padding + root.data.depth * Theme.sub-session-indent;
         // The labels end where the opaque action strip starts while it is shown.
         padding-right: Theme.row-padding + (action-strip.visible ? action-strip.width : 0px);
         padding-top: Theme.row-vertical-padding;
@@ -473,6 +494,32 @@ component SessionRow inherits Rectangle {
                         overflow: elide;
                         vertical-alignment: center;
                     }
+                }
+            }
+            if root.data.sub-sessions > 0: sub-sessions-chip := Rectangle {
+                background: sub-sessions-touch.has-hover ? Theme.chip-hover-background : Theme.badge-background;
+                border-radius: Theme.badge-radius;
+                horizontal-stretch: 0;
+                width: sub-sessions-text.preferred-width + 2 * Theme.badge-padding;
+                HorizontalLayout {
+                    padding-left: Theme.badge-padding;
+                    padding-right: Theme.badge-padding;
+                    sub-sessions-text := Text {
+                        text: (root.data.folding ? (root.data.expanded ? "▾ " : "▸ ") : "")
+                            + root.data.sub-sessions + (root.data.sub-sessions == 1 ? " sub-session" : " sub-sessions");
+                        color: Theme.badge-text;
+                        font-size: Theme.badge-font-size;
+                        vertical-alignment: center;
+                    }
+                }
+                // Above the row's touch area, so a click here expands instead
+                // of attaching.
+                sub-sessions-touch := TouchArea {
+                    enabled: root.data.folding;
+                    mouse-cursor: root.data.folding ? pointer : default;
+                    accessible-role: button;
+                    accessible-label: (root.data.expanded ? "Hide sub-sessions of " : "Show sub-sessions of ") + root.data.name;
+                    clicked => { root.toggle-sub-sessions(); }
                 }
             }
         }
@@ -1458,6 +1505,8 @@ export component AppWindow inherits Window {
     in property <[string]> state-keys;
     in property <[bool]> state-checked;
     callback state-toggled(string);
+    // Host and id of a parent whose sub-sessions the owner expands or collapses.
+    callback toggle-expanded(string, string);
     // Payload of a dragged row: its session.
     pure callback payload(SessionRowData) -> data-transfer;
     // Dropped payload, target group id, anchor session host and id (empty for
@@ -1867,8 +1916,10 @@ export component AppWindow inherits Window {
                     if !group.collapsed: VerticalLayout {
                         spacing: Theme.row-spacing;
                         alignment: start;
+                        // A sub-session shown under its parent usually belongs to
+                        // another group: it is neither dragged nor a drop anchor.
                         for session in group.rows: row-drop := DropArea {
-                            enabled: root.editable && !group.needs-you;
+                            enabled: root.editable && !group.needs-you && session.depth == 0;
                             can-drop(event) => {
                                 root.indicator-after = event.position.y > self.height / 2;
                                 root.is-group(event.data) ? DragAction.none : DragAction.move
@@ -1879,7 +1930,7 @@ export component AppWindow inherits Window {
                             }
                             SessionRow {
                                 data: session;
-                                draggable: root.editable && !group.needs-you;
+                                draggable: root.editable && !group.needs-you && session.depth == 0;
                                 indicator-above: row-drop.has-drag && !root.indicator-after;
                                 indicator-below: row-drop.has-drag && root.indicator-after;
                                 payload(row) => { root.payload(row) }
@@ -1903,6 +1954,7 @@ export component AppWindow inherits Window {
                                 open-folder => { root.open-folder(session.host, session.id); }
                                 open-link => { root.open-link(session.host, session.id); }
                                 details => { root.request-details(session.host, session.id); }
+                                toggle-sub-sessions => { root.toggle-expanded(session.host, session.id); }
                                 return-to-rule => { root.return-to-rule(session.host, session.id); }
                                 new-session-in-project(host, project, group) => { root.new-session(host, project, group); }
                             }

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
@@ -28,10 +28,10 @@ use pohunek_companion_core::{
     GroupSection, HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, LOCAL_HOST,
     LayoutConfig, LayoutStore, LiveHost, LiveUpdate, NEEDS_YOU_ID, OpenConfig, OpenKind,
     OwnerState, PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey,
-    SessionRow, StateChip, TraySummary, View, ViewConfig, WriteOutcome, attach, clip_display,
-    dialog_hosts, discover_records, filter_sections, host_naming_this_machine, host_options,
-    layout_path, name_from_input, open, plan_discovery, project_chips, rename_session, run_live,
-    set_route, state_chips, state_from_key, write_group,
+    SessionRow, StateChip, SubSessionTree, TraySummary, View, ViewConfig, WriteOutcome, attach,
+    clip_display, dialog_hosts, discover_records, filter_sections, fold_sections,
+    host_naming_this_machine, host_options, layout_path, name_from_input, open, plan_discovery,
+    project_chips, rename_session, run_live, set_route, state_chips, state_from_key, write_group,
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
@@ -41,6 +41,10 @@ slint::include_modules!();
 const APP_ID: &str = "pohunek-companion";
 /// Longest badge link or role text shown in a row.
 const BADGE_MAX_CHARS: usize = 32;
+/// Key and label of the chip that shows sub-sessions in their own places; it
+/// follows the state chips and is never a state key.
+const SUB_SESSIONS_CHIP: &str = "sub-sessions";
+const SUB_SESSIONS_CHIP_LABEL: &str = "Sub-sessions";
 
 fn owner_state_kind(state: OwnerState) -> OwnerStateKind {
     match state {
@@ -75,6 +79,10 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
                 .map(|project| (project.id, project.label))
                 .unwrap_or_default();
             SessionRowData {
+                depth: i32::try_from(s.tree.depth).unwrap_or(i32::MAX),
+                sub_sessions: i32::try_from(s.tree.sub_sessions).unwrap_or(i32::MAX),
+                expanded: s.tree.expanded,
+                folding: s.tree.folding,
                 project_id: project_id.into(),
                 project_label: project_label.into(),
                 owner_group: owner_group.into(),
@@ -130,6 +138,8 @@ struct Arranged {
     /// the selected host's project wins, else the first seen.
     filter_project_id: String,
     state_chips: Vec<StateChip>,
+    /// Sub-sessions are shown in their own places instead of folded.
+    show_sub_sessions: bool,
     host_options: Vec<HostOption>,
 }
 
@@ -184,9 +194,17 @@ fn arrange(state: &LayoutState) -> Arranged {
         .filter(|row| row.external)
         .map(|row| &row.key)
         .collect();
-    let sections = filter_sections(
-        layout.present(&state.rows, state.title_max_chars),
-        &state.filter,
+    // The fold runs on what is displayed: after the Needs-you lift inside
+    // `present`, so a sub-session that needs the owner stays lifted, and after
+    // the filter, so a sub-session whose parent is not shown stays visible.
+    let sections = fold_sections(
+        filter_sections(
+            layout.present(&state.rows, state.title_max_chars),
+            &state.filter,
+        ),
+        &state.tree,
+        &state.expanded,
+        state.filter.folds_sub_sessions(),
     );
     debug!(
         elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
@@ -200,6 +218,7 @@ fn arrange(state: &LayoutState) -> Arranged {
             && !state.rows.is_empty()
             && sections.iter().all(|section| section.rows.is_empty()),
         state_chips: state_chips(&host_rows(state), state.filter.states()),
+        show_sub_sessions: state.filter.shows_sub_sessions(),
         host_options: host_options(&state.hosts, state.filter.host()),
         sections,
         project_chips,
@@ -235,6 +254,7 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
         project_index,
         filter_project_id,
         state_chips,
+        show_sub_sessions,
         host_options,
     } = arranged;
     window.set_host_keys(ModelRc::new(VecModel::from(
@@ -263,20 +283,28 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
             .map(|option| slint::SharedString::from(option.label))
             .collect::<Vec<_>>(),
     )));
+    // The sub-sessions chip ends the state chips: selected, like a state, means
+    // shown in place.
+    let sub_sessions_chip = StateChip {
+        label: SUB_SESSIONS_CHIP_LABEL,
+        key: SUB_SESSIONS_CHIP,
+        selected: show_sub_sessions,
+    };
+    let chips: Vec<&StateChip> = state_chips
+        .iter()
+        .chain(std::iter::once(&sub_sessions_chip))
+        .collect();
     window.set_state_keys(ModelRc::new(VecModel::from(
-        state_chips
+        chips
             .iter()
             .map(|chip| slint::SharedString::from(chip.key))
             .collect::<Vec<_>>(),
     )));
     window.set_state_checked(ModelRc::new(VecModel::from(
-        state_chips
-            .iter()
-            .map(|chip| chip.selected)
-            .collect::<Vec<_>>(),
+        chips.iter().map(|chip| chip.selected).collect::<Vec<_>>(),
     )));
     window.set_state_names(ModelRc::new(VecModel::from(
-        state_chips
+        chips
             .iter()
             .map(|chip| slint::SharedString::from(chip.label))
             .collect::<Vec<_>>(),
@@ -350,6 +378,11 @@ struct LayoutState {
     /// The query text of each view by view id; kept while the app runs, never
     /// persisted.
     queries: HashMap<&'static str, String>,
+    /// Which session each row folds under, rebuilt with `rows`.
+    tree: SubSessionTree,
+    /// Parents whose sub-sessions are shown under them; kept while the app
+    /// runs, never persisted.
+    expanded: HashSet<SessionKey>,
 }
 
 type SharedLayout = Arc<Mutex<LayoutState>>;
@@ -372,6 +405,25 @@ pub(crate) fn remote_host_name(layout: &SharedLayout, key: &SessionKey) -> Optio
         .find(|row| row.key == *key)
         .and_then(|row| row.host_label.clone());
     Some(label.unwrap_or_else(|| key.host.clone()))
+}
+
+/// Replaces the session list, rebuilds the sub-session tree, and forgets the
+/// expanded parents that left the list. A `manager` value that several
+/// manager sessions of one host carry is logged once while it stays so.
+fn set_rows(state: &mut LayoutState, rows: Vec<SessionRow>) {
+    let tree = SubSessionTree::build(&rows);
+    let previous: &BTreeSet<(String, String)> = state.tree.ambiguous_managers();
+    for (host, manager) in tree.ambiguous_managers().difference(previous) {
+        warn!(
+            host = %host,
+            manager = %manager,
+            "several manager sessions carry one manager key; no session folds under them by that key"
+        );
+    }
+    let present: HashSet<&SessionKey> = rows.iter().map(|row| &row.key).collect();
+    state.expanded.retain(|key| present.contains(key));
+    state.tree = tree;
+    state.rows = rows;
 }
 
 /// Saves the layout and returns the text for the window's layout error line.
@@ -423,10 +475,13 @@ enum LayoutRequest {
     SetFilter(String),
     /// The key (`chip_key`) of the project chip the owner picked.
     SetProject(String),
-    /// The key (`state_key`) of the state chip the owner toggled.
+    /// The key (`state_key`, or [`SUB_SESSIONS_CHIP`]) of the state chip the
+    /// owner toggled.
     ToggleState(String),
     /// The target of the host the owner picked; empty for all hosts.
     SetHost(String),
+    /// Expands or collapses the sub-sessions of one parent.
+    ToggleExpanded(SessionKey),
 }
 
 /// Selects the view on a background thread (the save waits on disk) and shows
@@ -512,6 +567,15 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
             state.queries.insert(view.id(), query);
             Refusal::default()
         }
+        LayoutRequest::ToggleState(key) if key == SUB_SESSIONS_CHIP => {
+            state.filter.toggle_sub_sessions();
+            info!(
+                show = state.filter.shows_sub_sessions(),
+                "show sub-sessions toggled"
+            );
+            store_filter(state);
+            Refusal::default()
+        }
         LayoutRequest::ToggleState(key) => {
             match state_from_key(&key) {
                 Some(owner_state) => {
@@ -519,6 +583,12 @@ fn apply_request(state: &mut LayoutState, request: LayoutRequest) -> Refusal {
                     store_filter(state);
                 }
                 None => warn!(chip = %key, "unknown state chip"),
+            }
+            Refusal::default()
+        }
+        LayoutRequest::ToggleExpanded(key) => {
+            if !state.expanded.remove(&key) {
+                state.expanded.insert(key);
             }
             Refusal::default()
         }
@@ -894,7 +964,7 @@ impl Publisher {
                     migration = self.plan_migration(&mut state, &host.target, sessions);
                 }
                 let layout_error = save_layout(&mut state);
-                state.rows = all.clone();
+                set_rows(&mut state, all.clone());
                 state.hosts = self.hosts.borrow().entries();
                 let arranged = arrange(&state);
                 guard = Some(state);
@@ -1570,6 +1640,8 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         daemon: Err("companion.toml is not loaded".to_owned()),
         filter: SessionFilter::default(),
         queries: HashMap::new(),
+        tree: SubSessionTree::default(),
+        expanded: HashSet::new(),
     }));
     {
         let mut state = lock(&layout);
@@ -1916,6 +1988,15 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         window.on_state_toggled({
             let send = send.clone();
             move |key| send(LayoutRequest::ToggleState(key.into()))
+        });
+        window.on_toggle_expanded({
+            let send = send.clone();
+            move |host, id| {
+                send(LayoutRequest::ToggleExpanded(SessionKey {
+                    host: host.into(),
+                    session_id: id.into(),
+                }))
+            }
         });
         window.on_delete_group(move |id| send(LayoutRequest::DeleteGroup(id.into())));
     }
