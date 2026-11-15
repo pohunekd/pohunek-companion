@@ -96,9 +96,13 @@ why in one sentence.
 ### New session and Assistant
 
 "+ New session" opens a dialog to start a session on a host, in a project, with
-an agent, an optional name and an optional prompt. "+ Assistant" starts a
-Pohunek assistant session with a request and an intent. Both dialogs are
-separate processes, so they can also be bound to a desktop keybinding.
+an agent, an optional name and an optional prompt. Agents are listed by their
+profile's display name; profiles meant for agents or hidden appear under
+"Show all". When the profile offers launch options (for example a model or a
+mode), the dialog shows one row of choices per option, and it remembers the
+agent and choices of the last session per host and project. "+ Assistant"
+starts a Pohunek assistant session with a request and an intent. Both dialogs
+are separate processes, so they can also be bound to a desktop keybinding.
 
 <p align="center">
   <img src="docs/screenshots/new-session.png" alt="The New session dialog" width="320">

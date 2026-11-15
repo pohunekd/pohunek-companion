@@ -65,6 +65,11 @@ All facts come from the public protocol (Pohunek `docs/public-api.md`):
   events during the fetch and applying them after the seed, as on reconnect. A
   re-seed that corrects anything is logged at `warn`. The lag signal (#19)
   replaces or complements this fallback once it ships.
+- A session's `agent_options` (option id to choice id, defaults included;
+  events carry it) is shown as chips on the row's detail line: the choice ids
+  only, sanitized and clipped, in option-id order, none for an empty map. The
+  sidebar has no `host.inspect` inventory, so it shows no labels (owner
+  decision D10).
 - `agent_state`, `subagent_state`, and `background_state` events are applied
   only when their runtime identity matches the session snapshot and their
   revision is newer.
@@ -506,6 +511,51 @@ and does not follow the session stream.
   process entered the dialog. An
   agent is offered when its runtime is `available` and `supported` is not
   `false`.
+- **Profiles in the picker** (`crates/core/src/profile_options.rs`). The
+  agent select shows each profile's sanitized `display_name`, else the agent
+  name; the agent name is what `session.new` receives. It lists profiles whose
+  `audience` is `owner` or absent; `agent`, `hidden` and any value this build
+  does not know appear only with the "Show all" chip, which is offered while
+  some profile is held back. The agent already selected (a template's agent,
+  a remembered agent, the agent kept across a host switch) is always listed.
+  Launchable agents stay first, in the daemon's order. The assistant dialog
+  applies the same filter and labels to its agent list.
+- **Launch options.** When the host reports
+  `session_new_agent_options_supported` and the selected profile reports
+  `options` (a preset reports its parent's options with its own choices as
+  defaults; a locked preset, a bare runtime and a profile without options
+  report none), the dialog shows one chip row per option in the reported
+  order, prefilled with each option's default. A choice the host reports as
+  unavailable is disabled and its reason is shown under the row
+  (`runtime_too_old` with its `min_runtime`, `runtime_version_unknown`, or a
+  generic sentence for a reason this build does not know). Switching the
+  agent rebuilds the rows; "Reset to defaults" sets every row back to its
+  default. The daemon checks the runtime floor of every resolved choice,
+  defaults included (`check_option_floors` over the full selection), so
+  Create is disabled while an option's chosen choice is unavailable, naming
+  the option and the reason. `agent_options` carries only the non-default
+  choices that the host's current report still offers as available; the
+  daemon fills the defaults and records them, so the session is the same and
+  request fingerprints without options keep matching. Against a daemon
+  without the capability (Pohunek 0.42) the picker shows every profile as
+  owner (the field is absent), no option rows, and no `agent_options` is
+  sent. The assistant dialog has no option rows: `pohunek assistant` launches
+  take no options.
+- **Remembered choices** (`crates/core/src/remembered.rs`). After a create
+  succeeds (attached or not), the dialog records the host, project, agent
+  and the non-default choices it sent in `new-session.toml` in the state
+  directory of `layout.toml`, written atomically (directory 0700, file 0600)
+  and only when the entry changes; the file is read again before the write,
+  so a second dialog's entry is kept. Only the dialog writes this file; the
+  sidebar, which writes `layout.toml`, never does. When the agents of a host
+  load, and when the owner picks a project, the dialog preselects the
+  remembered agent of that host and project when the host lists it as
+  launchable (under any audience) and applies each remembered choice the
+  current options still offer as available; the rest are dropped and only
+  their count is logged. An agent kept across a host switch and a template's
+  agent win over the remembered one. An unreadable or invalid file is shown
+  as an error line in the dialog, is never overwritten, and the dialog works
+  without it.
 - The form becomes one `session.new` (`Client::session_new`): the chosen
   project and agent, the trimmed name and prompt (empty means omitted), and
   `cols`/`rows` from `[new_session]` in `companion.toml`. The daemon picks the

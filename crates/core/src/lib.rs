@@ -24,6 +24,8 @@ mod needs_you;
 mod new_session;
 mod open;
 mod owner_state;
+mod profile_options;
+mod remembered;
 mod rename;
 mod resume;
 mod routes;
@@ -93,6 +95,11 @@ pub use open::{
 pub use owner_state::{OwnerState, derive};
 pub use pohunek_client::LOCAL_HOST;
 pub use pohunek_client::protocol::SessionNewParams;
+pub use profile_options::{
+    Audience, BlockedChoice, ChoiceField, OptionField, OptionForm, ReconciledChoices,
+    held_back_agents, listed_agents, outgoing_options, reconcile,
+};
+pub use remembered::{Remembered, RememberedChoices, load_remembered, remember, remembered_path};
 pub use rename::{RenameError, name_from_input, rename_session};
 pub use resume::{PROFILE_CHANGED_CODE, ResumeOffer, refusal_sentence};
 pub use routes::set_route;

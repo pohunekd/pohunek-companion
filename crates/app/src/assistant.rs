@@ -11,7 +11,8 @@ use pohunek_companion_core::{
     Activity, AssistantForm, AssistantFormError, Choices, Config, CreateError, DaemonConfig,
     DialogHost, DiscoveryPlan, Generation, HostConfig, INTENTS, Intent, LOCAL_HOST,
     NewSessionConfig, ProjectChoice, assistant_blocker, dialog_hosts, discover_dialog_hosts,
-    fuzzy_matches, is_remote_host, launch_assistant, load_choices_staged, register_dialog_routes,
+    fuzzy_matches, held_back_agents, is_remote_host, launch_assistant, listed_agents,
+    load_choices_staged, register_dialog_routes,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
@@ -105,20 +106,6 @@ fn show_projects(window: &AssistantWindow, projects: &[ProjectChoice], selected:
     window.set_project_index(index);
 }
 
-/// Shows the assistant-capable agents behind "Automatic", selecting `agent`
-/// when the host has it.
-fn show_agents(window: &AssistantWindow, choices: &Choices, agent: Option<&str>) {
-    window.set_agent_names(labels(
-        AUTOMATIC_LABEL,
-        choices.assistant_agents.iter().map(String::as_str),
-    ));
-    let index = agent
-        .and_then(|name| choices.assistant_agents.iter().position(|a| a == name))
-        .and_then(|position| i32::try_from(position + 1).ok())
-        .unwrap_or(0);
-    window.set_agent_index(index);
-}
-
 /// Host and choice state shared by the dialog's callbacks and loader threads.
 #[derive(Clone)]
 struct Dialog {
@@ -139,9 +126,36 @@ struct Dialog {
     choices: Arc<Mutex<Choices>>,
     /// When the dialog process entered `run`; timestamps the load logs.
     started: Instant,
+    /// "Show all" lists agent and hidden profiles too.
+    show_all: Arc<AtomicBool>,
+    /// Names of the agents the select shows behind "Automatic".
+    listed: Arc<Mutex<Vec<String>>>,
 }
 
 impl Dialog {
+    /// Shows the assistant-capable agents the picker lists behind
+    /// "Automatic", by label, selecting `agent` when the host has it.
+    fn show_agents(&self, window: &AssistantWindow, choices: &Choices, agent: Option<&str>) {
+        let capable = choices.assistant_agent_choices();
+        let show_all = self.show_all.load(Ordering::SeqCst);
+        let shown: Vec<_> = listed_agents(&capable, show_all, agent)
+            .into_iter()
+            .map(|index| &capable[index])
+            .collect();
+        window.set_agent_names(labels(
+            AUTOMATIC_LABEL,
+            shown.iter().map(|choice| choice.label.as_str()),
+        ));
+        let index = agent
+            .and_then(|name| shown.iter().position(|choice| choice.name == name))
+            .and_then(|position| i32::try_from(position + 1).ok())
+            .unwrap_or(0);
+        window.set_agent_index(index);
+        window.set_show_all(show_all);
+        window.set_show_all_offered(show_all || held_back_agents(&capable, agent) > 0);
+        *lock(&self.listed) = shown.iter().map(|choice| choice.name.clone()).collect();
+    }
+
     fn host(&self) -> String {
         lock(&self.host).clone()
     }
@@ -157,7 +171,7 @@ impl Dialog {
             project: behind_none(window.get_project_index())
                 .and_then(|index| choices.projects.get(index).map(|p| p.id.clone())),
             agent: behind_none(window.get_agent_index())
-                .and_then(|index| choices.assistant_agents.get(index).cloned()),
+                .and_then(|index| lock(&self.listed).get(index).cloned()),
             request: window.get_request().into(),
         }
     }
@@ -218,7 +232,7 @@ impl Dialog {
         window.set_loading(true);
         window.set_projects_ready(false);
         show_projects(window, &[], None);
-        show_agents(window, &Choices::default(), None);
+        self.show_agents(window, &Choices::default(), None);
         self.refresh_blocker(window);
         load_in_background(
             window.as_weak(),
@@ -292,7 +306,7 @@ fn load_in_background(
                     if !window.get_projects_ready() {
                         show_projects(&window, &loaded.projects, project.as_deref());
                     }
-                    show_agents(&window, &loaded, agent.as_deref());
+                    dialog.show_agents(&window, &loaded, agent.as_deref());
                     *lock(&dialog.choices) = loaded;
                 }
                 Err(message) => {
@@ -482,7 +496,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
         window.set_intent_index(i32::try_from(position).unwrap_or(0));
     }
     show_projects(&window, &[], None);
-    show_agents(&window, &Choices::default(), None);
+    window.set_agent_names(labels(AUTOMATIC_LABEL, std::iter::empty()));
     window.set_blocker(AssistantFormError::Loading.to_string().into());
     match Config::load() {
         Ok(config) => {
@@ -546,6 +560,8 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                 host_generation: Arc::new(Generation::default()),
                 daemon: config.daemon.clone(),
                 choices: Arc::new(Mutex::new(Choices::default())),
+                show_all: Arc::new(AtomicBool::new(false)),
+                listed: Arc::new(Mutex::new(Vec::new())),
             };
             window.set_attach_after_create(config.new_session.attach_after_create);
             let config_path = Config::path().map_err(|err| err.to_string());
@@ -579,6 +595,17 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
             window.on_project_changed(refresher(&dialog, &window));
             window.on_intent_changed(refresher(&dialog, &window));
             window.on_agent_changed(refresher(&dialog, &window));
+            let on_show_all = dialog.clone();
+            let weak = window.as_weak();
+            window.on_show_all_toggled(move || {
+                if let Some(window) = weak.upgrade() {
+                    let agent = on_show_all.form(&window).agent;
+                    on_show_all.show_all.fetch_xor(true, Ordering::SeqCst);
+                    let choices = lock(&on_show_all.choices).clone();
+                    on_show_all.show_agents(&window, &choices, agent.as_deref());
+                    on_show_all.refresh_blocker(&window);
+                }
+            });
             let weak = window.as_weak();
             window.on_submit(move || {
                 let Some(window) = weak.upgrade() else { return };

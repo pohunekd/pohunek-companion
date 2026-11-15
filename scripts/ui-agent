@@ -7,7 +7,7 @@
 # is never part of Cargo.toml features, so normal and release builds do not
 # contain the server.
 #
-#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [--showcase] [--sub-sessions]
+#   scripts/ui-agent start [--port N] [--windowed] [--owner-daemon] [--sessions N] [--showcase] [--sub-sessions] [--profile-options]
 #                          [--setup cli-missing|not-installed|not-running|version-mismatch|install|install-tampered]
 #                          [--remote-host DEST [--remote-port N]] [-- APP_ARGS...]
 #                                                    build, run, print endpoint
@@ -49,6 +49,11 @@
 # sub-session, a session tied to the manager only by its `manager` key, and a
 # sub-session of alpha-agent. A sub-session is created with its parent's origin
 # pair in the CLI environment, so the daemon records `spawned_by`.
+# `--profile-options` writes launch-option profiles (see `write_option_profiles`)
+# on the isolated daemon, next to the showcase `claude` and `codex` profiles:
+# `opt-owner` has the `mode` and `model` options (its `next` choice has a version
+# floor the shell runtime cannot meet), `opt-agent` is agent-only, `opt-hidden` is
+# hidden, and `opt-preset` and `opt-locked` are presets of `opt-owner`.
 # `--showcase` replaces the four fixed sessions and the three projects with a
 # realistic synthetic dataset (see `showcase_sessions`) for README screenshots:
 # agent profiles `claude` and `codex` that run a harmless shell program, with
@@ -390,6 +395,70 @@ program = "$iso/bin/showcase-agent"
 args = []
 EOF
     done
+}
+
+# Writes the launch-option profiles of `start --profile-options` under $1 (the
+# isolated directory), running the showcase program. The `next` choice has a
+# version floor and the shell runtime reports no version, so it is unavailable;
+# it is never the default, so a launch that names no option stays available.
+write_option_profiles() {
+    local iso=$1 agents="$1/config/pohunek/agents" program="$1/bin/showcase-agent"
+    write_showcase_agents "$iso" || return 1
+    cat >"$agents/opt-owner.toml" <<EOF
+display_name = "Options demo"
+base = "shell"
+manifest = "showcase"
+program = "$program"
+args = []
+
+[options.mode]
+label = "Mode"
+default = "plan"
+choices.plan = { label = "Plan", args = ["--mode", "plan"] }
+choices.build = { label = "Build", args = ["--mode", "build"] }
+
+[options.model]
+label = "Model"
+default = "standard"
+choices.standard = { label = "Standard", args = ["--model", "standard"] }
+choices.next = { label = "Next", args = ["--model", "next"], min_runtime = "9.9.0" }
+EOF
+    cat >"$agents/opt-agent.toml" <<EOF
+display_name = "Agent-only helper"
+audience = "agent"
+base = "shell"
+manifest = "showcase"
+program = "$program"
+args = []
+EOF
+    cat >"$agents/opt-hidden.toml" <<EOF
+display_name = "Hidden helper"
+audience = "hidden"
+base = "shell"
+manifest = "showcase"
+program = "$program"
+args = []
+EOF
+    cat >"$agents/opt-preset.toml" <<'EOF'
+display_name = "Options demo (build)"
+
+[preset]
+parent = "opt-owner"
+
+[preset.options]
+mode = "build"
+EOF
+    cat >"$agents/opt-locked.toml" <<'EOF'
+display_name = "Options demo (locked)"
+
+[preset]
+parent = "opt-owner"
+locked = true
+
+[preset.options]
+mode = "build"
+EOF
+    chmod 600 "$agents"/opt-*.toml || return 1
 }
 
 # Creates one showcase session from a `name|project|agent|state|group|meta` line.
@@ -1170,7 +1239,7 @@ EOF
 }
 
 start() {
-    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port="" showcase=0 setup_state="" sub=0
+    local port="" windowed=0 isolated=1 sessions=0 remote_host="" remote_port="" showcase=0 setup_state="" sub=0 profile_opts=0
     local -a app_args=()
     while [ $# -gt 0 ]; do
         case $1 in
@@ -1186,6 +1255,7 @@ start() {
             --owner-daemon) isolated=0; shift ;;
             --showcase) showcase=1; shift ;;
             --sub-sessions) sub=1; shift ;;
+            --profile-options) profile_opts=1; shift ;;
             --setup)
                 setup_state=${2:?--setup needs a state}
                 case $setup_state in
@@ -1219,6 +1289,8 @@ start() {
     [ "$sessions" -eq 0 ] || [ "$showcase" -eq 0 ] || die "--showcase and --sessions cannot be combined"
     [ "$sub" -eq 0 ] || { [ "$isolated" -eq 1 ] && [ "$showcase" -eq 0 ] && [ -z "$setup_state" ]; } ||
         die "--sub-sessions needs the isolated daemon and cannot be combined with --showcase or --setup"
+    [ "$profile_opts" -eq 0 ] || { [ "$isolated" -eq 1 ] && [ "$showcase" -eq 0 ] && [ -z "$setup_state" ]; } ||
+        die "--profile-options needs the isolated daemon and cannot be combined with --showcase or --setup"
     [ -n "$remote_host" ] || [ -z "$remote_port" ] || die "--remote-port needs --remote-host"
     [ -z "$setup_state" ] || { [ "$isolated" -eq 1 ] && [ "$sessions" -eq 0 ] && [ "$showcase" -eq 0 ] && [ -z "$remote_host" ]; } ||
         die "--setup cannot be combined with --owner-daemon, --sessions, --showcase or --remote-host"
@@ -1248,6 +1320,9 @@ start() {
         iso=$(start_isolated_daemon "$sessions" "$showcase")
         if [ "$sub" -eq 1 ]; then
             (create_sub_sessions "$iso") >&2 || { stop >/dev/null 2>&1 || true; exit 1; }
+        fi
+        if [ "$profile_opts" -eq 1 ]; then
+            write_option_profiles "$iso" || { stop >/dev/null 2>&1 || true; die "cannot write the option profiles"; }
         fi
     fi
 

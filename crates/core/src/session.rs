@@ -73,6 +73,9 @@ pub struct SessionRow {
     pub group_problem: Option<GroupNameProblem>,
     /// An observed session the daemon does not own; it refuses metadata writes.
     pub external: bool,
+    /// The choice id of each of the session's launch options, in option-id
+    /// order, sanitized; empty for a session launched without options.
+    pub agent_options: Vec<String>,
     /// The facts that place the session in the sub-session tree.
     pub lineage: Lineage,
     /// Id of the nearest ancestor, on the same host, whose
@@ -192,6 +195,12 @@ impl SessionRow {
             group,
             group_problem,
             external: info.external == Some(true),
+            agent_options: info
+                .agent_options
+                .values()
+                .map(|choice| sanitize(choice))
+                .filter(|choice| !choice.is_empty())
+                .collect(),
             lineage: Lineage::from_info(&info),
             attention_isolated_by: None,
             tree: TreePosition::default(),
