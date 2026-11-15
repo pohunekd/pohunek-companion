@@ -236,6 +236,44 @@ parent by default, with a toggle.
   group section (the parent is in Needs you, or the filter hides it, for
   example an ended parent under the default state filter) is shown in its own
   place. Rows in Needs you show their count but no expand control.
+- **Attention mark.** A row shows "N need you" when N sessions below it in
+  this tree, at any depth and through `spawned_by` or the `manager` fallback,
+  need the owner and are not isolated (below). The mark is computed from
+  every session, not from what the filter shows, so it stays folded,
+  expanded, with the Sub-sessions chip on or off, and on a row in Needs you.
+  The sessions themselves stay in Needs you and the tray.
+- **Attention isolation.** A session whose metadata holds
+  `pohunek.attention.children=isolate` (exactly that value) keeps the
+  attention of its descendants from the owner. The rule is the daemon's
+  (`crates/daemon/src/session/attention_isolation.rs` in Pohunek): walk
+  `spawned_by` upward from a session, skipping the session itself; the
+  nearest flagged ancestor isolates it; an ancestor missing from the host's
+  sessions ends the walk (not isolated), and so does a session seen twice.
+  Only `spawned_by` counts, never the `manager` fallback: the daemon still
+  notifies for a worker tied to a flagged manager only by its `manager` key,
+  so the companion keeps it in Needs you too. An isolated session is never
+  lifted into Needs you (the By state view shows a blocked isolated session
+  in a Needs owner section), counts in no tray number or entry, and marks no
+  ancestor; its own row keeps its state label. The walk lives in
+  `crates/core/src/attention_isolation.rs`.
+- **Isolation capability.** Each host loop reads
+  `session_attention_isolation_supported` with `host.inspect`
+  (`skip_runtime_probes`, so no agent runtime is probed) once per connection,
+  after subscribing and before the seed; a daemon upgrade always reconnects,
+  so the value is never stale. A daemon that predates the flag (Pohunek 0.42)
+  stores the key and ignores it, so nothing is isolated on that host. A failed
+  read logs one `warn`, adds "isolation unknown for <host>" to the status
+  line, and leaves isolation off for that connection: more attention, never
+  less.
+- **Why the companion walks.** The daemon reports its result as
+  `attention_isolated_by` on `session.list` only; events and
+  `session.inspect` never carry it, and the store keeps whatever the latest
+  event sent, so the field would vanish on the next `session_updated`. The
+  companion therefore walks the rows of one host after every change
+  (metadata and `spawned_by` come with every event). On each seed from a
+  daemon with the capability it compares the daemon's annotation with its own
+  walk and logs one `warn` with the number of disagreeing sessions (no
+  session ids or values).
 - **Search.** While the filter searches (query, project or host) nothing is
   folded, so every match shows. A state-only filter keeps the fold.
 - **Sections.** A section that only the fold emptied (for example a group
@@ -392,12 +430,14 @@ service" action.
 | Idle | `idle` with no subagent or background work for longer than the configured threshold |
 | Runtime problem | runtime state `conflict` or `incompatible` (not running as far as the daemon can tell, not lost); wins over activity and attention. `reconnecting` stays with its activity |
 | Ended / lost | `stopped`, `done`, `failed`, or `session_runtime_lost` |
+| (not counted) | the session's attention is isolated by a flagged ancestor (see Sub-sessions), whatever its state |
 
 The icon is the Pohunek herder figure in the colour of the most urgent state,
 with a badge digit for the count of sessions needing the owner; the menu lists
 them and attaches on click. Icon files derive from `assets/pohunek-icon-master.svg`
 (`scripts/build-icons`, origin and licence in `assets/README.md`). Runtime problem, Ended and
-no-agent-state sessions never count in the tray. The state filter shows a
+no-agent-state sessions never count in the tray, and neither does a session
+whose attention a flagged ancestor isolates. The state filter shows a
 "Problem" chip while some session is in that state, and the row's detail line
 adds the runtime state and its `loss_reason`. The tray is a passive summary:
 desktop notifications stay with Pohunek's own notification command.

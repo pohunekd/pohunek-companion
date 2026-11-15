@@ -2191,6 +2191,7 @@ order = "g"
             group_problem: None,
             external: false,
             lineage: Default::default(),
+            attention_isolated_by: None,
             tree: Default::default(),
         }
     }

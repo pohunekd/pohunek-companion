@@ -6,13 +6,19 @@
 //! single `work.role=manager` session of the same host whose `manager` value
 //! equals the row's; else none (a root, or an orphan whose spawner is gone).
 //! Only the daemon's own facts are read: `spawned_by` and session metadata.
+//!
+//! A parent's attention mark counts the sessions below it in this tree that
+//! need the owner and are not isolated from it
+//! ([`crate::attention_isolation`]).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use pohunek_client::protocol::SessionInfo;
+use pohunek_client::protocol::{
+    ATTENTION_CHILDREN_ISOLATE, ATTENTION_CHILDREN_METADATA_KEY, SessionInfo,
+};
 
 use crate::layout::GroupSection;
-use crate::needs_you::NEEDS_YOU_ID;
+use crate::needs_you::{NEEDS_YOU_ID, lifts_into_needs_you};
 use crate::session::{SessionKey, SessionRow};
 
 /// Metadata key of a session's Pohunek Work role.
@@ -22,7 +28,8 @@ const MANAGER_ROLE: &str = "manager";
 /// Metadata key that ties a session to its manager when `spawned_by` cannot.
 const MANAGER_KEY: &str = "manager";
 
-/// The facts of a session that place it in the sub-session tree.
+/// The facts of a session that place it in the sub-session tree and decide
+/// whether its attention is isolated.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Lineage {
     /// Id of the session whose request created this one.
@@ -31,6 +38,10 @@ pub struct Lineage {
     pub is_manager: bool,
     /// The session's `manager` metadata value; `None` when absent or empty.
     pub manager: Option<String>,
+    /// The session's `pohunek.attention.children` metadata value is exactly
+    /// `isolate`: the attention of the sessions it spawned, directly or
+    /// through others, does not reach the owner.
+    pub isolates_children: bool,
 }
 
 impl Lineage {
@@ -50,6 +61,12 @@ impl Lineage {
                 .map(|value| value.trim())
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
+            // The daemon compares the value verbatim; any other value is not
+            // the flag.
+            isolates_children: info
+                .metadata
+                .get(ATTENTION_CHILDREN_METADATA_KEY)
+                .is_some_and(|value| value == ATTENTION_CHILDREN_ISOLATE),
         }
     }
 }
@@ -67,6 +84,9 @@ pub struct TreePosition {
     /// Sub-sessions are folded, so the row's sub-session control expands and
     /// collapses them.
     pub folding: bool,
+    /// Number of sessions below the row in the sub-session tree, at any depth,
+    /// that need the owner and are not isolated from the owner.
+    pub needs_owner_below: usize,
 }
 
 /// The parent of every row that has one, over the rows of all hosts.
@@ -74,12 +94,15 @@ pub struct TreePosition {
 pub struct SubSessionTree {
     parents: HashMap<SessionKey, SessionKey>,
     children: HashMap<SessionKey, Vec<SessionKey>>,
+    needs_owner_below: HashMap<SessionKey, usize>,
     ambiguous_managers: BTreeSet<(String, String)>,
 }
 
 impl SubSessionTree {
     /// Resolves every row's parent. Parents are looked up on the row's own
     /// host only; a `spawned_by` cycle makes each of its sessions a root.
+    /// Every row the Needs-you section lifts marks each of its ancestors up
+    /// to its root; an isolated row marks none.
     pub fn build(rows: &[SessionRow]) -> Self {
         let keys: HashSet<&SessionKey> = rows.iter().map(|row| &row.key).collect();
         let mut managers: HashMap<(&str, &str), Vec<&SessionKey>> = HashMap::new();
@@ -127,9 +150,19 @@ impl SubSessionTree {
                     .push(row.key.clone());
             }
         }
+        let mut needs_owner_below: HashMap<SessionKey, usize> = HashMap::new();
+        for row in rows.iter().filter(|row| lifts_into_needs_you(row)) {
+            // `break_cycles` left no loop, so the walk ends at a root.
+            let mut current = parents.get(&row.key);
+            while let Some(ancestor) = current {
+                *needs_owner_below.entry(ancestor.clone()).or_default() += 1;
+                current = parents.get(ancestor);
+            }
+        }
         Self {
             parents,
             children,
+            needs_owner_below,
             ambiguous_managers,
         }
     }
@@ -145,6 +178,12 @@ impl SubSessionTree {
             .get(key)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    /// Sessions below `key`, at any depth, that need the owner and are not
+    /// isolated from the owner.
+    pub fn needs_owner_below(&self, key: &SessionKey) -> usize {
+        self.needs_owner_below.get(key).copied().unwrap_or_default()
     }
 
     /// `(host, manager value)` pairs that more than one manager session of
@@ -214,6 +253,7 @@ pub fn fold_sections(
         sub_sessions: tree.children(&row.key).len(),
         expanded: false,
         folding: false,
+        needs_owner_below: tree.needs_owner_below(&row.key),
     };
     let fold_context = Fold {
         tree,
@@ -277,6 +317,7 @@ impl Fold<'_> {
             sub_sessions: self.tree.children(&key).len(),
             expanded: is_expanded,
             folding: true,
+            needs_owner_below: self.tree.needs_owner_below(&key),
         };
         out.push(row);
         if !is_expanded {
@@ -334,6 +375,7 @@ mod tests {
             group_problem: None,
             external: false,
             lineage,
+            attention_isolated_by: None,
             tree: TreePosition::default(),
         }
     }
