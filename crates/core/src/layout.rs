@@ -2190,6 +2190,7 @@ order = "g"
             group: None,
             group_problem: None,
             external: false,
+            agent_options: Vec::new(),
             lineage: Default::default(),
             attention_isolated_by: None,
             tree: Default::default(),

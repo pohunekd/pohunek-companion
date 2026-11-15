@@ -1,6 +1,18 @@
 import { CheckBox, LineEdit, Palette, TextEdit } from "std-widgets.slint";
 import { Theme } from "app.slint";
 import { ChipField, DialogTheme, FieldLabel, SearchSelect } from "dialog_fields.slint";
+import { ChoiceChips } from "choice_chips.slint";
+
+// One launch option of the selected agent profile.
+export struct OptionRowData {
+    label: string,
+    choices: [string],
+    // Parallel to `choices`: the chosen entry, and entries the host cannot launch.
+    checked: [bool],
+    disabled: [bool],
+    // One line per unavailable choice: `label: reason`.
+    notes: string,
+}
 
 export component NewSessionWindow inherits Window {
     title: "New session";
@@ -26,6 +38,13 @@ export component NewSessionWindow inherits Window {
     in property <[bool]> agent-disabled;
     // One line per unlaunchable agent: `name: reason`.
     in property <string> agent-notes;
+    // Some profiles are for agents or hidden; "Show all" lists them too.
+    in property <bool> show-all-offered;
+    in property <bool> show-all;
+    // The launch options of the selected agent, in the order the host reports.
+    in property <[OptionRowData]> option-rows;
+    // Why the remembered choices file could not be read; the dialog works without it.
+    in property <string> remembered-error;
     // Why Create is disabled; empty when it is allowed.
     in property <string> blocker;
     in-out property <int> project-index: -1;
@@ -57,6 +76,10 @@ export component NewSessionWindow inherits Window {
     callback host-changed(int);
     callback project-changed(int);
     callback agent-changed(int);
+    callback show-all-toggled();
+    // Row and choice index of a clicked option chip.
+    callback option-chosen(int, int);
+    callback reset-options();
     // The branch or base branch text changed.
     callback overrides-edited();
     callback template-chosen(int);
@@ -159,6 +182,67 @@ export component NewSessionWindow inherits Window {
                     font-size: Theme.detail-font-size;
                     wrap: word-wrap;
                 }
+                if root.show-all-offered: show-all-chip := ChoiceChips {
+                    model: ["Show all"];
+                    multi: true;
+                    checked: [root.show-all];
+                    chip-height: Theme.chip-height;
+                    chip-padding: Theme.chip-padding;
+                    chip-radius: Theme.chip-radius;
+                    chip-spacing: Theme.chip-spacing;
+                    font-size: Theme.chip-font-size;
+                    chip-background: Theme.chip-background;
+                    chip-hover-background: Theme.chip-hover-background;
+                    chip-selected-background: Theme.chip-selected-background;
+                    text-color: Theme.detail;
+                    selected-text-color: Theme.text;
+                    selected(index) => { root.show-all-toggled(); }
+                }
+            }
+            if root.option-rows.length > 0 && !root.loading: VerticalLayout {
+                spacing: DialogTheme.spacing;
+                for row[row-index] in root.option-rows: VerticalLayout {
+                    spacing: DialogTheme.field-spacing;
+                    FieldLabel { text: row.label; }
+                    option-chips := ChoiceChips {
+                        model: row.choices;
+                        // Rust owns the selection: `checked` mirrors the form.
+                        multi: true;
+                        checked: row.checked;
+                        disabled: row.disabled;
+                        chip-height: Theme.chip-height;
+                        chip-padding: Theme.chip-padding;
+                        chip-radius: Theme.chip-radius;
+                        chip-spacing: Theme.chip-spacing;
+                        font-size: Theme.chip-font-size;
+                        chip-background: Theme.chip-background;
+                        chip-hover-background: Theme.chip-hover-background;
+                        chip-selected-background: Theme.chip-selected-background;
+                        text-color: Theme.detail;
+                        disabled-text-color: DialogTheme.chip-disabled-text;
+                        selected-text-color: Theme.text;
+                        selected(index) => { root.option-chosen(row-index, index); }
+                    }
+                    if row.notes != "": Text {
+                        text: row.notes;
+                        color: Theme.detail;
+                        font-size: Theme.detail-font-size;
+                        wrap: word-wrap;
+                    }
+                }
+                reset-options-button := Rectangle {
+                    height: DialogTheme.button-height;
+                    Text {
+                        width: parent.width;
+                        text: "Reset to defaults";
+                        color: reset-touch.has-hover ? Theme.text : Theme.detail;
+                        font-size: DialogTheme.label-font-size;
+                        horizontal-alignment: left;
+                    }
+                    reset-touch := TouchArea {
+                        clicked => { root.reset-options(); }
+                    }
+                }
             }
             if root.template-names.length > 1 && !root.loading: VerticalLayout {
                 spacing: DialogTheme.field-spacing;
@@ -219,6 +303,12 @@ export component NewSessionWindow inherits Window {
                 text: "Attach after creating";
                 checked <=> root.attach-after-create;
                 enabled: !root.busy && !root.created;
+            }
+            if root.remembered-error != "": remembered-error-text := Text {
+                text: root.remembered-error;
+                color: Theme.error;
+                font-size: Theme.error-font-size;
+                wrap: word-wrap;
             }
             if root.error != "": error-text := Text {
                 text: root.error;

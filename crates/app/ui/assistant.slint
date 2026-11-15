@@ -1,6 +1,7 @@
 import { CheckBox, Palette } from "std-widgets.slint";
 import { Theme } from "app.slint";
 import { ChipField, DialogTheme, FieldLabel, MultiLineField, SearchSelect } from "dialog_fields.slint";
+import { ChoiceChips } from "choice_chips.slint";
 
 export component AssistantWindow inherits Window {
     title: "Pohunek assistant";
@@ -28,6 +29,9 @@ export component AssistantWindow inherits Window {
     // automatic.
     in property <[string]> agent-names;
     in-out property <int> agent-index: 0;
+    // Some profiles are for agents or hidden; "Show all" lists them too.
+    in property <bool> show-all-offered;
+    in property <bool> show-all;
     in-out property <string> request;
     // Why Start is disabled; empty when it is allowed.
     in property <string> blocker;
@@ -51,6 +55,7 @@ export component AssistantWindow inherits Window {
     callback project-changed(int);
     callback intent-changed(int);
     callback agent-changed(int);
+    callback show-all-toggled();
     callback submit();
     callback cancel();
 
@@ -151,6 +156,22 @@ export component AssistantWindow inherits Window {
                     model: root.agent-names;
                     selected-index <=> root.agent-index;
                     selected(index) => { root.agent-changed(index); }
+                }
+                if root.show-all-offered: show-all-chip := ChoiceChips {
+                    model: ["Show all"];
+                    multi: true;
+                    checked: [root.show-all];
+                    chip-height: Theme.chip-height;
+                    chip-padding: Theme.chip-padding;
+                    chip-radius: Theme.chip-radius;
+                    chip-spacing: Theme.chip-spacing;
+                    font-size: Theme.chip-font-size;
+                    chip-background: Theme.chip-background;
+                    chip-hover-background: Theme.chip-hover-background;
+                    chip-selected-background: Theme.chip-selected-background;
+                    text-color: Theme.detail;
+                    selected-text-color: Theme.text;
+                    selected(index) => { root.show-all-toggled(); }
                 }
             }
             VerticalLayout {

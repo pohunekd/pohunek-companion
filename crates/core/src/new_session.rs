@@ -8,15 +8,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use pohunek_assistant::runtime_is_assistant_capable;
 use pohunek_client::protocol::method::{HostInspect, ProjectAction, ProjectActions, ProjectList};
 use pohunek_client::protocol::{
-    ActionSummary, AgentRuntime, ProjectActionParams, ProjectActionResult, ProjectActionsParams,
-    ProjectInfo, ProjectListParams, ProviderKind, SessionNewParams,
+    ActionSummary, AgentOption, AgentRuntime, ProjectActionParams, ProjectActionResult,
+    ProjectActionsParams, ProjectInfo, ProjectListParams, ProviderKind, SessionNewParams,
 };
 use pohunek_client::{Client, ClientError};
 use tracing::{error, info};
 
+use crate::badge::sanitize;
 use crate::config::{DaemonConfig, NewSessionConfig};
 use crate::connect::{connect_for_create, connect_host, socket_for_host};
 use crate::error::CoreError;
+use crate::profile_options::{Audience, OptionForm, outgoing_options};
 
 /// Shown when a create may or may not have happened. `session.new` has no
 /// idempotency key, so the request is never resent.
@@ -33,7 +35,16 @@ pub struct ProjectChoice {
 /// An agent the host reports, with the reason it cannot be launched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentChoice {
+    /// The agent name `session.new` takes.
     pub name: String,
+    /// What pickers show: the profile's sanitized `display_name`, else the
+    /// agent name.
+    pub label: String,
+    /// Who the profile is for; pickers list only owner profiles by default.
+    pub audience: Audience,
+    /// The profile's launch options as `host.inspect` reported them; empty
+    /// for a bare runtime, a locked preset or a profile without options.
+    pub options: Vec<AgentOption>,
     /// `None` when the agent can be launched now.
     pub unlaunchable: Option<String>,
 }
@@ -58,6 +69,8 @@ pub struct Choices {
     /// Agents that can host an assistant session, in the daemon's order:
     /// launchable and not shell-backed.
     pub assistant_agents: Vec<String>,
+    /// The daemon accepts `agent_options` on `session.new`.
+    pub agent_options_supported: bool,
 }
 
 impl Choices {
@@ -70,6 +83,20 @@ impl Choices {
         self.agents
             .iter()
             .position(|agent| agent.name == name && agent.is_launchable())
+    }
+
+    /// The agent called `name`, launchable or not.
+    pub fn agent(&self, name: &str) -> Option<&AgentChoice> {
+        self.agents.iter().find(|agent| agent.name == name)
+    }
+
+    /// The assistant-capable agents with their labels and audiences, in the
+    /// order of [`Self::assistant_agents`].
+    pub fn assistant_agent_choices(&self) -> Vec<AgentChoice> {
+        self.assistant_agents
+            .iter()
+            .filter_map(|name| self.agent(name).cloned())
+            .collect()
     }
 }
 
@@ -97,6 +124,8 @@ pub struct NewSessionForm {
     pub branch: String,
     /// Base branch override, used only for Blank.
     pub base_branch: String,
+    /// The option form of the selected agent.
+    pub options: OptionForm,
 }
 
 /// What the dialog is doing besides showing the form.
@@ -127,6 +156,12 @@ pub enum FormError {
     NoAgent,
     #[error("The agent `{0}` is not launchable on this host.")]
     AgentNotLaunchable(String),
+    #[error("{option}: {choice} is not available on this host ({reason}).")]
+    OptionUnavailable {
+        option: String,
+        choice: String,
+        reason: String,
+    },
     #[error("The template is still loading.")]
     TemplateLoading,
     #[error("A branch or base branch is set, but `git` is not available on the daemon's host.")]
@@ -207,15 +242,29 @@ fn unlaunchable_reason(runtime: &AgentRuntime) -> Option<String> {
     None
 }
 
+/// The picker entry of `runtime`.
+fn agent_choice(runtime: &AgentRuntime) -> AgentChoice {
+    let label = runtime
+        .display_name
+        .as_deref()
+        .map(sanitize)
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| runtime.agent.clone());
+    AgentChoice {
+        name: runtime.agent.clone(),
+        label,
+        audience: Audience::from_wire(runtime.audience),
+        options: runtime.options.clone(),
+        unlaunchable: unlaunchable_reason(runtime),
+    }
+}
+
 /// Every reported agent, launchable ones first; each group keeps the
 /// daemon's order.
 fn agent_choices(runtimes: &[AgentRuntime]) -> Vec<AgentChoice> {
     let (launchable, blocked): (Vec<_>, Vec<_>) = runtimes
         .iter()
-        .map(|runtime| AgentChoice {
-            name: runtime.agent.clone(),
-            unlaunchable: unlaunchable_reason(runtime),
-        })
+        .map(agent_choice)
         .partition(AgentChoice::is_launchable);
     launchable.into_iter().chain(blocked).collect()
 }
@@ -274,6 +323,22 @@ pub fn submit_blocker(
     if choices.launchable_position(agent).is_none() {
         return Some(FormError::AgentNotLaunchable(agent.to_owned()));
     }
+    // The daemon checks the runtime floor of every resolved choice, defaults
+    // included, so an unavailable effective choice would be refused.
+    let fresh;
+    let options = if form.options.agent == agent {
+        &form.options
+    } else {
+        fresh = OptionForm::for_agent(choices, agent);
+        &fresh
+    };
+    if let Some(blocked) = options.blocking_choice() {
+        return Some(FormError::OptionUnavailable {
+            option: blocked.option,
+            choice: blocked.choice,
+            reason: blocked.reason,
+        });
+    }
     if form.template_loading {
         return Some(FormError::TemplateLoading);
     }
@@ -325,7 +390,7 @@ pub fn build_params(
         client_request_id: None,
         context_package_digest: None,
         fetch_ref: None,
-        agent_options: BTreeMap::new(),
+        agent_options: outgoing_options(&form.options, choices, agent),
     })
 }
 
@@ -364,6 +429,7 @@ async fn read_choices(
             .filter(|runtime| runtime_is_assistant_capable(runtime))
             .map(|runtime| runtime.agent.clone())
             .collect(),
+        agent_options_supported: capabilities.session_new_agent_options_supported,
     })
 }
 
@@ -523,6 +589,9 @@ mod tests {
     fn choice(name: &str, unlaunchable: Option<&str>) -> AgentChoice {
         AgentChoice {
             name: name.to_owned(),
+            label: name.to_owned(),
+            audience: Audience::Owner,
+            options: Vec::new(),
             unlaunchable: unlaunchable.map(str::to_owned),
         }
     }
@@ -541,6 +610,7 @@ mod tests {
             git_available: true,
             worktree_supported: true,
             assistant_agents: Vec::new(),
+            agent_options_supported: false,
         }
     }
 
@@ -596,6 +666,68 @@ mod tests {
                 Some("unsupported version (0.1.2)"),
                 Some("unsupported version"),
             ]
+        );
+    }
+
+    fn option_choices(default_model: &str) -> Choices {
+        use pohunek_client::protocol::{AgentOptionChoice, AgentOptionUnavailable};
+        let offered = |id: &str, available: bool| AgentOptionChoice {
+            id: id.to_owned(),
+            label: id.to_owned(),
+            available,
+            reason: (!available).then_some(AgentOptionUnavailable::RuntimeTooOld),
+            min_runtime: (!available).then(|| "2.0.0".to_owned()),
+        };
+        let mut choices = choices();
+        choices.agent_options_supported = true;
+        choices.agents[0].options = vec![AgentOption {
+            id: "model".to_owned(),
+            label: "Model".to_owned(),
+            default: default_model.to_owned(),
+            choices: vec![
+                offered("std", true),
+                offered("big", true),
+                offered("next", false),
+            ],
+        }];
+        choices
+    }
+
+    #[test]
+    fn an_unavailable_default_blocks_create_even_before_the_form_is_built() {
+        let choices = option_choices("next");
+        let expected = Some(FormError::OptionUnavailable {
+            option: "Model".to_owned(),
+            choice: "next".to_owned(),
+            reason: "needs runtime 2.0.0 or newer".to_owned(),
+        });
+        assert_eq!(
+            blocker(&form(), &choices, None, Activity::default()),
+            expected
+        );
+        let mut picked = form();
+        picked.options = OptionForm::for_agent(&choices, "shell");
+        assert_eq!(
+            blocker(&picked, &choices, None, Activity::default()),
+            expected
+        );
+        assert!(picked.options.select(0, 0));
+        assert_eq!(blocker(&picked, &choices, None, Activity::default()), None);
+    }
+
+    #[test]
+    fn params_carry_only_the_non_default_choices() {
+        let choices = option_choices("std");
+        let config = NewSessionConfig::default();
+        let mut picked = form();
+        picked.options = OptionForm::for_agent(&choices, "shell");
+        let params = build_params(&picked, &choices, None, Activity::default(), &config).unwrap();
+        assert!(params.agent_options.is_empty());
+        assert!(picked.options.select(0, 1));
+        let params = build_params(&picked, &choices, None, Activity::default(), &config).unwrap();
+        assert_eq!(
+            params.agent_options,
+            BTreeMap::from([("model".to_owned(), "big".to_owned())])
         );
     }
 

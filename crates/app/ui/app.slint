@@ -48,6 +48,8 @@ export struct SessionRowData {
     depth: int,
     // Number of direct sub-sessions.
     sub-sessions: int,
+    // Choice id of each launch option, in option-id order.
+    agent-options: [string],
     // Sessions below the row, at any depth, that need the owner and are not
     // isolated from the owner.
     needs-owner-below: int,
@@ -566,6 +568,23 @@ component SessionRow inherits Rectangle {
                 font-size: Theme.detail-font-size;
                 horizontal-alignment: left;
                 overflow: elide;
+            }
+            for choice in root.data.agent-options: Rectangle {
+                background: Theme.badge-background;
+                border-radius: Theme.badge-radius;
+                horizontal-stretch: 0;
+                width: min(option-text.preferred-width + 2 * Theme.badge-padding, Theme.host-tag-max-width);
+                HorizontalLayout {
+                    padding-left: Theme.badge-padding;
+                    padding-right: Theme.badge-padding;
+                    option-text := Text {
+                        text: choice;
+                        color: Theme.badge-text;
+                        font-size: Theme.badge-font-size;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
             }
         }
         if root.data.badge != "": HorizontalLayout {

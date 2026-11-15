@@ -81,6 +81,12 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
             SessionRowData {
                 depth: i32::try_from(s.tree.depth).unwrap_or(i32::MAX),
                 sub_sessions: i32::try_from(s.tree.sub_sessions).unwrap_or(i32::MAX),
+                agent_options: ModelRc::new(VecModel::from(
+                    s.agent_options
+                        .iter()
+                        .map(|choice| clip_display(choice, BADGE_MAX_CHARS).into())
+                        .collect::<Vec<slint::SharedString>>(),
+                )),
                 needs_owner_below: i32::try_from(s.tree.needs_owner_below).unwrap_or(i32::MAX),
                 expanded: s.tree.expanded,
                 folding: s.tree.folding,

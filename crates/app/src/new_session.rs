@@ -10,15 +10,16 @@ use std::time::Instant;
 use pohunek_companion_core::{
     Activity, AttachConfig, AttachError, Choices, Config, CreateError, DaemonConfig, DialogHost,
     DiscoveryPlan, FormError, GROUP_KEY, Generation, HostConfig, LOCAL_HOST, NewSessionConfig,
-    NewSessionForm, ProjectChoice, Recipe, SessionKey, SessionNewParams, attach, build_params,
-    create_session, dialog_hosts, discover_dialog_hosts, fuzzy_matches, layout_path,
-    load_choices_staged, load_recipe, load_templates, new_session_group_value,
-    register_dialog_routes, submit_blocker,
+    NewSessionForm, OptionForm, ProjectChoice, Recipe, Remembered, RememberedChoices, SessionKey,
+    SessionNewParams, attach, build_params, create_session, dialog_hosts, discover_dialog_hosts,
+    fuzzy_matches, held_back_agents, layout_path, listed_agents, load_choices_staged, load_recipe,
+    load_remembered, load_templates, new_session_group_value, reconcile, register_dialog_routes,
+    remember, remembered_path, submit_blocker,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{error, info, warn};
 
-use crate::{Fuzzy, NewSessionWindow};
+use crate::{Fuzzy, NewSessionWindow, OptionRowData};
 
 /// Wayland app id of the dialog; distinct from the sidebar's so compositor
 /// rules can float it separately.
@@ -147,12 +148,7 @@ impl Drop for FinishOnDrop {
     }
 }
 
-fn show_choices(
-    window: &NewSessionWindow,
-    choices: &Choices,
-    preselect: Option<&str>,
-    agent: Option<&str>,
-) {
+fn show_projects(window: &NewSessionWindow, choices: &Choices, preselect: Option<&str>) {
     window.set_project_names(ModelRc::new(VecModel::from(
         choices
             .projects
@@ -160,50 +156,25 @@ fn show_choices(
             .map(|project| SharedString::from(project.label.as_str()))
             .collect::<Vec<_>>(),
     )));
-    window.set_agent_names(ModelRc::new(VecModel::from(
-        choices
-            .agents
-            .iter()
-            .map(|agent| SharedString::from(agent.name.as_str()))
-            .collect::<Vec<_>>(),
-    )));
-    window.set_agent_disabled(ModelRc::new(VecModel::from(
-        choices
-            .agents
-            .iter()
-            .map(|agent| !agent.is_launchable())
-            .collect::<Vec<_>>(),
-    )));
-    window.set_agent_notes(
-        choices
-            .agents
-            .iter()
-            .filter_map(|agent| {
-                agent
-                    .unlaunchable
-                    .as_ref()
-                    .map(|reason| format!("{}: {reason}", agent.name))
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            .into(),
-    );
     // An unknown id stays unselected.
     let project = preselect
         .and_then(|id| choices.projects.iter().position(|p| p.id == id))
         .and_then(|index| i32::try_from(index).ok())
         .unwrap_or(-1);
     window.set_project_index(project);
-    // Launchable agents are listed first, so index 0 is selectable if any is.
-    let agent = agent
-        .and_then(|name| choices.launchable_position(name))
-        .and_then(|index| i32::try_from(index).ok())
-        .unwrap_or(if choices.has_launchable_agent() {
-            0
-        } else {
-            -1
-        });
-    window.set_agent_index(agent);
+}
+
+fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
+    ModelRc::new(VecModel::from(
+        items
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    ))
+}
+
+fn flags(items: impl IntoIterator<Item = bool>) -> ModelRc<bool> {
+    ModelRc::new(VecModel::from(items.into_iter().collect::<Vec<_>>()))
 }
 
 /// Why Create is disabled when the host's projects and agents could not be read.
@@ -247,6 +218,14 @@ struct Templates {
     requested_project: Option<String>,
     /// When the dialog process entered `run`; timestamps the load logs.
     started: Instant,
+    /// "Show all" lists agent and hidden profiles too.
+    show_all: Arc<AtomicBool>,
+    /// Index into `choices.agents` of each entry the agent select shows.
+    listed: Arc<Mutex<Vec<usize>>>,
+    /// The option form of the selected agent.
+    options: Arc<Mutex<OptionForm>>,
+    /// The agent and choices last created per host and project.
+    remembered: Arc<Mutex<RememberedChoices>>,
 }
 
 fn selected_project(window: &NewSessionWindow, choices: &Mutex<Choices>) -> Option<String> {
@@ -286,19 +265,127 @@ impl Templates {
             requested_project,
             generation: Arc::new(Generation::default()),
             state: Arc::new(Mutex::new(TemplateState::default())),
+            show_all: Arc::new(AtomicBool::new(false)),
+            listed: Arc::new(Mutex::new(Vec::new())),
+            options: Arc::new(Mutex::new(OptionForm::default())),
+            remembered: Arc::new(Mutex::new(RememberedChoices::default())),
+        }
+    }
+
+    /// The agent the select shows as chosen.
+    fn selected_agent(&self, window: &NewSessionWindow) -> Option<String> {
+        let index = usize::try_from(window.get_agent_index()).ok()?;
+        let choices = lock(&self.choices);
+        let position = *lock(&self.listed).get(index)?;
+        choices.agents.get(position).map(|agent| agent.name.clone())
+    }
+
+    /// Fills the agent select with the profiles the picker lists and selects
+    /// `agent` when it is launchable, else the first launchable entry.
+    fn show_agents(&self, window: &NewSessionWindow, agent: Option<&str>) {
+        let choices = lock(&self.choices);
+        let show_all = self.show_all.load(Ordering::SeqCst);
+        let listed = listed_agents(&choices.agents, show_all, agent);
+        let shown: Vec<_> = listed.iter().map(|index| &choices.agents[*index]).collect();
+        window.set_agent_names(strings(shown.iter().map(|agent| agent.label.clone())));
+        window.set_agent_disabled(flags(shown.iter().map(|agent| !agent.is_launchable())));
+        window.set_agent_notes(
+            shown
+                .iter()
+                .filter_map(|agent| {
+                    agent
+                        .unlaunchable
+                        .as_ref()
+                        .map(|reason| format!("{}: {reason}", agent.label))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into(),
+        );
+        window.set_show_all(show_all);
+        window.set_show_all_offered(show_all || held_back_agents(&choices.agents, agent) > 0);
+        // Launchable agents are listed first, so the first entry is selectable
+        // if any is.
+        let index = agent
+            .and_then(|name| {
+                shown
+                    .iter()
+                    .position(|candidate| candidate.name == name && candidate.is_launchable())
+            })
+            .or_else(|| shown.iter().position(|candidate| candidate.is_launchable()))
+            .and_then(|index| i32::try_from(index).ok())
+            .unwrap_or(-1);
+        window.set_agent_index(index);
+        *lock(&self.listed) = listed;
+    }
+
+    /// Shows the option form of the selected agent at its defaults.
+    fn rebuild_options(&self, window: &NewSessionWindow) {
+        let form = self
+            .selected_agent(window)
+            .map(|agent| OptionForm::for_agent(&lock(&self.choices), &agent))
+            .unwrap_or_default();
+        *lock(&self.options) = form;
+        self.show_options(window);
+    }
+
+    fn show_options(&self, window: &NewSessionWindow) {
+        let rows: Vec<OptionRowData> =
+            lock(&self.options)
+                .fields
+                .iter()
+                .map(|field| OptionRowData {
+                    label: field.label.as_str().into(),
+                    choices: strings(field.choices.iter().map(|choice| choice.label.clone())),
+                    checked: flags((0..field.choices.len()).map(|index| index == field.selected)),
+                    // The default stays clickable, so an unavailable default can
+                    // be chosen back after picking another choice.
+                    disabled: flags(field.choices.iter().enumerate().map(|(index, choice)| {
+                        choice.unavailable.is_some() && index != field.default
+                    })),
+                    notes: field
+                        .choices
+                        .iter()
+                        .filter_map(|choice| {
+                            choice
+                                .unavailable
+                                .as_ref()
+                                .map(|reason| format!("{}: {reason}", choice.label))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .into(),
+                })
+                .collect();
+        window.set_option_rows(ModelRc::new(VecModel::from(rows)));
+    }
+
+    /// Selects the agent and choices last created on this host in the selected
+    /// project, as far as the host still offers them.
+    fn apply_remembered(&self, window: &NewSessionWindow) {
+        let Some(project) = selected_project(window, &self.choices) else {
+            return;
+        };
+        let entry = lock(&self.remembered).get(&self.host(), &project).cloned();
+        let Some(entry) = entry else {
+            return;
+        };
+        let reconciled = reconcile(&entry.agent, &entry.options, &lock(&self.choices));
+        info!(
+            agent_kept = reconciled.agent.is_some(),
+            dropped = reconciled.dropped,
+            "remembered new-session choices applied"
+        );
+        if let Some(agent) = reconciled.agent.as_deref() {
+            self.show_agents(window, Some(agent));
+            *lock(&self.options) = reconciled.options;
+            self.show_options(window);
         }
     }
 
     /// The form as it stands in the window.
     fn form(&self, window: &NewSessionWindow) -> NewSessionForm {
-        let agent = usize::try_from(window.get_agent_index())
-            .ok()
-            .and_then(|index| {
-                lock(&self.choices)
-                    .agents
-                    .get(index)
-                    .map(|a| a.name.clone())
-            });
+        let agent = self.selected_agent(window);
         let (recipe, template_loading) = {
             let state = lock(&self.state);
             (state.recipe.clone(), state.loading)
@@ -312,6 +399,7 @@ impl Templates {
             template_loading,
             branch: window.get_branch().into(),
             base_branch: window.get_base_branch().into(),
+            options: lock(&self.options).clone(),
         }
     }
 
@@ -339,14 +427,7 @@ impl Templates {
             return;
         }
         let project = selected_project(window, &self.choices);
-        let agent = usize::try_from(window.get_agent_index())
-            .ok()
-            .and_then(|index| {
-                lock(&self.choices)
-                    .agents
-                    .get(index)
-                    .map(|a| a.name.clone())
-            });
+        let agent = self.selected_agent(window);
         info!(host = %target, "host chosen");
         *lock(&self.host) = target;
         *lock(&self.host_failure) = None;
@@ -360,7 +441,9 @@ impl Templates {
         window.set_loading(true);
         window.set_projects_ready(false);
         window.set_template_loading(false);
-        show_choices(window, &Choices::default(), None, None);
+        show_projects(window, &Choices::default(), None);
+        self.show_agents(window, None);
+        self.rebuild_options(window);
         show_template_names(window, &[]);
         window.set_template_index(0);
         self.refresh_blocker(window);
@@ -407,6 +490,10 @@ impl Templates {
         show_template_names(window, &[]);
         window.set_template_index(0);
         window.set_template_loading(false);
+        // While the agents load, the load applies the remembered choices.
+        if !window.get_loading() {
+            self.apply_remembered(window);
+        }
         self.refresh_blocker(window);
         let Some(project) = selected_project(window, &self.choices) else {
             return;
@@ -494,10 +581,10 @@ impl Templates {
     }
 
     fn apply(&self, window: &NewSessionWindow, recipe: Recipe) {
-        let agent = lock(&self.choices)
+        let launchable = lock(&self.choices)
             .launchable_position(&recipe.agent)
-            .and_then(|index| i32::try_from(index).ok());
-        let Some(agent) = agent else {
+            .is_some();
+        if !launchable {
             window.set_template_index(0);
             window.set_error(
                 format!(
@@ -507,8 +594,9 @@ impl Templates {
                 .into(),
             );
             return;
-        };
-        window.set_agent_index(agent);
+        }
+        self.show_agents(window, Some(&recipe.agent));
+        self.rebuild_options(window);
         window.set_prompt(recipe.prompt.as_str().into());
         lock(&self.state).recipe = Some(recipe);
         self.refresh_blocker(window);
@@ -588,8 +676,18 @@ fn load_in_background(
                 Ok(loaded) => {
                     // The project may have been picked while the agents loaded.
                     let chosen = selected_project(&window, &templates.choices).or(project);
-                    show_choices(&window, &loaded, chosen.as_deref(), agent.as_deref());
+                    show_projects(&window, &loaded, chosen.as_deref());
                     *lock(&templates.choices) = loaded;
+                    templates.show_agents(&window, agent.as_deref());
+                    templates.rebuild_options(&window);
+                    // An agent kept across a host switch wins over the
+                    // remembered one while the new host can launch it.
+                    let carried = agent.as_deref().is_some_and(|name| {
+                        lock(&templates.choices).launchable_position(name).is_some()
+                    });
+                    if !carried {
+                        templates.apply_remembered(&window);
+                    }
                     templates.refresh_blocker(&window);
                 }
                 Err(message) => {
@@ -632,6 +730,12 @@ pub(crate) fn attach_created(after: &AttachAfter, host: &str, session: &str) -> 
     })
 }
 
+/// Where to record the agent and choices of a create once it succeeds.
+struct RememberAfter {
+    path: PathBuf,
+    entry: Remembered,
+}
+
 fn submit_in_background(
     window: slint::Weak<NewSessionWindow>,
     templates: Templates,
@@ -639,6 +743,7 @@ fn submit_in_background(
     config: NewSessionConfig,
     params: SessionNewParams,
     attach_after: Option<AttachAfter>,
+    remember_after: Option<RememberAfter>,
 ) {
     std::thread::spawn(move || {
         let outcome = match block_on(create_session(&host, &templates.daemon, &config, params)) {
@@ -650,6 +755,12 @@ fn submit_in_background(
         match &outcome {
             Ok(id) => info!(host = %host, session = %id, "create succeeded"),
             Err(err) => warn!(host = %host, code = err.code(), "create failed"),
+        }
+        // The session exists whether or not it can be attached.
+        if let (Ok(_), Some(after)) = (&outcome, remember_after)
+            && let Err(err) = remember(&after.path, after.entry)
+        {
+            warn!(error = %err, "remember the new-session choices");
         }
         let attached = match (&outcome, &attach_after) {
             (Ok(id), Some(after)) => attach_created(after, &host, id),
@@ -887,6 +998,19 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                 started,
             );
             *lock(&templates.host_failure) = host_failure;
+            // The dialog works without the file when it cannot be read.
+            let remembered_file = remembered_path();
+            match remembered_file
+                .as_deref()
+                .map_err(ToString::to_string)
+                .and_then(|path| load_remembered(path).map_err(|err| err.to_string()))
+            {
+                Ok(loaded) => *lock(&templates.remembered) = loaded,
+                Err(message) => {
+                    warn!(error = %message, "remembered new-session choices not loaded");
+                    window.set_remembered_error(message.into());
+                }
+            }
             window.set_attach_after_create(config.new_session.attach_after_create);
             let config_path = Config::path().map_err(|err| err.to_string());
             let load_token = templates.host_generation.advance();
@@ -929,7 +1053,42 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
             let weak = window.as_weak();
             window.on_agent_changed(move |_| {
                 if let Some(window) = weak.upgrade() {
+                    on_agent.rebuild_options(&window);
                     on_agent.refresh_blocker(&window);
+                }
+            });
+            let on_show_all = templates.clone();
+            let weak = window.as_weak();
+            window.on_show_all_toggled(move || {
+                if let Some(window) = weak.upgrade() {
+                    let before = on_show_all.selected_agent(&window);
+                    on_show_all.show_all.fetch_xor(true, Ordering::SeqCst);
+                    on_show_all.show_agents(&window, before.as_deref());
+                    // With no launchable entry before, the list may now select one.
+                    if on_show_all.selected_agent(&window) != before {
+                        on_show_all.rebuild_options(&window);
+                    }
+                    on_show_all.refresh_blocker(&window);
+                }
+            });
+            let on_option = templates.clone();
+            let weak = window.as_weak();
+            window.on_option_chosen(move |row, choice| {
+                if let Some(window) = weak.upgrade() {
+                    if let (Ok(row), Ok(choice)) = (usize::try_from(row), usize::try_from(choice)) {
+                        lock(&on_option.options).select(row, choice);
+                    }
+                    on_option.show_options(&window);
+                    on_option.refresh_blocker(&window);
+                }
+            });
+            let on_reset = templates.clone();
+            let weak = window.as_weak();
+            window.on_reset_options(move || {
+                if let Some(window) = weak.upgrade() {
+                    lock(&on_reset.options).reset();
+                    on_reset.show_options(&window);
+                    on_reset.refresh_blocker(&window);
                 }
             });
             let on_overrides = templates.clone();
@@ -983,6 +1142,19 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                             settings: config.attach(),
                             config_path: config_path.clone(),
                         });
+                        // The sent map holds exactly the non-default choices
+                        // the host still offers.
+                        let remember_after = remembered_file.as_ref().ok().and_then(|path| {
+                            Some(RememberAfter {
+                                path: path.clone(),
+                                entry: Remembered {
+                                    host: templates.host(),
+                                    project: params.project.clone()?,
+                                    agent: params.agent.clone(),
+                                    options: params.agent_options.clone(),
+                                },
+                            })
+                        });
                         submit_in_background(
                             weak.clone(),
                             templates.clone(),
@@ -990,6 +1162,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
                             config.new_session.clone(),
                             params,
                             attach_after,
+                            remember_after,
                         );
                     }
                     Err(err) => window.set_error(err.to_string().into()),
