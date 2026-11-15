@@ -83,10 +83,12 @@ impl SeedChange {
     }
 }
 
-/// Whether two snapshots of one session differ beyond the activity timestamps
-/// and the state source. The daemon advances the timestamps while a session
-/// works and switches the source between detectors without an event for each
-/// step; the companion never reads the source.
+/// Whether two snapshots of one session differ beyond the activity timestamps,
+/// the state source and the fields only `session.list` carries. The daemon
+/// advances the timestamps while a session works and switches the source
+/// between detectors without an event for each step; the companion never
+/// reads the source. A session last stored from an event lacks the list-only
+/// fields, which the companion does not read.
 fn differs_materially(old: &SessionInfo, new: &SessionInfo) -> bool {
     let mut aligned = new.clone();
     aligned.updated_at.clone_from(&old.updated_at);
@@ -94,6 +96,15 @@ fn differs_materially(old: &SessionInfo, new: &SessionInfo) -> bool {
         .native_last_activity_at
         .clone_from(&old.native_last_activity_at);
     aligned.state_source = old.state_source;
+    aligned.children = old.children;
+    aligned
+        .agent_display_name
+        .clone_from(&old.agent_display_name);
+    aligned.activity_epoch.clone_from(&old.activity_epoch);
+    aligned.activity_revision = old.activity_revision;
+    aligned
+        .attention_isolated_by
+        .clone_from(&old.attention_isolated_by);
     // Events omit the label that a seed carries.
     if old.project_label.is_none() {
         aligned.project_label = None;
@@ -1002,6 +1013,26 @@ mod tests {
             [],
         );
         assert_eq!((next.added, next.removed, next.changed), (1, 1, 1));
+    }
+
+    #[test]
+    fn list_only_fields_after_an_event_are_not_a_seed_change() {
+        let mut store = SessionStore::default();
+        store.apply_seed([session("s-1", 1, "2026-01-01T00:00:01Z")], []);
+        let updated = session_json("s-1", 1, "2026-01-01T00:00:05Z");
+        let outcome = store.apply_event(&event("session_updated", json!({"session": updated})));
+        assert_eq!(outcome, Applied::Applied);
+        let mut listed = session_json("s-1", 1, "2026-01-01T00:00:09Z");
+        listed["children"] = json!(2);
+        listed["agent_display_name"] = json!("Claude");
+        listed["activity_epoch"] = json!("e-1");
+        listed["activity_revision"] = json!("3");
+        listed["attention_isolated_by"] = json!("s-0");
+        let change = store.apply_seed(
+            [serde_json::from_value(listed).expect("session fixture")],
+            [],
+        );
+        assert!(change.is_empty());
     }
 
     #[test]

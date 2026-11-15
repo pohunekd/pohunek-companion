@@ -324,6 +324,8 @@ pub fn build_params(
         metadata: BTreeMap::new(),
         client_request_id: None,
         context_package_digest: None,
+        fetch_ref: None,
+        agent_options: BTreeMap::new(),
     })
 }
 
@@ -512,6 +514,9 @@ mod tests {
             version: None,
             supported,
             config_home_id: None,
+            display_name: None,
+            audience: None,
+            options: Vec::new(),
         }
     }
 
