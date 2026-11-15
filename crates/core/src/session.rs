@@ -75,6 +75,12 @@ pub struct SessionRow {
     pub external: bool,
     /// The facts that place the session in the sub-session tree.
     pub lineage: Lineage,
+    /// Id of the nearest ancestor, on the same host, whose
+    /// `pohunek.attention.children=isolate` flag keeps this session's
+    /// attention from the owner; set by the host's live loop
+    /// ([`crate::attention_isolation`]). An isolated session is left out of
+    /// Needs you, the tray and its ancestors' attention marks.
+    pub attention_isolated_by: Option<String>,
     /// Where the row is shown in the sub-session fold; set by
     /// [`crate::fold_sections`], the default elsewhere.
     pub tree: TreePosition,
@@ -187,6 +193,7 @@ impl SessionRow {
             group_problem,
             external: info.external == Some(true),
             lineage: Lineage::from_info(&info),
+            attention_isolated_by: None,
             tree: TreePosition::default(),
         }
     }

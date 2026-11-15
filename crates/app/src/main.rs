@@ -25,9 +25,9 @@ use cli::{Cli, Command, DesktopAction};
 
 use pohunek_companion_core::{
     AttachConfig, AttachError, Config, DaemonConfig, DialogHost, GroupError, GroupPlacement,
-    GroupSection, HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, LOCAL_HOST,
-    LayoutConfig, LayoutStore, LiveHost, LiveUpdate, NEEDS_YOU_ID, OpenConfig, OpenKind,
-    OwnerState, PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey,
+    GroupSection, HostConfig, HostConnection, HostEntry, HostOption, INBOX_ID, IsolationSupport,
+    LOCAL_HOST, LayoutConfig, LayoutStore, LiveHost, LiveUpdate, NEEDS_YOU_ID, OpenConfig,
+    OpenKind, OwnerState, PlacementRule, ProjectChip, ProjectSelection, SessionFilter, SessionKey,
     SessionRow, StateChip, SubSessionTree, TraySummary, View, ViewConfig, WriteOutcome, attach,
     clip_display, dialog_hosts, discover_records, filter_sections, fold_sections,
     host_naming_this_machine, host_options, layout_path, name_from_input, open, plan_discovery,
@@ -81,6 +81,7 @@ fn session_rows(sessions: Vec<SessionRow>, placed: &Placements) -> Vec<SessionRo
             SessionRowData {
                 depth: i32::try_from(s.tree.depth).unwrap_or(i32::MAX),
                 sub_sessions: i32::try_from(s.tree.sub_sessions).unwrap_or(i32::MAX),
+                needs_owner_below: i32::try_from(s.tree.needs_owner_below).unwrap_or(i32::MAX),
                 expanded: s.tree.expanded,
                 folding: s.tree.folding,
                 project_id: project_id.into(),
@@ -712,6 +713,9 @@ struct HostsView {
     /// Status line per discovered peer whose daemon is incompatible; these
     /// peers have no rows and are not connected.
     incompatible: Vec<String>,
+    /// Hosts whose current connection could not read the attention isolation
+    /// capability, so their sub-sessions are not isolated.
+    isolation_unknown: Vec<String>,
 }
 
 impl HostsView {
@@ -727,6 +731,7 @@ impl HostsView {
                 })
                 .collect(),
             incompatible: Vec::new(),
+            isolation_unknown: Vec::new(),
         }
     }
 
@@ -787,6 +792,23 @@ impl HostsView {
         self.down.iter().any(|(target, _)| target == host)
     }
 
+    /// Records whether `host`'s current connection knows if the daemon honours
+    /// the attention isolation flag.
+    fn set_isolation(&mut self, host: &str, isolation: IsolationSupport) {
+        self.isolation_unknown.retain(|target| target != host);
+        if isolation == IsolationSupport::Unknown {
+            self.isolation_unknown.push(host.to_owned());
+        }
+    }
+
+    /// Display name of `host`, else its target.
+    fn label(&self, host: &str) -> String {
+        self.labels
+            .iter()
+            .find(|(target, _)| target == host)
+            .map_or_else(|| host.to_owned(), |(_, label)| label.clone())
+    }
+
     fn set_down(&mut self, host: &str, line: Option<String>) {
         self.down.retain(|(target, _)| target != host);
         if let Some(line) = line {
@@ -820,9 +842,20 @@ impl HostsView {
         let order = |target: &str| self.rows.iter().position(|(t, _)| t == target);
         let mut down: Vec<_> = self.down.iter().collect();
         down.sort_by_key(|(target, _)| order(target));
+        let mut unknown: Vec<&String> = self
+            .isolation_unknown
+            .iter()
+            .filter(|target| !self.is_down(target))
+            .collect();
+        unknown.sort_by_key(|target| order(target));
         down.into_iter()
-            .map(|(_, line)| line.as_str())
-            .chain(self.incompatible.iter().map(String::as_str))
+            .map(|(_, line)| line.clone())
+            .chain(self.incompatible.iter().cloned())
+            .chain(
+                unknown
+                    .into_iter()
+                    .map(|target| format!("isolation unknown for {}", self.label(target))),
+            )
             .collect::<Vec<_>>()
             .join("; ")
     }
@@ -869,7 +902,7 @@ impl Publisher {
     /// Applies one update of `host` to the layout and queues the window update.
     fn publish(&self, host: &LiveHost, update: LiveUpdate) {
         let local = host.target == LOCAL_HOST;
-        if matches!(update, LiveUpdate::Connected) {
+        if matches!(update, LiveUpdate::Connected { .. }) {
             self.migrations
                 .borrow_mut()
                 .armed
@@ -882,7 +915,7 @@ impl Publisher {
         }
         if let Some(setup) = &self.setup {
             match &update {
-                LiveUpdate::Connected if local => setup.connected(),
+                LiveUpdate::Connected { .. } if local => setup.connected(),
                 LiveUpdate::Reconnecting { reason, code, .. } if local => {
                     setup.down(reason.clone(), code.clone());
                 }
@@ -893,9 +926,10 @@ impl Publisher {
             }
         }
         let status = match &update {
-            LiveUpdate::Connected => {
+            LiveUpdate::Connected { isolation } => {
                 let mut hosts = self.hosts.borrow_mut();
                 hosts.set_down(&host.target, None);
+                hosts.set_isolation(&host.target, *isolation);
                 Some(hosts.status())
             }
             LiveUpdate::Reconnecting {
@@ -976,7 +1010,7 @@ impl Publisher {
         let applied = self
             .window
             .upgrade_in_event_loop(move |window| match update {
-                LiveUpdate::Connected => {
+                LiveUpdate::Connected { .. } => {
                     window.set_error("".into());
                     window.set_status(status.unwrap_or_default().into());
                 }

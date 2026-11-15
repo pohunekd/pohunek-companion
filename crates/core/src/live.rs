@@ -11,21 +11,28 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout_at;
 use tracing::{info, warn};
 
+use crate::attention_isolation::{
+    IsolationSupport, apply_isolation, disagreements, isolating_ancestors,
+};
 use crate::config::{DaemonConfig, HostConfig};
-use crate::connect::{fetch_seed, socket_for_host, subscribe};
+use crate::connect::{attention_isolation_supported, fetch_seed, socket_for_host, subscribe};
 use crate::discovery::DiscoveredHost;
 use crate::error::CoreError;
 use crate::group_key::GroupNameProblem;
 use crate::model::{Applied, SessionStore};
 use crate::routes::set_route;
 use crate::session::{SessionKey, SessionRow};
+use crate::sub_sessions::Lineage;
 use pohunek_client::LOCAL_HOST;
+use pohunek_client::protocol::SessionInfo;
 
 /// What the sidebar should show next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiveUpdate {
-    /// The store is seeded and the event stream is attached.
-    Connected,
+    /// The store is seeded and the event stream is attached. `isolation` is
+    /// whether this connection's daemon honours the attention isolation flag;
+    /// the rows of every following [`LiveUpdate::Sessions`] already apply it.
+    Connected { isolation: IsolationSupport },
     /// The full current session list, ordered by session id; sent only when it
     /// differs from the previous one.
     Sessions(Vec<SessionRow>),
@@ -200,6 +207,18 @@ async fn cycle_inner(
     let (sender, mut events) = mpsc::unbounded_channel();
     let _reader = ReaderGuard(tokio::spawn(read_events(subscription, sender)));
 
+    // Read once per connection: a daemon upgrade always reconnects.
+    let isolation = match attention_isolation_supported(&host.target, &socket, config).await {
+        Ok(true) => IsolationSupport::Supported,
+        Ok(false) => IsolationSupport::Unsupported,
+        Err(err) => {
+            warn!(host = %host.target, error = %err,
+                "cannot read the attention isolation capability; isolation is off for this connection");
+            IsolationSupport::Unknown
+        }
+    };
+    info!(host = %host.target, isolation = ?isolation, "attention isolation capability");
+
     let seed = fetch_seed(&host.target, &socket, config).await?;
     info!(
         host = %host.target,
@@ -207,15 +226,16 @@ async fn cycle_inner(
         notifications = seed.notifications.len(),
         "seeded from the daemon"
     );
+    check_seed_isolation(&host.target, &seed.sessions, isolation);
     store.apply_seed(seed.sessions, seed.notifications);
     while let Ok(message) = events.try_recv() {
         store.apply_event(&message?);
     }
     *established_at = Some(Instant::now());
     info!(host = %host.target, "daemon connection established");
-    let mut shown = rows(host, store, idle_threshold, group_name_max_bytes);
+    let mut shown = rows(host, store, idle_threshold, group_name_max_bytes, isolation);
     log_rejected_group_values(&host.target, &[], &shown);
-    publish(LiveUpdate::Connected);
+    publish(LiveUpdate::Connected { isolation });
     publish(LiveUpdate::Sessions(shown.clone()));
 
     let interval = config.reseed_interval();
@@ -233,7 +253,8 @@ async fn cycle_inner(
                 Err(_elapsed) => {
                     // Events arriving during the fetch wait in the channel and
                     // are applied after the seed, as on connect.
-                    let reseeded = reseed(host, config, &socket, store, &mut events).await?;
+                    let reseeded =
+                        reseed(host, config, &socket, store, &mut events, isolation).await?;
                     next_reseed = tokio::time::Instant::now() + interval;
                     reseeded
                 }
@@ -241,7 +262,7 @@ async fn cycle_inner(
             () = idle_deadline_reached(idle_deadline) => true,
         };
         if applied {
-            let current = rows(host, store, idle_threshold, group_name_max_bytes);
+            let current = rows(host, store, idle_threshold, group_name_max_bytes, isolation);
             if current != shown {
                 log_rejected_group_values(&host.target, &shown, &current);
                 shown = current;
@@ -261,6 +282,7 @@ async fn reseed(
     socket: &std::path::Path,
     store: &mut SessionStore,
     events: &mut mpsc::UnboundedReceiver<EventMessage>,
+    isolation: IsolationSupport,
 ) -> Result<bool, CoreError> {
     let seed = match fetch_seed(&host.target, socket, config).await {
         Ok(seed) => seed,
@@ -270,6 +292,7 @@ async fn reseed(
         }
     };
     let sessions = seed.sessions.len();
+    check_seed_isolation(&host.target, &seed.sessions, isolation);
     let change = store.apply_seed(seed.sessions, seed.notifications);
     while let Ok(message) = events.try_recv() {
         store.apply_event(&message?);
@@ -287,6 +310,43 @@ async fn reseed(
         );
     }
     Ok(true)
+}
+
+/// Compares the daemon's `attention_isolated_by` on a seeded list with the
+/// companion's own walk over the same list and warns with the number of
+/// sessions they disagree on. Only for a daemon that honours the flag, which
+/// annotates every isolated session; no session id or metadata value is
+/// logged.
+fn check_seed_isolation(host: &str, sessions: &[SessionInfo], isolation: IsolationSupport) {
+    if !isolation.is_supported() {
+        return;
+    }
+    let daemon: HashMap<String, String> = sessions
+        .iter()
+        .filter_map(|info| {
+            let by = info.attention_isolated_by.as_ref()?;
+            Some((info.id.0.clone(), by.0.clone()))
+        })
+        .collect();
+    let lineages: Vec<(&str, Lineage)> = sessions
+        .iter()
+        .map(|info| (info.id.0.as_str(), Lineage::from_info(info)))
+        .collect();
+    let walk = isolating_ancestors(
+        lineages.iter().map(|(id, lineage)| (*id, lineage)),
+        isolation,
+    );
+    let disagreeing = disagreements(&daemon, &walk);
+    if disagreeing > 0 {
+        warn!(
+            host,
+            sessions = sessions.len(),
+            disagreeing,
+            daemon_isolated = daemon.len(),
+            companion_isolated = walk.len(),
+            "attention isolation of the seeded list differs from the daemon's"
+        );
+    }
 }
 
 /// Forwards the subscription's events; the final message is the reason the
@@ -335,11 +395,14 @@ fn log_rejected_group_values(host: &str, before: &[SessionRow], after: &[Session
     }
 }
 
+/// The host's rows, ordered by session id, with each isolated session's
+/// nearest flagged ancestor set.
 fn rows(
     host: &LiveHost,
     store: &SessionStore,
     idle_threshold: Duration,
     group_name_max_bytes: usize,
+    isolation: IsolationSupport,
 ) -> Vec<SessionRow> {
     let now = Instant::now();
     let mut rows: Vec<SessionRow> = store
@@ -362,5 +425,6 @@ fn rows(
         })
         .collect();
     rows.sort_by(|a, b| a.key.session_id.cmp(&b.key.session_id));
+    apply_isolation(&mut rows, isolation);
     rows
 }

@@ -48,6 +48,9 @@ export struct SessionRowData {
     depth: int,
     // Number of direct sub-sessions.
     sub-sessions: int,
+    // Sessions below the row, at any depth, that need the owner and are not
+    // isolated from the owner.
+    needs-owner-below: int,
     // The sub-sessions are shown under the row.
     expanded: bool,
     // Sub-sessions are folded, so the sub-session control expands them.
@@ -520,6 +523,25 @@ component SessionRow inherits Rectangle {
                     accessible-role: button;
                     accessible-label: (root.data.expanded ? "Hide sub-sessions of " : "Show sub-sessions of ") + root.data.name;
                     clicked => { root.toggle-sub-sessions(); }
+                }
+            }
+            if root.data.needs-owner-below > 0: Rectangle {
+                background: Theme.badge-background;
+                border-radius: Theme.badge-radius;
+                horizontal-stretch: 0;
+                width: needs-below-text.preferred-width + 2 * Theme.badge-padding;
+                accessible-role: text;
+                accessible-label: root.data.needs-owner-below
+                    + (root.data.needs-owner-below == 1 ? " sub-session needs you" : " sub-sessions need you");
+                HorizontalLayout {
+                    padding-left: Theme.badge-padding;
+                    padding-right: Theme.badge-padding;
+                    needs-below-text := Text {
+                        text: "● " + root.data.needs-owner-below + " need" + (root.data.needs-owner-below == 1 ? "s" : "") + " you";
+                        color: Theme.owner-needs-owner;
+                        font-size: Theme.badge-font-size;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }

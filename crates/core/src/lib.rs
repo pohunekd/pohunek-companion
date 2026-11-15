@@ -5,6 +5,7 @@ mod assistant;
 mod attach;
 mod attach_macos;
 mod attach_path;
+mod attention_isolation;
 mod badge;
 mod config;
 mod connect;
@@ -40,6 +41,7 @@ pub use assistant::{
 };
 pub use attach::{AttachConfig, AttachError, AttachRefusal, AttachTemplate, attach};
 pub use attach_macos::AttachTerminal;
+pub use attention_isolation::IsolationSupport;
 pub use badge::{WorkBadge, WorkFacts, clip_display, clip_middle};
 pub use config::{
     Config, ConfigError, DaemonConfig, HostConfig, LayoutConfig, NewSessionConfig, PlacementRule,

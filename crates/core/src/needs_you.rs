@@ -3,11 +3,19 @@
 
 use crate::layout::GroupSection;
 use crate::owner_state::OwnerState;
+use crate::session::SessionRow;
 use crate::tray_summary::needs_owner_order;
 
 /// Id and display name of the leading section.
 pub const NEEDS_YOU_ID: &str = "needs-you";
 const NEEDS_YOU_NAME: &str = "Needs you";
+
+/// Whether the row belongs in Needs you: it needs the owner and no flagged
+/// ancestor isolates its attention from the owner. An isolated row keeps its
+/// state and stays in its own place.
+pub(crate) fn lifts_into_needs_you(row: &SessionRow) -> bool {
+    row.owner_state == OwnerState::NeedsOwner && row.attention_isolated_by.is_none()
+}
 
 /// Moves every session that needs the owner out of its section into a leading
 /// "Needs you" section, ordered like the tray menu. The section is omitted when
@@ -18,10 +26,7 @@ pub fn with_needs_you(sections: Vec<GroupSection>) -> Vec<GroupSection> {
     let mut lifted = Vec::new();
     let mut rest = Vec::with_capacity(sections.len() + 1);
     for mut section in sections {
-        let (needing, staying) = section
-            .rows
-            .into_iter()
-            .partition(|row| row.owner_state == OwnerState::NeedsOwner);
+        let (needing, staying) = section.rows.into_iter().partition(lifts_into_needs_you);
         lifted.extend(needing);
         section.rows = staying;
         rest.push(section);
@@ -82,6 +87,7 @@ mod tests {
             group_problem: None,
             external: false,
             lineage: Default::default(),
+            attention_isolated_by: None,
             tree: Default::default(),
         }
     }

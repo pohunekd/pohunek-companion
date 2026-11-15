@@ -93,8 +93,11 @@ impl View {
     }
 }
 
-/// The sections of the By state view, in display order after Needs you.
-const STATE_SECTIONS: [(OwnerState, &str); 5] = [
+/// The sections of the By state view, in display order after Needs you. The
+/// Needs owner section holds only sessions that need the owner but whose
+/// attention a flagged ancestor isolates, so Needs you does not lift them.
+const STATE_SECTIONS: [(OwnerState, &str); 6] = [
+    (OwnerState::NeedsOwner, "needs-owner"),
     (OwnerState::Working, "working"),
     (OwnerState::Idle, "idle"),
     (OwnerState::RuntimeProblem, "runtime-problem"),
@@ -102,8 +105,9 @@ const STATE_SECTIONS: [(OwnerState, &str); 5] = [
     (OwnerState::NoAgentState, "no-agent-state"),
 ];
 
-/// Regroups the arranged sessions by owner state: Needs you, Working, Idle,
-/// Runtime problem, Ended, No agent state. Inside a section sessions keep their My groups order
+/// Regroups the arranged sessions by owner state: Needs you, Needs owner
+/// (isolated sessions only), Working, Idle, Runtime problem, Ended, No agent
+/// state. Inside a section sessions keep their My groups order
 /// (groups in order, then items in order); empty sections are omitted.
 pub fn by_state(arranged: Vec<GroupSection>) -> Vec<GroupSection> {
     let all = GroupSection {
@@ -272,6 +276,7 @@ mod tests {
             group_problem: None,
             external: false,
             lineage: Default::default(),
+            attention_isolated_by: None,
             tree: Default::default(),
         }
     }

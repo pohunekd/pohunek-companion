@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use pohunek_client::protocol::Method;
 use pohunek_client::protocol::method::{SessionList, Subscribe};
 use pohunek_client::protocol::{
-    NotificationKind, NotificationListParams, NotificationRecord, Request, SessionInfo,
-    SessionListParams,
+    HostInspectParams, NotificationKind, NotificationListParams, NotificationRecord, Request,
+    SessionInfo, SessionListParams,
 };
 use pohunek_client::{
     Client, ClientError, ClientOptions, LOCAL_HOST, OriginSource, Subscription, is_local_host,
@@ -141,6 +141,23 @@ pub(crate) async fn subscribe(
     )
     .map_err(ClientError::from)?;
     Ok(client.subscribe(&request).await?)
+}
+
+/// Whether the daemon of `host` honours the `pohunek.attention.children`
+/// isolation flag. Asks for the feature flags only, so no agent runtime is
+/// probed; a daemon that predates the flag omits it, which reads as `false`.
+pub(crate) async fn attention_isolation_supported(
+    host: &str,
+    socket: &Path,
+    config: &DaemonConfig,
+) -> Result<bool, CoreError> {
+    let mut client = connect_host(host, socket, config).await?;
+    let capabilities = client
+        .host_inspect_with(HostInspectParams {
+            skip_runtime_probes: Some(true),
+        })
+        .await?;
+    Ok(capabilities.session_attention_isolation_supported)
 }
 
 /// Reads the session list and the attention notifications over a second

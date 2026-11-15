@@ -37,10 +37,12 @@ pub struct TraySummary {
 impl TraySummary {
     /// Rows of an unreachable host carry last-known facts and are left out;
     /// `unreachable_hosts` is the number of hosts that are not connected.
+    /// A session whose attention a flagged ancestor isolates drives no count
+    /// and no entry, whatever its state.
     pub fn from_rows(rows: &[SessionRow], unreachable_hosts: usize) -> Self {
         let reachable: Vec<SessionRow> = rows
             .iter()
-            .filter(|row| !row.host_unreachable)
+            .filter(|row| !row.host_unreachable && row.attention_isolated_by.is_none())
             .cloned()
             .collect();
         let rows = reachable.as_slice();
@@ -146,6 +148,7 @@ mod tests {
             group_problem: None,
             external: false,
             lineage: Default::default(),
+            attention_isolated_by: None,
             tree: Default::default(),
         }
     }
