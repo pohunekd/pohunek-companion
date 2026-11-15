@@ -158,6 +158,8 @@ export component AssistantWindow inherits Window {
                     selected(index) => { root.agent-changed(index); }
                 }
                 if root.show-all-offered: show-all-chip := ChoiceChips {
+                    // One chip: no room is reserved for wrapped rows.
+                    max-height: Theme.chip-height;
                     model: ["Show all"];
                     multi: true;
                     checked: [root.show-all];

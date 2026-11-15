@@ -1,4 +1,4 @@
-import { CheckBox, LineEdit, Palette, TextEdit } from "std-widgets.slint";
+import { CheckBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 import { Theme } from "app.slint";
 import { ChipField, DialogTheme, FieldLabel, SearchSelect } from "dialog_fields.slint";
 import { ChoiceChips } from "choice_chips.slint";
@@ -127,175 +127,189 @@ export component NewSessionWindow inherits Window {
             padding: DialogTheme.padding;
             spacing: DialogTheme.spacing;
 
-            VerticalLayout {
-                // Above the fields below, which the open list overlaps; each select
-                // is raised over its own notes the same way.
-                z: host-field.list-open ? 3 : 0;
-                spacing: DialogTheme.field-spacing;
-                FieldLabel { text: "Host"; }
-                host-field := SearchSelect {
-                    z: self.list-open ? 1 : 0;
-                    model: root.host-names;
-                    disabled: root.host-disabled;
-                    selected-index <=> root.host-index;
-                    selected(index) => { root.host-changed(index); }
-                }
-                if root.hosts-loading: Text {
-                    text: "Looking for other hosts...";
-                    color: Theme.detail;
-                    font-size: Theme.detail-font-size;
-                }
-                if root.host-notes != "": host-notes-text := Text {
-                    text: root.host-notes;
-                    color: Theme.detail;
-                    font-size: Theme.detail-font-size;
-                    wrap: word-wrap;
-                }
-            }
-            VerticalLayout {
-                z: project-field.list-open ? 2 : 0;
-                spacing: DialogTheme.field-spacing;
-                FieldLabel { text: "Project"; }
-                project-field := SearchSelect {
-                    z: self.list-open ? 1 : 0;
-                    loading: root.loading && !root.projects-ready;
-                    model: root.project-names;
-                    selected-index <=> root.project-index;
-                    selected(index) => { root.project-changed(index); }
-                }
-            }
-            VerticalLayout {
-                z: agent-field.list-open ? 2 : 0;
-                spacing: DialogTheme.field-spacing;
-                FieldLabel { text: "Agent"; }
-                agent-field := SearchSelect {
-                    z: self.list-open ? 1 : 0;
-                    loading: root.loading;
-                    model: root.agent-names;
-                    disabled: root.agent-disabled;
-                    selected-index <=> root.agent-index;
-                    selected(index) => { root.agent-changed(index); }
-                }
-                if root.agent-notes != "": agent-notes-text := Text {
-                    text: root.agent-notes;
-                    color: Theme.detail;
-                    font-size: Theme.detail-font-size;
-                    wrap: word-wrap;
-                }
-                if root.show-all-offered: show-all-chip := ChoiceChips {
-                    model: ["Show all"];
-                    multi: true;
-                    checked: [root.show-all];
-                    chip-height: Theme.chip-height;
-                    chip-padding: Theme.chip-padding;
-                    chip-radius: Theme.chip-radius;
-                    chip-spacing: Theme.chip-spacing;
-                    font-size: Theme.chip-font-size;
-                    chip-background: Theme.chip-background;
-                    chip-hover-background: Theme.chip-hover-background;
-                    chip-selected-background: Theme.chip-selected-background;
-                    text-color: Theme.detail;
-                    selected-text-color: Theme.text;
-                    selected(index) => { root.show-all-toggled(); }
-                }
-            }
-            if root.option-rows.length > 0 && !root.loading: VerticalLayout {
-                spacing: DialogTheme.spacing;
-                for row[row-index] in root.option-rows: VerticalLayout {
-                    spacing: DialogTheme.field-spacing;
-                    FieldLabel { text: row.label; }
-                    option-chips := ChoiceChips {
-                        model: row.choices;
-                        // Rust owns the selection: `checked` mirrors the form.
-                        multi: true;
-                        checked: row.checked;
-                        disabled: row.disabled;
-                        chip-height: Theme.chip-height;
-                        chip-padding: Theme.chip-padding;
-                        chip-radius: Theme.chip-radius;
-                        chip-spacing: Theme.chip-spacing;
-                        font-size: Theme.chip-font-size;
-                        chip-background: Theme.chip-background;
-                        chip-hover-background: Theme.chip-hover-background;
-                        chip-selected-background: Theme.chip-selected-background;
-                        text-color: Theme.detail;
-                        disabled-text-color: DialogTheme.chip-disabled-text;
-                        selected-text-color: Theme.text;
-                        selected(index) => { root.option-chosen(row-index, index); }
-                    }
-                    if row.notes != "": Text {
-                        text: row.notes;
-                        color: Theme.detail;
-                        font-size: Theme.detail-font-size;
-                        wrap: word-wrap;
-                    }
-                }
-                reset-options-button := Rectangle {
-                    height: DialogTheme.button-height;
-                    Text {
-                        width: parent.width;
-                        text: "Reset to defaults";
-                        color: reset-touch.has-hover ? Theme.text : Theme.detail;
-                        font-size: DialogTheme.label-font-size;
-                        horizontal-alignment: left;
-                    }
-                    reset-touch := TouchArea {
-                        clicked => { root.reset-options(); }
-                    }
-                }
-            }
-            if root.template-names.length > 1 && !root.loading: VerticalLayout {
-                spacing: DialogTheme.field-spacing;
-                FieldLabel { text: root.template-loading ? "Template (loading...)" : "Template"; }
-                template-field := ChipField {
-                    model: root.template-names;
-                    selected-index <=> root.template-index;
-                    selected(index) => { root.template-chosen(index); }
-                }
-            }
-            VerticalLayout {
-                spacing: DialogTheme.field-spacing;
-                FieldLabel { text: "Name (optional)"; }
-                name-edit := LineEdit {
-                    text <=> root.session-name;
-                    accepted => { root.try-submit(); }
-                }
-            }
-            VerticalLayout {
+            // The fields scroll when a profile's options make them taller than
+            // the window; the checkbox, messages and buttons below stay in view.
+            form-scroll := ScrollView {
                 vertical-stretch: 1;
-                spacing: DialogTheme.field-spacing;
-                FieldLabel { text: "Prompt (optional, Ctrl+Enter creates)"; }
-                prompt-edit := TextEdit {
-                    text <=> root.prompt;
-                    min-height: DialogTheme.prompt-height;
-                    wrap: word-wrap;
-                }
-            }
-            if root.template-index == 0: VerticalLayout {
-                spacing: DialogTheme.field-spacing;
-                advanced-toggle := Rectangle {
-                    height: DialogTheme.button-height;
-                    Text {
-                        text: (root.advanced-open ? "v " : "> ") + "Advanced";
-                        color: Theme.detail;
-                        font-size: DialogTheme.label-font-size;
-                        horizontal-alignment: left;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, form-fields.preferred-height);
+                form-fields := VerticalLayout {
+                    width: form-scroll.visible-width;
+                    height: form-scroll.content-height;
+                    spacing: DialogTheme.spacing;
+                    VerticalLayout {
+                        // Above the fields below, which the open list overlaps; each select
+                        // is raised over its own notes the same way.
+                        z: host-field.list-open ? 3 : 0;
+                        spacing: DialogTheme.field-spacing;
+                        FieldLabel { text: "Host"; }
+                        host-field := SearchSelect {
+                            z: self.list-open ? 1 : 0;
+                            model: root.host-names;
+                            disabled: root.host-disabled;
+                            selected-index <=> root.host-index;
+                            selected(index) => { root.host-changed(index); }
+                        }
+                        if root.hosts-loading: Text {
+                            text: "Looking for other hosts...";
+                            color: Theme.detail;
+                            font-size: Theme.detail-font-size;
+                        }
+                        if root.host-notes != "": host-notes-text := Text {
+                            text: root.host-notes;
+                            color: Theme.detail;
+                            font-size: Theme.detail-font-size;
+                            wrap: word-wrap;
+                        }
                     }
-                    advanced-touch := TouchArea {
-                        clicked => { root.advanced-open = !root.advanced-open; }
+                    VerticalLayout {
+                        z: project-field.list-open ? 2 : 0;
+                        spacing: DialogTheme.field-spacing;
+                        FieldLabel { text: "Project"; }
+                        project-field := SearchSelect {
+                            z: self.list-open ? 1 : 0;
+                            loading: root.loading && !root.projects-ready;
+                            model: root.project-names;
+                            selected-index <=> root.project-index;
+                            selected(index) => { root.project-changed(index); }
+                        }
                     }
-                }
-                if root.advanced-open: VerticalLayout {
-                    spacing: DialogTheme.field-spacing;
-                    FieldLabel { text: "Branch (optional)"; }
-                    branch-edit := LineEdit {
-                        text <=> root.branch;
-                        edited => { root.overrides-edited(); }
+                    VerticalLayout {
+                        z: agent-field.list-open ? 2 : 0;
+                        spacing: DialogTheme.field-spacing;
+                        FieldLabel { text: "Agent"; }
+                        agent-field := SearchSelect {
+                            z: self.list-open ? 1 : 0;
+                            loading: root.loading;
+                            model: root.agent-names;
+                            disabled: root.agent-disabled;
+                            selected-index <=> root.agent-index;
+                            selected(index) => { root.agent-changed(index); }
+                        }
+                        if root.agent-notes != "": agent-notes-text := Text {
+                            text: root.agent-notes;
+                            color: Theme.detail;
+                            font-size: Theme.detail-font-size;
+                            wrap: word-wrap;
+                        }
+                        if root.show-all-offered: show-all-chip := ChoiceChips {
+                            // One chip: no room is reserved for wrapped rows.
+                            max-height: Theme.chip-height;
+                            model: ["Show all"];
+                            multi: true;
+                            checked: [root.show-all];
+                            chip-height: Theme.chip-height;
+                            chip-padding: Theme.chip-padding;
+                            chip-radius: Theme.chip-radius;
+                            chip-spacing: Theme.chip-spacing;
+                            font-size: Theme.chip-font-size;
+                            chip-background: Theme.chip-background;
+                            chip-hover-background: Theme.chip-hover-background;
+                            chip-selected-background: Theme.chip-selected-background;
+                            text-color: Theme.detail;
+                            selected-text-color: Theme.text;
+                            selected(index) => { root.show-all-toggled(); }
+                        }
                     }
-                    FieldLabel { text: "Base branch (optional)"; }
-                    base-branch-edit := LineEdit {
-                        text <=> root.base-branch;
-                        edited => { root.overrides-edited(); }
+                    if root.option-rows.length > 0 && !root.loading: VerticalLayout {
+                        spacing: DialogTheme.spacing;
+                        for row[row-index] in root.option-rows: VerticalLayout {
+                            spacing: DialogTheme.field-spacing;
+                            FieldLabel { text: row.label; }
+                            option-chips := ChoiceChips {
+                                model: row.choices;
+                                // Rust owns the selection: `checked` mirrors the form.
+                                multi: true;
+                                checked: row.checked;
+                                disabled: row.disabled;
+                                chip-height: Theme.chip-height;
+                                chip-padding: Theme.chip-padding;
+                                chip-radius: Theme.chip-radius;
+                                chip-spacing: Theme.chip-spacing;
+                                font-size: Theme.chip-font-size;
+                                chip-background: Theme.chip-background;
+                                chip-hover-background: Theme.chip-hover-background;
+                                chip-selected-background: Theme.chip-selected-background;
+                                text-color: Theme.detail;
+                                disabled-text-color: DialogTheme.chip-disabled-text;
+                                selected-text-color: Theme.text;
+                                selected(index) => { root.option-chosen(row-index, index); }
+                            }
+                            if row.notes != "": Text {
+                                text: row.notes;
+                                color: Theme.detail;
+                                font-size: Theme.detail-font-size;
+                                wrap: word-wrap;
+                            }
+                        }
+                        reset-options-button := Rectangle {
+                            height: DialogTheme.button-height;
+                            Text {
+                                width: parent.width;
+                                text: "Reset to defaults";
+                                color: reset-touch.has-hover ? Theme.text : Theme.detail;
+                                font-size: DialogTheme.label-font-size;
+                                horizontal-alignment: left;
+                            }
+                            reset-touch := TouchArea {
+                                clicked => { root.reset-options(); }
+                            }
+                        }
+                    }
+                    if root.template-names.length > 1 && !root.loading: VerticalLayout {
+                        spacing: DialogTheme.field-spacing;
+                        FieldLabel { text: root.template-loading ? "Template (loading...)" : "Template"; }
+                        template-field := ChipField {
+                            model: root.template-names;
+                            selected-index <=> root.template-index;
+                            selected(index) => { root.template-chosen(index); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: DialogTheme.field-spacing;
+                        FieldLabel { text: "Name (optional)"; }
+                        name-edit := LineEdit {
+                            text <=> root.session-name;
+                            accepted => { root.try-submit(); }
+                        }
+                    }
+                    VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: DialogTheme.field-spacing;
+                        FieldLabel { text: "Prompt (optional, Ctrl+Enter creates)"; }
+                        prompt-edit := TextEdit {
+                            text <=> root.prompt;
+                            min-height: DialogTheme.prompt-height;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if root.template-index == 0: VerticalLayout {
+                        spacing: DialogTheme.field-spacing;
+                        advanced-toggle := Rectangle {
+                            height: DialogTheme.button-height;
+                            Text {
+                                text: (root.advanced-open ? "v " : "> ") + "Advanced";
+                                color: Theme.detail;
+                                font-size: DialogTheme.label-font-size;
+                                horizontal-alignment: left;
+                            }
+                            advanced-touch := TouchArea {
+                                clicked => { root.advanced-open = !root.advanced-open; }
+                            }
+                        }
+                        if root.advanced-open: VerticalLayout {
+                            spacing: DialogTheme.field-spacing;
+                            FieldLabel { text: "Branch (optional)"; }
+                            branch-edit := LineEdit {
+                                text <=> root.branch;
+                                edited => { root.overrides-edited(); }
+                            }
+                            FieldLabel { text: "Base branch (optional)"; }
+                            base-branch-edit := LineEdit {
+                                text <=> root.base-branch;
+                                edited => { root.overrides-edited(); }
+                            }
+                        }
                     }
                 }
             }
