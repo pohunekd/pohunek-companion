@@ -16,6 +16,7 @@ pub const FRAGMENT_DIR: &str = "changelog.d";
 pub const START_MARKER: &str = "<!-- pohunek-changelog:start -->";
 pub const END_MARKER: &str = "<!-- pohunek-changelog:end -->";
 
+const GITHUB_URL: &str = "https://github.com";
 const DELIMITER: &str = "---";
 const NO_CHANGES: &str = "No user-facing changes.";
 const SURFACE_SEPARATOR: &str = ", ";
@@ -218,7 +219,9 @@ pub fn load_fragments(root: &Path, config: &Config) -> Result<Vec<Fragment>, Err
     for name in names {
         let outcome = fs::read(dir.join(&name))
             .map_err(|source| source.to_string())
-            .and_then(|bytes| parse_fragment(&name, &bytes, surfaces.as_deref()));
+            .and_then(|bytes| {
+                parse_fragment(&name, &bytes, surfaces.as_deref(), &config.repository)
+            });
         match outcome {
             Ok(fragment) => fragments.push(fragment),
             Err(reason) => problems.push(format!("{FRAGMENT_DIR}/{name}: {reason}")),
@@ -235,6 +238,7 @@ fn parse_fragment(
     file_name: &str,
     bytes: &[u8],
     surfaces: Option<&[String]>,
+    repository: &str,
 ) -> Result<Fragment, String> {
     let (number, slug) =
         parse_file_name(file_name).ok_or("bad file name: expected <N>-<slug>.md")?;
@@ -316,7 +320,7 @@ fn parse_fragment(
         .map(|line| line.trim())
         .collect::<Vec<_>>()
         .join(" ");
-    if let Some(reason) = issue_link_problem(&text, number) {
+    if let Some(reason) = issue_link_problem(&text, number, repository) {
         return Err(reason);
     }
 
@@ -332,16 +336,21 @@ fn parse_fragment(
 }
 
 /// A body must not carry the issue link that `fold` appends: a link to the
-/// fragment's own issue, or any trailing `([#N](...))` suffix.
-fn issue_link_problem(text: &str, number: u64) -> Option<String> {
-    let own_targets = [format!("/issues/{number})"), format!("/pull/{number})")];
+/// fragment's own issue or pull request in `repository`, or any trailing
+/// `([#N](...))` suffix. Links to other repositories are fine.
+fn issue_link_problem(text: &str, number: u64, repository: &str) -> Option<String> {
+    let own_targets = [
+        format!("{GITHUB_URL}/{repository}/issues/{number}"),
+        format!("{GITHUB_URL}/{repository}/pull/{number}"),
+    ];
     let own_link = text.match_indices("](").any(|(index, _)| {
-        let rest = &text[index + 2..];
-        rest.find(')').is_some_and(|end| {
-            own_targets
-                .iter()
-                .any(|t| rest[..=end].ends_with(t.as_str()))
-        })
+        text[index + 2..]
+            .split_once(')')
+            .is_some_and(|(target, _)| {
+                own_targets
+                    .iter()
+                    .any(|own| target.eq_ignore_ascii_case(own))
+            })
     });
     if own_link || has_trailing_issue_suffix(text) {
         return Some(
@@ -614,7 +623,7 @@ fn render_section(fragments: &[&Fragment], repository: &str) -> String {
                     ""
                 };
                 format!(
-                    "- {prefix}{} ([#{n}](https://github.com/{repository}/issues/{n}))",
+                    "- {prefix}{} ([#{n}]({GITHUB_URL}/{repository}/issues/{n}))",
                     fragment.text,
                     n = fragment.number
                 )
@@ -748,21 +757,35 @@ mod tests {
 
     #[test]
     fn bodies_with_an_issue_link_are_refused() {
+        let check = |text: &str, number: u64| issue_link_problem(text, number, "o/r");
         let own = "Fix the thing ([#123](https://github.com/o/r/issues/123))";
-        assert!(issue_link_problem(own, 123).is_some());
+        assert!(check(own, 123).is_some());
         // A trailing suffix naming another issue is refused too.
-        assert!(issue_link_problem(own, 7).is_some());
+        assert!(check(own, 7).is_some());
         let inline = "See [the issue](https://github.com/o/r/issues/123) for details.";
-        assert!(issue_link_problem(inline, 123).is_some());
-        assert!(issue_link_problem(inline, 7).is_none());
-        assert!(issue_link_problem("Fix the thing (see [docs](https://x.y/z)).", 123).is_none());
-        assert!(issue_link_problem("Fix the thing in issue #123.", 123).is_none());
-        assert!(issue_link_problem("Read [RFC 123](https://x.y/rfc/123).", 123).is_none());
-        assert!(issue_link_problem("Opravit ěščř ([#5](https://x.y/issues/5)).", 9).is_some());
+        assert!(check(inline, 123).is_some());
+        assert!(check(inline, 7).is_none());
+        let pull = "See [the PR](https://github.com/o/r/pull/123) for details.";
+        assert!(check(pull, 123).is_some());
+        let cased = "See [the issue](https://github.com/O/R/issues/123) for details.";
+        assert!(check(cased, 123).is_some());
+        assert!(check("Fix the thing (see [docs](https://x.y/z)).", 123).is_none());
+        assert!(check("Fix the thing in issue #123.", 123).is_none());
+        assert!(check("Read [RFC 123](https://x.y/rfc/123).", 123).is_none());
+        assert!(check("Opravit ěščř ([#5](https://x.y/issues/5)).", 9).is_some());
+
+        // The same number in another repository is not the fragment's own link.
+        let other =
+            "Follow [the upstream fix](https://github.com/other-org/other-repo/issues/123).";
+        assert!(check(other, 123).is_none());
+        let other_pull = "Follow [the upstream fix](https://github.com/o/other/pull/123).";
+        assert!(check(other_pull, 123).is_none());
 
         let fragment = b"---\nkind: fixed\n---\nFix it ([#123](https://x.y/issues/123))\n";
-        let error = parse_fragment("123-fix.md", fragment, None).unwrap_err();
+        let error = parse_fragment("123-fix.md", fragment, None, "o/r").unwrap_err();
         assert!(error.contains("fold appends"));
+        let upstream = format!("---\nkind: fixed\n---\n{other}\n");
+        assert!(parse_fragment("123-fix.md", upstream.as_bytes(), None, "o/r").is_ok());
     }
 
     #[test]
