@@ -456,17 +456,20 @@ component SessionRow inherits Rectangle {
 
     VerticalLayout {
         padding-left: Theme.row-padding + root.data.depth * Theme.sub-session-indent;
-        // The labels end where the opaque action strip starts while it is shown.
-        padding-right: Theme.row-padding + (action-strip.visible ? action-strip.width : 0px);
+        padding-right: Theme.row-padding;
         padding-top: Theme.row-vertical-padding;
         padding-bottom: Theme.row-vertical-padding;
         alignment: center;
         HorizontalLayout {
             spacing: Theme.badge-spacing;
+            // The chips follow the name instead of sitting at the right edge, where
+            // the action strip overlays the row on hover; nothing in the row
+            // changes position with the pointer.
             name-text := Text {
                 text: root.data.name;
                 color: Theme.text;
                 overflow: elide;
+                horizontal-stretch: 0;
             }
             if root.data.not-shared: Rectangle {
                 background: Theme.not-shared-background;
@@ -546,6 +549,7 @@ component SessionRow inherits Rectangle {
                     }
                 }
             }
+            Rectangle { }
         }
         HorizontalLayout {
             spacing: Theme.owner-spacing;
