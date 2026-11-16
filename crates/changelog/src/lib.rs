@@ -311,6 +311,15 @@ fn parse_fragment(
         return Err("heading line in body".to_owned());
     }
 
+    let text = body
+        .iter()
+        .map(|line| line.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(reason) = issue_link_problem(&text, number) {
+        return Err(reason);
+    }
+
     Ok(Fragment {
         file_name: file_name.to_owned(),
         number,
@@ -318,12 +327,44 @@ fn parse_fragment(
         kind,
         breaking,
         surfaces: fragment_surfaces,
-        text: body
-            .iter()
-            .map(|line| line.trim())
-            .collect::<Vec<_>>()
-            .join(" "),
+        text,
     })
+}
+
+/// A body must not carry the issue link that `fold` appends: a link to the
+/// fragment's own issue, or any trailing `([#N](...))` suffix.
+fn issue_link_problem(text: &str, number: u64) -> Option<String> {
+    let own_targets = [format!("/issues/{number})"), format!("/pull/{number})")];
+    let own_link = text.match_indices("](").any(|(index, _)| {
+        let rest = &text[index + 2..];
+        rest.find(')').is_some_and(|end| {
+            own_targets
+                .iter()
+                .any(|t| rest[..=end].ends_with(t.as_str()))
+        })
+    });
+    if own_link || has_trailing_issue_suffix(text) {
+        return Some(
+            "body carries an issue link; fold appends ([#N](...)) from the file name, so remove it"
+                .to_owned(),
+        );
+    }
+    None
+}
+
+/// True when the text ends with `([#<digits>](<target>))`.
+fn has_trailing_issue_suffix(text: &str) -> bool {
+    let trimmed = text.trim_end_matches(['.', ',', ';']);
+    let Some(inner) = trimmed.strip_suffix("))") else {
+        return false;
+    };
+    let Some(start) = inner.rfind("([#") else {
+        return false;
+    };
+    let Some((digits, target)) = inner[start + 3..].split_once("](") else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) && !target.contains(')')
 }
 
 /// `<N>-<slug>.md`: N has no leading zero; the slug is lowercase words joined by single hyphens.
@@ -703,6 +744,25 @@ mod tests {
         assert!(validate_version("0.1.0-pre").is_err());
         assert!(validate_version("0.1").is_err());
         assert!(validate_version("v0.1.0").is_err());
+    }
+
+    #[test]
+    fn bodies_with_an_issue_link_are_refused() {
+        let own = "Fix the thing ([#123](https://github.com/o/r/issues/123))";
+        assert!(issue_link_problem(own, 123).is_some());
+        // A trailing suffix naming another issue is refused too.
+        assert!(issue_link_problem(own, 7).is_some());
+        let inline = "See [the issue](https://github.com/o/r/issues/123) for details.";
+        assert!(issue_link_problem(inline, 123).is_some());
+        assert!(issue_link_problem(inline, 7).is_none());
+        assert!(issue_link_problem("Fix the thing (see [docs](https://x.y/z)).", 123).is_none());
+        assert!(issue_link_problem("Fix the thing in issue #123.", 123).is_none());
+        assert!(issue_link_problem("Read [RFC 123](https://x.y/rfc/123).", 123).is_none());
+        assert!(issue_link_problem("Opravit ěščř ([#5](https://x.y/issues/5)).", 9).is_some());
+
+        let fragment = b"---\nkind: fixed\n---\nFix it ([#123](https://x.y/issues/123))\n";
+        let error = parse_fragment("123-fix.md", fragment, None).unwrap_err();
+        assert!(error.contains("fold appends"));
     }
 
     #[test]
