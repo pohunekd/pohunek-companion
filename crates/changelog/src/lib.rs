@@ -339,11 +339,19 @@ fn parse_fragment(
 /// fragment's own issue or pull request in `repository`, or any trailing
 /// `([#N](...))` suffix. Links to other repositories are fine.
 fn issue_link_problem(text: &str, number: u64, repository: &str) -> Option<String> {
-    let own_link = text.match_indices("](").any(|(index, _)| {
+    // Inline `](target)`, reference definitions `]: target` and autolinks `<target>`.
+    let inline = text.match_indices("](").any(|(index, _)| {
         text[index + 2..]
             .split_once(')')
             .is_some_and(|(target, _)| is_own_target(target, number, repository))
     });
+    let reference = text
+        .match_indices("]:")
+        .any(|(index, _)| is_own_target(&text[index + 2..], number, repository));
+    let autolink = text
+        .match_indices('<')
+        .any(|(index, _)| is_own_target(&text[index..], number, repository));
+    let own_link = inline || reference || autolink;
     if own_link || has_trailing_issue_suffix(text) {
         return Some(
             "body carries an issue link; fold appends ([#N](...)) from the file name, so remove it"
@@ -355,7 +363,8 @@ fn issue_link_problem(text: &str, number: u64, repository: &str) -> Option<Strin
 
 /// True when a Markdown link destination (with optional surrounding whitespace,
 /// `<...>` wrapping and title) points at issue or pull request `number` of
-/// `repository`, whatever the scheme, `www.` prefix, trailing slash, fragment or query.
+/// `repository`, whatever the scheme, userinfo, default port, trailing host dot, `www.`
+/// prefix, trailing slash, fragment or query.
 fn is_own_target(target: &str, number: u64, repository: &str) -> bool {
     let target = target.trim();
     let destination = match target.strip_prefix('<') {
@@ -370,7 +379,19 @@ fn is_own_target(target: &str, number: u64, repository: &str) -> bool {
     }
     let rest = rest.split(['#', '?']).next().unwrap_or(rest);
     let mut segments = rest.trim_end_matches('/').split('/');
-    let host = segments.next().unwrap_or("");
+    let authority = segments.next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let default_port = if scheme.eq_ignore_ascii_case("https") {
+        "443"
+    } else {
+        "80"
+    };
+    let host = match host.rsplit_once(':') {
+        Some((name, port)) if port.is_empty() || port == default_port => name,
+        Some(_) => return false,
+        None => host,
+    };
+    let host = host.trim_end_matches('.');
     let host = match host.get(..4) {
         Some(prefix) if prefix.eq_ignore_ascii_case("www.") => &host[4..],
         _ => host,
@@ -815,6 +836,13 @@ mod tests {
             "https://github.com/o/r/issues/123 \"title\"",
             "<https://github.com/o/r/issues/123>",
             "HTTPS://GitHub.com/O/R/issues/123",
+            "https://github.com:443/o/r/issues/123",
+            "http://github.com:80/o/r/issues/123",
+            "https://github.com:/o/r/issues/123",
+            "https://github.com./o/r/issues/123",
+            "https://www.github.com.:443/o/r/issues/123",
+            "https://user@github.com/o/r/issues/123",
+            "https://user:pw@github.com:443/o/r/issues/123",
         ] {
             assert!(
                 check(&format!("See [x]({target})."), 123).is_some(),
@@ -831,11 +859,37 @@ mod tests {
             "https://example.com/o/r/issues/123",
             "https://github.com.evil.example/o/r/issues/123",
             "ftp://github.com/o/r/issues/123",
+            "https://github.com:8443/o/r/issues/123",
+            "https://github.com@evil.example/o/r/issues/123",
+            "https://github.com:443@evil.example/o/r/issues/123",
         ] {
             assert!(
                 check(&format!("See [x]({target})."), 123).is_none(),
                 "{target}"
             );
+        }
+
+        // Reference-style links and bare autolinks.
+        for (own, other) in [
+            (
+                "See [x][1] for details. [1]: https://github.com/o/r/issues/123",
+                "See [x][1] for details. [1]: https://github.com/o/r/issues/7",
+            ),
+            (
+                "See [x][1] for details. [1]: <https://github.com:443/o/r/pull/123>",
+                "See [x][1] for details. [1]: <https://github.com/o/r2/pull/123>",
+            ),
+            (
+                "See <https://github.com/o/r/issues/123> for details.",
+                "See <https://github.com/o/r/issues/7> for details.",
+            ),
+            (
+                "See <https://user@github.com./o/r/pull/123/> for details.",
+                "See <https://example.com/o/r/pull/123> for details.",
+            ),
+        ] {
+            assert!(check(own, 123).is_some(), "{own}");
+            assert!(check(other, 123).is_none(), "{other}");
         }
 
         // The same number in another repository is not the fragment's own link.
