@@ -97,6 +97,7 @@ fn launch_params(form: &AssistantForm, config: &NewSessionConfig) -> LaunchParam
         rows: config.rows,
         no_snapshot: false,
         auto_started_daemon: false,
+        workdir: None,
         request_id: None,
     }
 }

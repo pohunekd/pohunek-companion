@@ -391,6 +391,7 @@ pub fn build_params(
         context_package_digest: None,
         fetch_ref: None,
         agent_options: outgoing_options(&form.options, choices, agent),
+        skip_repo_hooks: false,
     })
 }
 
