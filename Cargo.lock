@@ -3422,8 +3422,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-assistant"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "getrandom 0.2.17",
  "pohunek-client",
@@ -3438,8 +3438,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-client"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "futures",
  "libc",
@@ -3504,8 +3504,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-knowledge"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "pohunek-protocol",
  "serde",
@@ -3516,8 +3516,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-netbird"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "pohunek-overlay",
  "pohunek-platform",
@@ -3529,8 +3529,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-overlay"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -3539,8 +3539,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-overlay-tailscale"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "pohunek-overlay",
  "pohunek-platform",
@@ -3552,8 +3552,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-paths"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "nix 0.29.0",
  "thiserror 2.0.21",
@@ -3561,8 +3561,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-platform"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "async-io",
  "calcifer-macos-acl",
@@ -3582,8 +3582,8 @@ dependencies = [
 
 [[package]]
 name = "pohunek-protocol"
-version = "0.43.0"
-source = "git+https://github.com/zajca/pohunek?tag=v0.43.0#ed1e75c5b5b0e02864c41a42ad939eeceda33d04"
+version = "0.44.0"
+source = "git+https://github.com/zajca/pohunek?tag=v0.44.0#013c20a3121fb8b45099718212b5a729889d492a"
 dependencies = [
  "base64 0.22.1",
  "serde",
