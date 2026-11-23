@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "appTree": "d8e264c604767a3701b5d82a63ebd4a54086ea8d",
+  "device": "headless-software scale 2",
+  "shots": [
+    {
+      "id": "sidebar",
+      "file": "sidebar.png",
+      "caption": "Sidebar",
+      "alt": "Sidebar with sessions that need the owner listed first, followed by groups of working and idle agent sessions",
+      "width": 640,
+      "height": 1600,
+      "sha256": "c5aa489d7e5497a39d58fef6b493eadc401a52a7297169b5491d10fb6d37113a"
+    },
+    {
+      "id": "by-state",
+      "file": "by-state.png",
+      "caption": "State view",
+      "alt": "State view with Needs you, Working and Idle sections",
+      "width": 640,
+      "height": 1600,
+      "sha256": "39bbac23666b5adbbb923e0cd0420f6e1089ab9e3f07f95ac8b239eb3d0b0529"
+    },
+    {
+      "id": "assistant",
+      "file": "assistant.png",
+      "caption": "Assistant",
+      "alt": "Assistant dialog with request and intent fields",
+      "width": 960,
+      "height": 1120,
+      "sha256": "bd4e71cf49057fbabf6318f5bb3d7ad50a1bf4e151b090be719482ff208843fb"
+    }
+  ]
+}
