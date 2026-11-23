@@ -84,7 +84,9 @@ shot() {
     # The pointer move and the layout the icons need are not ordered with the
     # tree read, so hover again until the tree lists the icons inside that row.
     while [ "$waited" -lt "$wait_secs" ]; do
-        hover_row "$text"
+        # A row that is not laid out yet has no handle; the icons_shown check
+        # below decides, so a miss here must not end the shot.
+        hover_row "$text" || true
         sleep 1
         if tree=$("$agent" tree 1000); then
             require_complete_tree "$tree"
