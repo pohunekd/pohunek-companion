@@ -10,7 +10,7 @@
       "alt": "Sidebar with sessions that need the owner listed first, followed by groups of working and idle agent sessions",
       "width": 640,
       "height": 1600,
-      "sha256": "c5aa489d7e5497a39d58fef6b493eadc401a52a7297169b5491d10fb6d37113a"
+      "sha256": "7b49c91f87abc24d0996303b395b05ff76d767b190094121706deb4299587251"
     },
     {
       "id": "by-state",
@@ -19,7 +19,25 @@
       "alt": "State view with Needs you, Working and Idle sections",
       "width": 640,
       "height": 1600,
-      "sha256": "39bbac23666b5adbbb923e0cd0420f6e1089ab9e3f07f95ac8b239eb3d0b0529"
+      "sha256": "5b4ff47e57bef454612e1ed00004c9c217b9a5e35c9785a691366af260d5bc12"
+    },
+    {
+      "id": "filters",
+      "file": "filters.png",
+      "caption": "Filters",
+      "alt": "A project chip and the Ended chip active, showing only that project's sessions",
+      "width": 640,
+      "height": 1600,
+      "sha256": "d3a6c883c612d000320c428bcd87671455661e372af834a9cea541c8aea3a011"
+    },
+    {
+      "id": "session-detail",
+      "file": "session-detail.png",
+      "caption": "Session detail",
+      "alt": "Session details view with copyable id, host, agent, state and working directory",
+      "width": 640,
+      "height": 1600,
+      "sha256": "1b45ae7aa30281a5b019b859278447c5a2438c03690a97acb32952e25fb371fd"
     },
     {
       "id": "assistant",
@@ -28,7 +46,7 @@
       "alt": "Assistant dialog with request and intent fields",
       "width": 960,
       "height": 1120,
-      "sha256": "bd4e71cf49057fbabf6318f5bb3d7ad50a1bf4e151b090be719482ff208843fb"
+      "sha256": "f12900a9e28b24cb6934f06b78fe0c0f3a132989c588ca2cd485b180cefa0bc0"
     }
   ]
 }
