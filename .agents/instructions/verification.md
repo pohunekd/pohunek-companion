@@ -64,6 +64,7 @@ while it runs.
 scripts/ui-agent start                  # isolated daemon; prints http://127.0.0.1:<port>/mcp
 scripts/ui-agent start --sessions 120   # plus 120 generated sessions (124 in total)
 scripts/ui-agent start --showcase       # realistic synthetic dataset for README screenshots
+SLINT_SCALE_FACTOR=2 scripts/ui-agent start --showcase   # render at 2x (headless reads the variable too)
 scripts/ui-agent start --sub-sessions   # plus a sub-session tree (manager, workers, fallback)
 scripts/ui-agent screenshot shot.png    # PNG of the window
 scripts/ui-agent tree                   # element tree with ids

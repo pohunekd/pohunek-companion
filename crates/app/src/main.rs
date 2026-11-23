@@ -13,6 +13,7 @@ mod confirm;
 mod desktop;
 mod detail;
 mod group_edit;
+mod headless_scale;
 mod launch;
 mod logging;
 mod new_session;
@@ -1655,6 +1656,7 @@ fn run_sidebar() -> Result<(), slint::PlatformError> {
         select_accessory_backend()?;
     }
     let window = AppWindow::new()?;
+    headless_scale::apply(window.window())?;
     window.set_log_error(log_error.into());
     // Compositor window rules match on this id (Wayland app_id); it needs the
     // platform, which the first component creates, and must precede show().

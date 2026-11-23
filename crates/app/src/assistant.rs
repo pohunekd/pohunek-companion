@@ -474,6 +474,7 @@ pub fn run(args: Args) -> Result<(), slint::PlatformError> {
     let started = Instant::now();
     info!("assistant dialog started");
     let window = AssistantWindow::new()?;
+    crate::headless_scale::apply(window.window())?;
     window.global::<Fuzzy>().on_matches(|query, items| {
         let items: Vec<SharedString> = items.iter().collect();
         let matched: Vec<i32> = fuzzy_matches(query.as_str(), &items)
