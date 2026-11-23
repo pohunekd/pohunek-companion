@@ -43,11 +43,19 @@ export SLINT_SCALE_FACTOR="$scale"
 rm -rf "$work"
 mkdir -p "$work" "$out_dir"
 
+# Prints the element tree, refusing a truncated one.
+element_tree() {
+    local tree
+    tree=$("$agent" tree 1000) || die "cannot read the element tree"
+    printf '%s' "$tree" | jq -e '.truncated == false' >/dev/null || die "element tree truncated"
+    printf '%s' "$tree"
+}
+
 # Polls the element tree until an element shows the text TEXT.
 wait_label() {
     local text=$1 waited=0
     while [ "$waited" -lt "$wait_secs" ]; do
-        if "$agent" tree 1000 |
+        if element_tree |
             jq -e --arg t "$text" 'any(.elements[]; .accessibleLabel == $t)' >/dev/null; then
             return 0
         fi
@@ -58,36 +66,46 @@ wait_label() {
 }
 
 # Clicks the TAG element (for example ChoiceChips::chip-touch) whose bounds
-# contain an element showing the text TEXT.
+# contain an element showing the text TEXT; polls like wait_label, because the
+# rows arrive with the daemon snapshot.
 click_label() {
-    local tag=$1 text=$2 handle n tree
-    tree=$("$agent" tree 1000) || die "cannot read the element tree"
-    handle=$(printf '%s' "$tree" | jq -r --arg tag "$tag" --arg text "$text" '
-        [.elements[] | select(.accessibleLabel == $text)] as $texts
-        | [.elements[]
-           | select(any(.typeNamesAndIds[]?; .id == $tag))
-           | . as $chip
-           | select(any($texts[];
-               . as $t
-               | (($t.absolutePosition.x // 0) >= (($chip.absolutePosition.x // 0) - 1))
-                 and ((($t.absolutePosition.x // 0) + $t.size.width)
-                      <= ((($chip.absolutePosition.x // 0) + $chip.size.width) + 1))
-                 and (($t.absolutePosition.y // 0) >= (($chip.absolutePosition.y // 0) - 1))
-                 and ((($t.absolutePosition.y // 0) + $t.size.height)
-                      <= ((($chip.absolutePosition.y // 0) + $chip.size.height) + 1))))
-           | (.handle.generation + ":" + .handle.index)]
-        | .[0] // empty')
-    [ -n "$handle" ] || die "no $tag element shows the text \"$text\""
-    n=$("$agent" find "$tag" |
-        jq -r --arg h "$handle" '[.elementHandles[] | (.generation + ":" + .index)] | index($h) // empty')
-    [ -n "$n" ] || die "$tag has no handle for the text \"$text\""
-    "$agent" click "$tag" "$n" >/dev/null
+    local tag=$1 text=$2 waited=0 handle n tree
+    while [ "$waited" -lt "$wait_secs" ]; do
+        tree=$(element_tree)
+        handle=$(printf '%s' "$tree" | jq -r --arg tag "$tag" --arg text "$text" '
+            [.elements[] | select(.accessibleLabel == $text)] as $texts
+            | [.elements[]
+               | select(any(.typeNamesAndIds[]?; .id == $tag))
+               | . as $chip
+               | select(any($texts[];
+                   . as $t
+                   | (($t.absolutePosition.x // 0) >= (($chip.absolutePosition.x // 0) - 1))
+                     and ((($t.absolutePosition.x // 0) + $t.size.width)
+                          <= ((($chip.absolutePosition.x // 0) + $chip.size.width) + 1))
+                     and (($t.absolutePosition.y // 0) >= (($chip.absolutePosition.y // 0) - 1))
+                     and ((($t.absolutePosition.y // 0) + $t.size.height)
+                          <= ((($chip.absolutePosition.y // 0) + $chip.size.height) + 1))))
+               | (.handle.generation + ":" + .handle.index)]
+            | .[0] // empty') || die "cannot match $tag against the element tree"
+        if [ -n "$handle" ]; then
+            n=$("$agent" find "$tag" |
+                jq -r --arg h "$handle" '[.elementHandles[] | (.generation + ":" + .index)] | index($h) // empty') ||
+                die "cannot find $tag"
+            [ -n "$n" ] || die "$tag has no handle for the text \"$text\""
+            "$agent" click "$tag" "$n" >/dev/null || die "click on $tag failed"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    die "no $tag element shows the text \"$text\" after ${wait_secs}s"
 }
 
 # The layout file keeps view and filter choices across `restart`: snapshot it
 # right after a `start` and copy it back right before a `restart`.
 snapshot_layout() {
     local layout
+    rm -f "$work/layout.start"
     layout=$("$agent" layout) || return 0
     if [ -f "$layout" ]; then
         cp "$layout" "$work/layout.start"
@@ -99,6 +117,8 @@ restore_layout() {
     layout=$("$agent" layout) || return 0
     if [ -f "$work/layout.start" ]; then
         cp "$work/layout.start" "$layout"
+    else
+        rm -f "$layout"
     fi
 }
 
@@ -118,15 +138,33 @@ for file in "${files[@]}"; do
 
     meta=$( ( unset caption alt start_args
               source "$file"
-              printf '%s\n' "$caption" "$alt" ${start_args[@]+"${start_args[@]}"} ) ) ||
-        die "$file: cannot be sourced"
-    caption=$(printf '%s\n' "$meta" | sed -n 1p)
-    alt=$(printf '%s\n' "$meta" | sed -n 2p)
+              printf '%s\n%s\n%s\n' "caption=$caption" "alt=$alt" \
+                  "args=${start_args[*]:-}" ) ) || die "$file: cannot be sourced"
+    [ "$(printf '%s\n' "$meta" | wc -l)" -eq 3 ] ||
+        die "$file: caption and alt must each be one line"
+    line1=$(printf '%s\n' "$meta" | sed -n 1p)
+    line2=$(printf '%s\n' "$meta" | sed -n 2p)
+    line3=$(printf '%s\n' "$meta" | sed -n 3p)
+    case $line1 in
+        caption=?*) caption=${line1#caption=} ;;
+        *) die "$file: caption is empty" ;;
+    esac
+    case $line2 in
+        alt=?*) alt=${line2#alt=} ;;
+        *) die "$file: alt is empty" ;;
+    esac
+    case $line3 in
+        args=*) ;;
+        *) die "$file: defines no start_args" ;;
+    esac
     start_args=()
-    mapfile -t start_args < <(printf '%s\n' "$meta" | sed -n '3,$p')
-    [ -n "$caption" ] || die "$file: caption is empty"
-    [ -n "$alt" ] || die "$file: alt is empty"
+    read -r -a start_args <<<"${line3#args=}"
     want_args="${start_args[*]:-}"
+    case " $want_args " in
+        *" --owner-daemon "* | *" --windowed "*)
+            die "$file: never uses --owner-daemon or --windowed"
+            ;;
+    esac
 
     if [ -z "$started" ]; then
         "$agent" start ${start_args[@]+"${start_args[@]}"} >/dev/null ||
@@ -147,9 +185,10 @@ for file in "${files[@]}"; do
     (
         set -e
         source "$file"
+        declare -F shot >/dev/null || die "$file: defines no shot()"
         shot
         "$agent" screenshot "$work/$id.png"
-    ) >/dev/null || die "shot $id failed"
+    ) >/dev/null
     optipng -o4 -quiet "$work/$id.png" >/dev/null || die "optipng failed for $id"
 
     read -r width height < <(python3 -c '
