@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "appTree": "d8e264c604767a3701b5d82a63ebd4a54086ea8d",
+  "device": "headless-software scale 2",
+  "shots": [
+    {
+      "id": "sidebar",
+      "file": "sidebar.png",
+      "caption": "Sidebar",
+      "alt": "Sidebar with sessions that need the owner listed first, followed by groups of working and idle agent sessions",
+      "width": 640,
+      "height": 1600,
+      "sha256": "7b49c91f87abc24d0996303b395b05ff76d767b190094121706deb4299587251"
+    },
+    {
+      "id": "by-state",
+      "file": "by-state.png",
+      "caption": "State view",
+      "alt": "State view with Needs you, Working and Idle sections",
+      "width": 640,
+      "height": 1600,
+      "sha256": "5b4ff47e57bef454612e1ed00004c9c217b9a5e35c9785a691366af260d5bc12"
+    },
+    {
+      "id": "filters",
+      "file": "filters.png",
+      "caption": "Filters",
+      "alt": "A project chip and the Ended chip active, showing only that project's sessions",
+      "width": 640,
+      "height": 1600,
+      "sha256": "d3a6c883c612d000320c428bcd87671455661e372af834a9cea541c8aea3a011"
+    },
+    {
+      "id": "session-detail",
+      "file": "session-detail.png",
+      "caption": "Session detail",
+      "alt": "Session details view with copyable id, host, agent, state and working directory",
+      "width": 640,
+      "height": 1600,
+      "sha256": "99d19c8c7efad687befb4fe62bb31cf1a8e86fc9840456577d61f72710ce0f70"
+    },
+    {
+      "id": "new-session",
+      "file": "new-session.png",
+      "caption": "New session",
+      "alt": "New session dialog with host, project, agent and prompt fields",
+      "width": 960,
+      "height": 1200,
+      "sha256": "ba154d6049b1ab1b71a669cb26f3307bdae06344b9d8561ef4d210b8062a73ac"
+    }
+  ]
+}
