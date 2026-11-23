@@ -43,21 +43,26 @@ export SLINT_SCALE_FACTOR="$scale"
 rm -rf "$work"
 mkdir -p "$work" "$out_dir"
 
-# Prints the element tree, refusing a truncated one.
-element_tree() {
-    local tree
-    tree=$("$agent" tree 1000) || die "cannot read the element tree"
-    printf '%s' "$tree" | jq -e '.truncated == false' >/dev/null || die "element tree truncated"
-    printf '%s' "$tree"
+# Dies when the tree JSON read into TREE is truncated: a truncated tree hides
+# the element the caller is waiting for, so polling would end with a wrong
+# message 60 s later.
+require_complete_tree() {
+    local truncated
+    truncated=$(printf '%s' "$1" | jq -r '.truncated' 2>/dev/null) ||
+        die "cannot read the element tree"
+    [ "$truncated" = false ] || die "element tree truncated"
 }
 
 # Polls the element tree until an element shows the text TEXT.
 wait_label() {
-    local text=$1 waited=0
+    local text=$1 waited=0 tree
     while [ "$waited" -lt "$wait_secs" ]; do
-        if element_tree |
-            jq -e --arg t "$text" 'any(.elements[]; .accessibleLabel == $t)' >/dev/null; then
-            return 0
+        if tree=$("$agent" tree 1000); then
+            require_complete_tree "$tree"
+            if printf '%s' "$tree" |
+                jq -e --arg t "$text" 'any(.elements[]; .accessibleLabel == $t)' >/dev/null; then
+                return 0
+            fi
         fi
         sleep 1
         waited=$((waited + 1))
@@ -71,29 +76,31 @@ wait_label() {
 click_label() {
     local tag=$1 text=$2 waited=0 handle n tree
     while [ "$waited" -lt "$wait_secs" ]; do
-        tree=$(element_tree)
-        handle=$(printf '%s' "$tree" | jq -r --arg tag "$tag" --arg text "$text" '
-            [.elements[] | select(.accessibleLabel == $text)] as $texts
-            | [.elements[]
-               | select(any(.typeNamesAndIds[]?; .id == $tag))
-               | . as $chip
-               | select(any($texts[];
-                   . as $t
-                   | (($t.absolutePosition.x // 0) >= (($chip.absolutePosition.x // 0) - 1))
-                     and ((($t.absolutePosition.x // 0) + $t.size.width)
-                          <= ((($chip.absolutePosition.x // 0) + $chip.size.width) + 1))
-                     and (($t.absolutePosition.y // 0) >= (($chip.absolutePosition.y // 0) - 1))
-                     and ((($t.absolutePosition.y // 0) + $t.size.height)
-                          <= ((($chip.absolutePosition.y // 0) + $chip.size.height) + 1))))
-               | (.handle.generation + ":" + .handle.index)]
-            | .[0] // empty') || die "cannot match $tag against the element tree"
-        if [ -n "$handle" ]; then
-            n=$("$agent" find "$tag" |
-                jq -r --arg h "$handle" '[.elementHandles[] | (.generation + ":" + .index)] | index($h) // empty') ||
-                die "cannot find $tag"
-            [ -n "$n" ] || die "$tag has no handle for the text \"$text\""
-            "$agent" click "$tag" "$n" >/dev/null || die "click on $tag failed"
-            return 0
+        if tree=$("$agent" tree 1000); then
+            require_complete_tree "$tree"
+            handle=$(printf '%s' "$tree" | jq -r --arg tag "$tag" --arg text "$text" '
+                [.elements[] | select(.accessibleLabel == $text)] as $texts
+                | [.elements[]
+                   | select(any(.typeNamesAndIds[]?; .id == $tag))
+                   | . as $chip
+                   | select(any($texts[];
+                       . as $t
+                       | (($t.absolutePosition.x // 0) >= (($chip.absolutePosition.x // 0) - 1))
+                         and ((($t.absolutePosition.x // 0) + $t.size.width)
+                              <= ((($chip.absolutePosition.x // 0) + $chip.size.width) + 1))
+                         and (($t.absolutePosition.y // 0) >= (($chip.absolutePosition.y // 0) - 1))
+                         and ((($t.absolutePosition.y // 0) + $t.size.height)
+                              <= ((($chip.absolutePosition.y // 0) + $chip.size.height) + 1))))
+                   | (.handle.generation + ":" + .handle.index)]
+                | .[0] // empty') || die "cannot match $tag against the element tree"
+            if [ -n "$handle" ]; then
+                n=$("$agent" find "$tag" |
+                    jq -r --arg h "$handle" '[.elementHandles[] | (.generation + ":" + .index)] | index($h) // empty') ||
+                    die "cannot find $tag"
+                [ -n "$n" ] || die "$tag has no handle for the text \"$text\""
+                "$agent" click "$tag" "$n" >/dev/null || die "click on $tag failed"
+                return 0
+            fi
         fi
         sleep 1
         waited=$((waited + 1))
@@ -136,35 +143,49 @@ for file in "${files[@]}"; do
     id=${base#[0-9][0-9]-}
     [[ $id =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || die "$file: \"$id\" is not a valid shot id"
 
-    meta=$( ( unset caption alt start_args
-              source "$file"
-              printf '%s\n%s\n%s\n' "caption=$caption" "alt=$alt" \
-                  "args=${start_args[*]:-}" ) ) || die "$file: cannot be sourced"
-    [ "$(printf '%s\n' "$meta" | wc -l)" -eq 3 ] ||
-        die "$file: caption and alt must each be one line"
-    line1=$(printf '%s\n' "$meta" | sed -n 1p)
-    line2=$(printf '%s\n' "$meta" | sed -n 2p)
-    line3=$(printf '%s\n' "$meta" | sed -n 3p)
-    case $line1 in
-        caption=?*) caption=${line1#caption=} ;;
-        *) die "$file: caption is empty" ;;
+    # The shot file is sourced in a subshell that prints a NUL-separated record:
+    # caption, alt, the number of start_args (or `missing`), then the arguments.
+    meta_lines=()
+    mapfile -d '' -t meta_lines < <( unset caption alt start_args
+              source "$file" || { printf 'sourcing-failed\0'; exit 0; }
+              printf '%s\0%s\0' "$caption" "$alt"
+              if declare -p start_args >/dev/null 2>&1; then
+                  printf '%d\0' "${#start_args[@]}"
+                  [ ${#start_args[@]} -eq 0 ] || printf '%s\0' "${start_args[@]}"
+              else
+                  printf 'missing\0'
+              fi )
+    [ "${meta_lines[0]:-}" != sourcing-failed ] || die "$file: cannot be sourced"
+    [ "${#meta_lines[@]}" -ge 3 ] || die "$file: sources no caption, alt or start_args"
+    caption=${meta_lines[0]}
+    alt=${meta_lines[1]}
+    arg_count=${meta_lines[2]}
+    case $caption in
+        '') die "$file: caption is empty" ;;
+        *$'\n'*) die "$file: caption must be one line" ;;
     esac
-    case $line2 in
-        alt=?*) alt=${line2#alt=} ;;
-        *) die "$file: alt is empty" ;;
+    case $alt in
+        '') die "$file: alt is empty" ;;
+        *$'\n'*) die "$file: alt must be one line" ;;
     esac
-    case $line3 in
-        args=*) ;;
-        *) die "$file: defines no start_args" ;;
+    case $arg_count in
+        missing | '') die "$file: defines no start_args array" ;;
+        *[!0-9]*) die "$file: defines no start_args array" ;;
     esac
+    [ "${#meta_lines[@]}" -eq "$((3 + arg_count))" ] ||
+        die "$file: start_args has $(( ${#meta_lines[@]} - 3 )) entries, not $arg_count"
     start_args=()
-    read -r -a start_args <<<"${line3#args=}"
-    want_args="${start_args[*]:-}"
-    case " $want_args " in
-        *" --owner-daemon "* | *" --windowed "*)
-            die "$file: never uses --owner-daemon or --windowed"
-            ;;
-    esac
+    if [ "$arg_count" -gt 0 ]; then
+        start_args=("${meta_lines[@]:3}")
+    fi
+    want_args=$(printf '[%s]\n' ${start_args[@]+"${start_args[@]}"})
+    for arg in ${start_args[@]+"${start_args[@]}"}; do
+        case $arg in
+            --owner-daemon | --windowed)
+                die "$file: never uses $arg"
+                ;;
+        esac
+    done
 
     if [ -z "$started" ]; then
         "$agent" start ${start_args[@]+"${start_args[@]}"} >/dev/null ||
