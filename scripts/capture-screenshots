@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# Captures the public desktop screenshot set from an isolated `scripts/ui-agent`
+# run: writes `<id>.png` and `manifest.json` into `docs/screenshots/` and removes
+# every other PNG there, because the command owns that directory.
+#
+# A shot file `scripts/screenshots/NN-<id>.sh` is sourced, never executed on its
+# own: it defines `caption`, `alt`, `start_args=(...)` and `shot()`, which leaves
+# the screen to capture. File-name order is manifest order. The command takes no
+# arguments and owns its ui-agent run: it refuses to start when another run is
+# up and stops the run it started on exit.
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+agent="$root/scripts/ui-agent"
+out_dir="$root/docs/screenshots"
+shots_dir="$root/scripts/screenshots"
+work="$root/target/capture-screenshots"
+manifest_schema=1
+scale=2
+wait_secs=60
+
+die() {
+    echo "capture-screenshots: $*" >&2
+    exit 1
+}
+
+for tool in jq git sha256sum optipng python3 curl; do
+    command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
+done
+
+[ $# -eq 0 ] || die "takes no arguments"
+
+if "$agent" status >/dev/null 2>&1; then
+    die "a ui-agent run is already up; stop it first"
+fi
+trap '"$agent" stop >/dev/null 2>&1' EXIT
+
+dirty=$(git -C "$root" status --porcelain -- crates)
+[ -z "$dirty" ] || die "crates/ has uncommitted or untracked changes; commit them first"
+app_tree=$(git -C "$root" rev-parse HEAD:crates)
+
+export SLINT_SCALE_FACTOR="$scale"
+rm -rf "$work"
+mkdir -p "$work" "$out_dir"
+
+# Dies when the tree JSON read into TREE is truncated: a truncated tree hides
+# the element the caller is waiting for, so polling would end with a wrong
+# message 60 s later.
+require_complete_tree() {
+    local truncated
+    truncated=$(printf '%s' "$1" | jq -r '.truncated' 2>/dev/null) ||
+        die "cannot read the element tree"
+    [ "$truncated" = false ] || die "element tree truncated"
+}
+
+# Polls the element tree until an element shows the text TEXT.
+wait_label() {
+    local text=$1 waited=0 tree
+    while [ "$waited" -lt "$wait_secs" ]; do
+        if tree=$("$agent" tree 1000); then
+            require_complete_tree "$tree"
+            if printf '%s' "$tree" |
+                jq -e --arg t "$text" 'any(.elements[]; .accessibleLabel == $t)' >/dev/null; then
+                return 0
+            fi
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    die "no element shows the text \"$text\" after ${wait_secs}s"
+}
+
+# Clicks the TAG element (for example ChoiceChips::chip-touch) whose bounds
+# contain an element showing the text TEXT; polls like wait_label, because the
+# rows arrive with the daemon snapshot.
+click_label() {
+    local tag=$1 text=$2 waited=0 handle n tree
+    while [ "$waited" -lt "$wait_secs" ]; do
+        if tree=$("$agent" tree 1000); then
+            require_complete_tree "$tree"
+            handle=$(printf '%s' "$tree" | jq -r --arg tag "$tag" --arg text "$text" '
+                [.elements[] | select(.accessibleLabel == $text)] as $texts
+                | [.elements[]
+                   | select(any(.typeNamesAndIds[]?; .id == $tag))
+                   | . as $chip
+                   | select(any($texts[];
+                       . as $t
+                       | (($t.absolutePosition.x // 0) >= (($chip.absolutePosition.x // 0) - 1))
+                         and ((($t.absolutePosition.x // 0) + $t.size.width)
+                              <= ((($chip.absolutePosition.x // 0) + $chip.size.width) + 1))
+                         and (($t.absolutePosition.y // 0) >= (($chip.absolutePosition.y // 0) - 1))
+                         and ((($t.absolutePosition.y // 0) + $t.size.height)
+                              <= ((($chip.absolutePosition.y // 0) + $chip.size.height) + 1))))
+                   | (.handle.generation + ":" + .handle.index)]
+                | .[0] // empty') || die "cannot match $tag against the element tree"
+            if [ -n "$handle" ]; then
+                n=$("$agent" find "$tag" |
+                    jq -r --arg h "$handle" '[.elementHandles[] | (.generation + ":" + .index)] | index($h) // empty') ||
+                    die "cannot find $tag"
+                [ -n "$n" ] || die "$tag has no handle for the text \"$text\""
+                "$agent" click "$tag" "$n" >/dev/null || die "click on $tag failed"
+                return 0
+            fi
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    die "no $tag element shows the text \"$text\" after ${wait_secs}s"
+}
+
+# The layout file keeps view and filter choices across `restart`: snapshot it
+# right after a `start` and copy it back right before a `restart`.
+snapshot_layout() {
+    local layout
+    rm -f "$work/layout.start"
+    layout=$("$agent" layout) || return 0
+    if [ -f "$layout" ]; then
+        cp "$layout" "$work/layout.start"
+    fi
+}
+
+restore_layout() {
+    local layout
+    layout=$("$agent" layout) || return 0
+    if [ -f "$work/layout.start" ]; then
+        cp "$work/layout.start" "$layout"
+    else
+        rm -f "$layout"
+    fi
+}
+
+shopt -s nullglob
+files=("$shots_dir"/[0-9][0-9]-*.sh)
+shopt -u nullglob
+[ ${#files[@]} -gt 0 ] || die "no shot file in scripts/screenshots"
+
+shots_json='[]'
+count=0
+started=""
+current_args=""
+for file in "${files[@]}"; do
+    base=$(basename "$file" .sh)
+    id=${base#[0-9][0-9]-}
+    [[ $id =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || die "$file: \"$id\" is not a valid shot id"
+
+    # The shot file is sourced in a subshell that prints a NUL-separated record:
+    # caption, alt, the number of start_args (or `missing`), then the arguments.
+    meta_lines=()
+    mapfile -d '' -t meta_lines < <( unset caption alt start_args
+              source "$file" || { printf 'sourcing-failed\0'; exit 0; }
+              printf '%s\0%s\0' "$caption" "$alt"
+              if declare -p start_args >/dev/null 2>&1; then
+                  printf '%d\0' "${#start_args[@]}"
+                  [ ${#start_args[@]} -eq 0 ] || printf '%s\0' "${start_args[@]}"
+              else
+                  printf 'missing\0'
+              fi )
+    [ "${meta_lines[0]:-}" != sourcing-failed ] || die "$file: cannot be sourced"
+    [ "${#meta_lines[@]}" -ge 3 ] || die "$file: sources no caption, alt or start_args"
+    caption=${meta_lines[0]}
+    alt=${meta_lines[1]}
+    arg_count=${meta_lines[2]}
+    case $caption in
+        '') die "$file: caption is empty" ;;
+        *$'\n'*) die "$file: caption must be one line" ;;
+    esac
+    case $alt in
+        '') die "$file: alt is empty" ;;
+        *$'\n'*) die "$file: alt must be one line" ;;
+    esac
+    case $arg_count in
+        missing | '') die "$file: defines no start_args array" ;;
+        *[!0-9]*) die "$file: defines no start_args array" ;;
+    esac
+    [ "${#meta_lines[@]}" -eq "$((3 + arg_count))" ] ||
+        die "$file: start_args has $(( ${#meta_lines[@]} - 3 )) entries, not $arg_count"
+    start_args=()
+    if [ "$arg_count" -gt 0 ]; then
+        start_args=("${meta_lines[@]:3}")
+    fi
+    want_args=$(printf '[%s]\n' ${start_args[@]+"${start_args[@]}"})
+    for arg in ${start_args[@]+"${start_args[@]}"}; do
+        case $arg in
+            --owner-daemon | --windowed)
+                die "$file: never uses $arg"
+                ;;
+        esac
+    done
+
+    if [ -z "$started" ]; then
+        "$agent" start ${start_args[@]+"${start_args[@]}"} >/dev/null ||
+            die "cannot start ui-agent for $id"
+        started=1
+        snapshot_layout
+    elif [ "$want_args" != "$current_args" ]; then
+        "$agent" stop >/dev/null 2>&1 || true
+        "$agent" start ${start_args[@]+"${start_args[@]}"} >/dev/null ||
+            die "cannot start ui-agent for $id"
+        snapshot_layout
+    else
+        restore_layout
+        "$agent" restart >/dev/null || die "cannot restart ui-agent for $id"
+    fi
+    current_args=$want_args
+
+    (
+        set -e
+        source "$file"
+        declare -F shot >/dev/null || die "$file: defines no shot()"
+        shot
+        "$agent" screenshot "$work/$id.png"
+    ) >/dev/null
+    optipng -o4 -quiet "$work/$id.png" >/dev/null || die "optipng failed for $id"
+
+    read -r width height < <(python3 -c '
+import struct, sys
+data = open(sys.argv[1], "rb").read(24)
+print(*struct.unpack(">II", data[16:24]))
+' "$work/$id.png")
+    [ -n "${width:-}" ] && [ -n "${height:-}" ] || die "cannot read the size of $id.png"
+
+    sha=$(sha256sum "$work/$id.png" | cut -d' ' -f1)
+    shots_json=$(printf '%s' "$shots_json" |
+        jq -c --arg id "$id" --arg file "$id.png" --arg caption "$caption" \
+            --arg alt "$alt" --argjson width "$width" --argjson height "$height" \
+            --arg sha256 "$sha" \
+            '. + [{id: $id, file: $file, caption: $caption, alt: $alt,
+                   width: $width, height: $height, sha256: $sha256}]')
+    count=$((count + 1))
+    echo "capture-screenshots: captured $id"
+done
+
+printf '%s' "$shots_json" |
+    jq --argjson schema "$manifest_schema" --arg appTree "$app_tree" \
+        --arg device "headless-software scale $scale" \
+        '{schema: $schema, appTree: $appTree, device: $device, shots: .}' \
+        >"$work/manifest.json"
+[ -s "$work/manifest.json" ] || die "cannot write the manifest"
+
+kept=$(printf '%s' "$shots_json" | jq -r '.[].file')
+for png in "$out_dir"/*.png; do
+    name=$(basename "$png")
+    if ! printf '%s\n' "$kept" | grep -qxF "$name"; then
+        rm -f "$out_dir/$name"
+    fi
+done
+mv "$work"/*.png "$out_dir/"
+mv "$work/manifest.json" "$out_dir/"
+
+echo "capture-screenshots: wrote $count shots and manifest.json to docs/screenshots (appTree $app_tree)"
