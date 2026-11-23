@@ -209,6 +209,15 @@ for file in "${files[@]}"; do
         declare -F shot >/dev/null || die "$file: defines no shot()"
         shot
         "$agent" screenshot "$work/$id.png"
+        # The screenshot is of window 0, so that window must report the scale
+        # this run builds with: a 1x set then can never be committed.
+        window=$("$agent" call list_windows |
+            jq -er '.result.content[] | select(.type == "text") | .text | fromjson | .windowHandles[0]')
+        props=$("$agent" call get_window_properties "$(jq -cn --argjson h "$window" '{windowHandle: $h}')" |
+            jq -er '.result.content[] | select(.type == "text") | .text | fromjson')
+        same=$(printf '%s' "$props" | jq -r --argjson s "$scale" '.scaleFactor == $s')
+        [ "$same" = true ] ||
+            die "$id was captured at scale $(printf '%s' "$props" | jq -r '.scaleFactor'), expected $scale"
     ) >/dev/null
     optipng -o4 -quiet "$work/$id.png" >/dev/null || die "optipng failed for $id"
 
