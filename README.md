@@ -143,7 +143,7 @@ answers. A daemon whose protocol does not match the companion's is named there
 with both versions.
 
 <p align="center">
-  <img src="docs/screenshots/install-plan.png" alt="The setup screen after the release was downloaded and verified, showing the checksum evidence and what the installer will write" width="320">
+  <img src="docs/screenshots/install-offer.png" alt="The setup screen when Pohunek is not installed: what the install downloads and checks, with the Install Pohunek and Check again buttons" width="320">
 </p>
 
 ### macOS (Apple Silicon, macOS 14 or later)
@@ -282,9 +282,11 @@ scripts/gates                  # fmt, clippy, tests: the set CI runs
 scripts/ui-agent start --showcase   # headless app on an isolated daemon with synthetic showcase data
 ```
 
-The screenshots above come from `scripts/ui-agent start --showcase`: a
-headless run against an isolated Pohunek daemon filled with synthetic projects
-and sessions, so nothing in them comes from a real daemon. Contributors and
+The screenshots above come from `scripts/capture-screenshots`, which drives
+`scripts/ui-agent` in its isolated mode with the showcase data: synthetic
+projects and sessions, so nothing in them comes from a real daemon. The
+`docs/screenshots/manifest.json` it writes lists every shot with its caption and
+checksum for pohunek.dev. Contributors and
 agents start at [AGENTS.md](AGENTS.md).
 
 ## License
