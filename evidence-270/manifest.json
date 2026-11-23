@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "appTree": "d8e264c604767a3701b5d82a63ebd4a54086ea8d",
+  "device": "headless-software scale 2",
+  "shots": [
+    {
+      "id": "sidebar",
+      "file": "sidebar.png",
+      "caption": "Sidebar",
+      "alt": "Sidebar with sessions that need the owner listed first, followed by groups of working and idle agent sessions",
+      "width": 640,
+      "height": 1600,
+      "sha256": "ec61b0f639be176087fd186424215ab44a86ecefe5293b93b7aa153e42c5b654"
+    },
+    {
+      "id": "by-state",
+      "file": "by-state.png",
+      "caption": "State view",
+      "alt": "State view with Needs you, Working and Idle sections",
+      "width": 640,
+      "height": 1600,
+      "sha256": "54b450d6c218b68007b7198c4f3543ae99a1575d8d17a3a9769871c48fd4d2d8"
+    },
+    {
+      "id": "filters",
+      "file": "filters.png",
+      "caption": "Filters",
+      "alt": "A project chip and the Ended chip active, showing only that project's sessions",
+      "width": 640,
+      "height": 1600,
+      "sha256": "6fa46a8cefd67d5935adca4115eb0702f80ac9c0b9415f61f6f4ffab6ae41966"
+    }
+  ]
+}
