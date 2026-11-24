@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "appTree": "3ecac2f6ee793d7902633500b44b73725ff9c560",
+  "device": "headless-software scale 2",
+  "shots": [
+    {
+      "id": "sidebar",
+      "file": "sidebar.png",
+      "caption": "Sidebar",
+      "alt": "Sidebar with sessions that need the owner listed first, followed by groups of working and idle agent sessions",
+      "width": 640,
+      "height": 1600,
+      "sha256": "7b49c91f87abc24d0996303b395b05ff76d767b190094121706deb4299587251"
+    },
+    {
+      "id": "by-state",
+      "file": "by-state.png",
+      "caption": "State view",
+      "alt": "State view with Needs you, Working and Idle sections",
+      "width": 640,
+      "height": 1600,
+      "sha256": "5b4ff47e57bef454612e1ed00004c9c217b9a5e35c9785a691366af260d5bc12"
+    },
+    {
+      "id": "filters",
+      "file": "filters.png",
+      "caption": "Filters",
+      "alt": "A project chip and the Ended chip active, showing only that project's sessions",
+      "width": 640,
+      "height": 1600,
+      "sha256": "d3a6c883c612d000320c428bcd87671455661e372af834a9cea541c8aea3a011"
+    },
+    {
+      "id": "row-actions",
+      "file": "row-actions.png",
+      "caption": "Row actions",
+      "alt": "Action icons shown on a hovered session row",
+      "width": 640,
+      "height": 1600,
+      "sha256": "2114e83851e834a3e04bf4797f777a837e818e090721d5c0b20d2c5e173d3091"
+    },
+    {
+      "id": "session-detail",
+      "file": "session-detail.png",
+      "caption": "Session detail",
+      "alt": "Session details view with copyable id, host, agent, state and working directory",
+      "width": 640,
+      "height": 1600,
+      "sha256": "f529bf644d50a04879112988a6030e180185301a0495e8470b2ebcdef990f80e"
+    },
+    {
+      "id": "new-session",
+      "file": "new-session.png",
+      "caption": "New session",
+      "alt": "New session dialog with host, project, agent and prompt fields",
+      "width": 960,
+      "height": 1200,
+      "sha256": "ba154d6049b1ab1b71a669cb26f3307bdae06344b9d8561ef4d210b8062a73ac"
+    },
+    {
+      "id": "assistant",
+      "file": "assistant.png",
+      "caption": "Assistant",
+      "alt": "Assistant dialog with request and intent fields",
+      "width": 960,
+      "height": 1120,
+      "sha256": "f12900a9e28b24cb6934f06b78fe0c0f3a132989c588ca2cd485b180cefa0bc0"
+    },
+    {
+      "id": "install-offer",
+      "file": "install-offer.png",
+      "caption": "Install from the companion",
+      "alt": "Setup screen saying Pohunek is not installed, explaining what the install downloads and checks, with Install Pohunek and Check again buttons",
+      "width": 640,
+      "height": 1600,
+      "sha256": "996457b63e75614751f76886e89fb7ab5e9be6ecb4e796c6940e7427602842ed"
+    }
+  ]
+}

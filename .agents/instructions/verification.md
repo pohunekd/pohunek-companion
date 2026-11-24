@@ -151,6 +151,10 @@ show the owner's real sessions (names, ids, working directories, Work links).
   Screenshots are taken with `scripts/ui-agent screenshot docs/screenshots/NAME.png`
   and optimised with `optipng -o4`; the dialogs go through `scripts/ui-agent dialog`
   (type into a multi-line request with the `dispatch_key_event` MCP tool).
+- `scripts/capture-screenshots` regenerates the published set
+  (`docs/screenshots/*.png` and `manifest.json`, the file pohunek.dev reads) from
+  isolated ui-agent runs at 2x; one file per shot in `scripts/screenshots/`. Run
+  it on committed `crates/`; it refuses otherwise.
 - The isolated run never discovers the owner's overlay hosts: the daemon and
   the app get a `netbird` stub first on `PATH` (`<isolated dir>/bin/netbird`).
   The daemon's machine-wide `host.discover` reads `netbird status --json`, so
