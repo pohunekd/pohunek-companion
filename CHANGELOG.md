@@ -3,6 +3,14 @@
 User-facing changes of Pohunek Companion. Each version section is folded from
 the fragments in `changelog.d/` when its release is prepared.
 
+## 0.1.10 - 2026-11-24
+
+### Fixed
+
+- The sub-session chip in a session row can be clicked again: the row stays put while the hover actions appear, and chips sit right after the session name. ([#255](https://github.com/pohunekd/pohunek-companion/issues/255))
+- The changelog check refuses only a link to the fragment's own issue or pull request in the folded repository, so a link to another repository's issue with the same number is accepted. ([#259](https://github.com/pohunekd/pohunek-companion/issues/259))
+- A click on a project or state chip in the sidebar is no longer lost when a session update arrives at the same moment. ([#287](https://github.com/pohunekd/pohunek-companion/issues/287))
+
 ## 0.1.9 - 2026-11-15
 
 Pohunek Companion 0.1.9 makes busy hosts easier to read: sessions that other sessions start now sit under their parent, a parent tells you when something below it needs you, and the New session dialog knows about agent profiles and their launch options.
