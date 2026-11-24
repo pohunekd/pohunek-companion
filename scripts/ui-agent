@@ -1449,7 +1449,7 @@ launch_app() {
             cat "$endpoint_file"
             return 0
         fi
-        running_pid >/dev/null || break
+        kill -0 "$(cat "$pidfile")" 2>/dev/null || break
         sleep 0.2
     done
     if [ -n "$keep_daemon" ]; then stop_app >/dev/null 2>&1 || true; else stop >/dev/null 2>&1 || true; fi

@@ -33,7 +33,7 @@ use pohunek_companion_core::{
     host_naming_this_machine, host_options, layout_path, name_from_input, open, plan_discovery,
     project_chips, rename_session, run_live, set_route, state_chips, state_from_key, write_group,
 };
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tracing::{debug, error, info, warn};
 
 slint::include_modules!();
@@ -251,6 +251,19 @@ fn arrange(state: &LayoutState) -> Arranged {
     }
 }
 
+/// Replaces a chip row's name model only when the names differ: a new model
+/// makes the repeater recreate every chip, which drops a click whose press and
+/// release straddle a session update.
+fn set_chip_names(
+    current: ModelRc<slint::SharedString>,
+    names: Vec<slint::SharedString>,
+    set: impl FnOnce(ModelRc<slint::SharedString>),
+) {
+    if !current.iter().eq(names.iter().cloned()) {
+        set(ModelRc::new(VecModel::from(names)));
+    }
+}
+
 fn show_arranged(window: &AppWindow, arranged: Arranged) {
     let Arranged {
         filter_empty,
@@ -310,12 +323,14 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
     window.set_state_checked(ModelRc::new(VecModel::from(
         chips.iter().map(|chip| chip.selected).collect::<Vec<_>>(),
     )));
-    window.set_state_names(ModelRc::new(VecModel::from(
+    set_chip_names(
+        window.get_state_names(),
         chips
             .iter()
             .map(|chip| slint::SharedString::from(chip.label))
-            .collect::<Vec<_>>(),
-    )));
+            .collect(),
+        |names| window.set_state_names(names),
+    );
     window.set_project_index(i32::try_from(project_index).unwrap_or_default());
     window.set_filter_project_id(filter_project_id.into());
     window.set_project_keys(ModelRc::new(VecModel::from(
@@ -324,12 +339,14 @@ fn show_arranged(window: &AppWindow, arranged: Arranged) {
             .map(|chip| slint::SharedString::from(chip_key(&chip.selection)))
             .collect::<Vec<_>>(),
     )));
-    window.set_project_names(ModelRc::new(VecModel::from(
+    set_chip_names(
+        window.get_project_names(),
         project_chips
             .into_iter()
             .map(|chip| slint::SharedString::from(chip.label))
-            .collect::<Vec<_>>(),
-    )));
+            .collect(),
+        |names| window.set_project_names(names),
+    );
     window.set_groups(ModelRc::new(VecModel::from(group_data(sections, &placed))));
     window.set_filter_empty(filter_empty);
     window.set_owner_groups(ModelRc::new(VecModel::from(
